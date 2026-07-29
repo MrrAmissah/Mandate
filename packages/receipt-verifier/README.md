@@ -30,7 +30,7 @@ Active and retired Ed25519 keys may verify historical receipts. Revoked, unknown
 
 ## Receipt corrections
 
-Attempt-bound root receipts use schema version `1.1`. Append-only correction receipts use version `1.2` and sign both `supersedesReceiptId` and `supersessionReason` together with the preserved execution evidence.
+Attempt-bound root receipts use schema version `1.1` and must not carry `supersedesReceiptId` or `supersessionReason`. Append-only correction receipts use version `1.2` and must sign both fields together with the preserved execution evidence.
 
 The verifier treats every receipt as an independent signed statement. It verifies v1.1 and v1.2 without special transport or server access, and rejects any change to the predecessor reference, correction reason, or execution fields.
 
