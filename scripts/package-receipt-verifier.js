@@ -15,6 +15,7 @@ import {
   isAbsolute,
   join,
   parse,
+  relative,
   resolve
 } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,16 +26,24 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(scriptDirectory, '..');
 const defaultPackageDirectory = join(repositoryRoot, 'packages', 'receipt-verifier');
 const defaultOutputDirectory = join(repositoryRoot, 'artifacts', 'receipt-verifier');
-const privateKeyPattern = /-----BEGIN (?:ENCRYPTED )?PRIVATE KEY-----/;
+const privateKeyPattern = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/;
 
 async function sha256(path) {
   return createHash('sha256').update(await readFile(path)).digest('hex');
 }
 
-function safeOutputDirectory(value) {
+function containsPath(parent, child) {
+  const path = relative(parent, child);
+  return path === '' || (!path.startsWith('..') && !isAbsolute(path));
+}
+
+function safeOutputDirectory(value, packageDirectory) {
   const outputDirectory = resolve(value);
   if (outputDirectory === parse(outputDirectory).root) {
     throw new TypeError('Artifact output directory cannot be a filesystem root.');
+  }
+  if (containsPath(outputDirectory, repositoryRoot) || containsPath(outputDirectory, packageDirectory)) {
+    throw new TypeError('Artifact output directory cannot contain the repository or package directory.');
   }
   return outputDirectory;
 }
@@ -104,7 +113,7 @@ export async function buildReceiptVerifierArtifact({
   outputDirectory = defaultOutputDirectory
 } = {}) {
   const resolvedPackageDirectory = resolve(packageDirectory);
-  const resolvedOutputDirectory = safeOutputDirectory(outputDirectory);
+  const resolvedOutputDirectory = safeOutputDirectory(outputDirectory, resolvedPackageDirectory);
   const packageJson = JSON.parse(await readFile(join(resolvedPackageDirectory, 'package.json'), 'utf8'));
   const expectedFiles = expectedPackageFiles(packageJson);
   await assertPublicPackageSources(resolvedPackageDirectory, expectedFiles);
