@@ -1,0 +1,229 @@
+openapi: 3.1.0
+info:
+  title: Mandate-API Action Attempts
+  version: 0.5.0-phase3a
+  description: Phase 3A contract for single-use authorization-decision reservations.
+servers:
+  - url: http://localhost:8787
+security:
+  - ApiKey: []
+paths:
+  /v1/action-attempts:
+    post:
+      operationId: reserveActionAttempt
+      summary: Reserve an ALLOW decision for one execution
+      x-required-scope: action_attempts:write
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReserveActionAttemptRequest'
+      responses:
+        '201':
+          $ref: '#/components/responses/ActionAttemptResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/ErrorResponse'
+    get:
+      operationId: listActionAttempts
+      summary: List tenant-visible action attempts
+      x-required-scope: action_attempts:read
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/StartingAfter'
+      responses:
+        '200':
+          description: Tenant-scoped action-attempt page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionAttemptListResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/action-attempts/{id}:
+    get:
+      operationId: getActionAttempt
+      summary: Retrieve a tenant-visible action attempt
+      x-required-scope: action_attempts:read
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^att_.+'
+      responses:
+        '200':
+          $ref: '#/components/responses/ActionAttemptResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+components:
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 128
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 255
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    StartingAfter:
+      name: startingAfter
+      in: query
+      required: false
+      schema:
+        type: string
+  responses:
+    ActionAttemptResponse:
+      description: Reserved action attempt
+      headers:
+        X-Request-Id:
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ActionAttempt'
+    ErrorResponse:
+      description: Request failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    ReserveActionAttemptRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - decisionId
+      properties:
+        decisionId:
+          type: string
+          pattern: '^dec_.+'
+        expiresInSeconds:
+          type: integer
+          minimum: 30
+          maximum: 900
+          default: 300
+    ActionAttempt:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - decisionId
+        - mandateId
+        - agentId
+        - action
+        - resource
+        - status
+        - reservedByCredentialId
+        - reservedAt
+        - expiresAt
+        - requestId
+        - version
+      properties:
+        id:
+          type: string
+          pattern: '^att_.+'
+        decisionId:
+          type: string
+          pattern: '^dec_.+'
+        mandateId:
+          type: string
+          pattern: '^mnd_.+'
+        agentId:
+          type: string
+        action:
+          type: string
+        resource:
+          type: string
+        status:
+          type: string
+          enum: [RESERVED, COMPLETED, CANCELLED, EXPIRED]
+        reservedByCredentialId:
+          type: string
+          pattern: '^key_.+'
+        reservedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        requestId:
+          type: string
+        version:
+          type: integer
+          minimum: 0
+    ActionAttemptListResponse:
+      type: object
+      additionalProperties: false
+      required: [data, hasMore, nextCursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActionAttempt'
+        hasMore:
+          type: boolean
+        nextCursor:
+          type: [string, 'null']
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, details, requestId]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: [object, 'null']
+              additionalProperties: true
+            requestId:
+              type: string
