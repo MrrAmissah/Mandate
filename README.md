@@ -10,11 +10,11 @@ It answers three questions ordinary application authorization does not answer we
 
 1. What may this specific agent do for this task, resource, and time window?
 2. Which caller acquired and completed the one execution opportunity represented by an authorization decision?
-3. What verifiable evidence records the authority, execution, and outcome?
+3. What verifiable evidence records the authority, execution, outcome, and any later append-only correction?
 
-## Current milestone: durable execution lifecycle
+## Current milestone: durable execution and receipt lifecycle
 
-The current platform binds authorization decisions to one execution attempt, terminal evidence, and one signed receipt. PostgreSQL time also expires unused reservations through a separately composed worker process.
+The current platform binds authorization decisions to one execution attempt, terminal evidence, one immutable root receipt, and an optional linear chain of signed correction receipts. PostgreSQL time also expires unused reservations through a separately composed worker process.
 
 Implemented now:
 
@@ -29,10 +29,14 @@ Implemented now:
 - cached database-time backlog counts and oldest-overdue age;
 - loopback-default liveness, readiness, and Prometheus metrics for the expiry process;
 - immutable input/output hashes and tool metadata for completed attempts;
-- receipt v1.1 issuance only from completed attempts;
-- exactly one receipt per attempt and decision;
+- receipt v1.1 root issuance only from completed attempts;
+- one immutable root receipt per attempt and decision;
+- append-only receipt v1.2 successors with signed predecessor references and reasons;
+- exactly one direct successor per predecessor, producing a non-forking correction chain;
+- predecessor verification through active or retired scoped keys before correction;
 - Ed25519 signing with persistent rotation, retirement, revocation, discovery, and historical verification;
 - a zero-dependency offline receipt verifier with TypeScript declarations and public conformance fixtures;
+- reproducible verifier tarballs with SHA-256 and npm integrity manifests in CI;
 - tenant and `test`/`live` isolation;
 - high-entropy API credentials with hash-only durable records;
 - payload-bound idempotency with exact committed HTTP replay;
@@ -41,7 +45,7 @@ Implemented now:
 - tenant-aware PostgreSQL persistence;
 - serializable transactions and one-winner concurrency tests;
 - leased outbox claims, retries, stale-lease recovery, and dead-letter transitions;
-- real PostgreSQL restart, isolation, attempt, expiry, backlog, receipt, approval, outbox, key-rotation, and replay tests.
+- real PostgreSQL restart, isolation, attempt, expiry, backlog, receipt, supersession, approval, outbox, key-rotation, and replay tests.
 
 Memory mode remains available for local API experiments. Live API environments require PostgreSQL, explicit scopes, a non-default API key, an explicit persistent key ID, and persistent receipt-signing keys.
 
@@ -92,6 +96,8 @@ if (!result.valid) {
 
 The package uses the same canonical JSON implementation as server issuance and verification. It accepts active and retired Ed25519 keys, rejects revoked or malformed keys, and returns stable machine-readable failure reasons.
 
+Receipt v1.2 predecessor references and correction reasons are ordinary signed fields, so any change invalidates verification. The verifier validates individual receipts; applications that consume a complete correction chain must additionally validate linkage, preserved execution evidence, and chain completeness.
+
 The committed conformance fixture contains only a public key and signed receipt. No private test key is stored in the repository.
 
 ## Core flow
@@ -111,10 +117,12 @@ Tool executes within the reservation window
           ↓
 Caller completes the attempt with hashes and tool metadata
           ↓
-Mandate-API signs an attempt-bound receipt
+Mandate-API signs an immutable v1.1 root receipt
+          ↓ optional correction
+Mandate-API verifies the predecessor and appends a v1.2 successor
 ```
 
-Unused reservations are materialized as `EXPIRED` by the PostgreSQL-backed expiry process. A `RESERVED` attempt is not proof that execution started or succeeded; only a `COMPLETED` attempt can issue a receipt.
+Unused reservations are materialized as `EXPIRED` by the PostgreSQL-backed expiry process. A `RESERVED` attempt is not proof that execution started or succeeded; only a `COMPLETED` attempt can issue a root receipt. Supersession never changes the attempt or root receipt.
 
 ## Example mandate
 
@@ -158,11 +166,12 @@ Unused reservations are materialized as `EXPIRED` by the PostgreSQL-backed expir
 | `GET` | `/v1/action-attempts/:id` | Retrieve an action attempt |
 | `POST` | `/v1/action-attempts/:id/complete` | Store terminal execution evidence |
 | `POST` | `/v1/action-attempts/:id/cancel` | Cancel an unused reservation |
-| `POST`, `GET` | `/v1/receipts` | Issue from a completed attempt or list receipts |
+| `POST`, `GET` | `/v1/receipts` | Issue a root receipt or list receipts |
 | `GET` | `/v1/receipts/:id` | Retrieve a receipt |
+| `POST` | `/v1/receipts/:id/supersede` | Append one signed correction successor |
 | `POST` | `/v1/receipts/verify` | Verify using active or retired registered keys |
 
-See [`openapi.yaml`](./openapi.yaml) for the stable v0.6.0 contract.
+See [`openapi.yaml`](./openapi.yaml) for the stable v0.7.0 contract.
 
 ## Documentation
 
@@ -170,6 +179,7 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.6.0 contract.
 - [API conventions](./docs/API_CONVENTIONS.md)
 - [Action attempts and receipts](./docs/ACTION_ATTEMPTS.md)
 - [Action-attempt expiry process](./docs/ACTION_ATTEMPT_EXPIRY.md)
+- [Receipt supersession](./docs/RECEIPT_SUPERSESSION.md)
 - [Receipt verification](./docs/RECEIPT_VERIFICATION.md)
 - [Signing-key operations](./docs/SIGNING_KEYS.md)
 - [Idempotency and HTTP replay](./docs/IDEMPOTENCY.md)
@@ -194,7 +204,10 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.6.0 contract.
 - Terminal attempt evidence cannot be overwritten.
 - Cancelled, reserved, and expired attempts cannot issue receipts.
 - A raw authorization decision cannot issue a receipt through the public runtime.
-- One completed attempt and decision produce at most one receipt.
+- One completed attempt and decision produce at most one immutable root receipt.
+- Each receipt may have at most one direct successor; a successor retains the same decision and action-attempt identity.
+- The predecessor must verify through an active or retired key before a successor is signed.
+- PostgreSQL supersession holds shared locks on the predecessor key and receipt until the successor commits.
 - Receipt signatures cover every receipt field except the signature itself.
 - Server and offline verification share one canonical JSON implementation.
 - Active and retired keys verify historical receipts; revoked keys do not.
@@ -205,4 +218,4 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.6.0 contract.
 
 ## Not production-ready yet
 
-PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential autonomous actions. Platform-specific service manifests, restricted deployment roles, network policy, alert thresholds, supervisor restart policy, backup/restore, dead-letter operations, idempotency retention cleanup, receipt supersession, external delivery handlers, verifier publication automation, and deployment runbooks remain open.
+PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential autonomous actions. Platform-specific service manifests, restricted deployment roles, network policy, alert thresholds, supervisor restart policy, backup/restore, dead-letter operations, idempotency retention cleanup, npm publication and provenance attestation, external delivery handlers, SDKs, and deployment runbooks remain open.
