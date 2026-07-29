@@ -13,6 +13,19 @@ function handlerEntries(handlers) {
   return entries;
 }
 
+function workerScope(value) {
+  if (!value || !['test', 'live'].includes(value.environment)) {
+    throw new TypeError('An outbox dispatcher must declare a test/live environment scope.');
+  }
+  if (value.tenantId !== undefined && !/^ten_[A-Za-z0-9_-]+$/.test(value.tenantId)) {
+    throw new TypeError('scope.tenantId must be an opaque ten_ identifier when provided.');
+  }
+  return Object.freeze({
+    environment: value.environment,
+    ...(value.tenantId === undefined ? {} : { tenantId: value.tenantId })
+  });
+}
+
 export function safeOutboxErrorCode(error) {
   const candidate = typeof error?.code === 'string' ? error.code.toUpperCase() : '';
   return /^[A-Z0-9_]{1,64}$/.test(candidate) ? candidate : 'HANDLER_FAILED';
@@ -32,6 +45,7 @@ export class OutboxDispatcher {
   constructor({
     queue,
     workerId,
+    scope,
     handlers = {},
     now = () => new Date(),
     leaseMs = 30_000,
@@ -51,6 +65,7 @@ export class OutboxDispatcher {
 
     this.queue = queue;
     this.workerId = workerId;
+    this.scope = workerScope(scope);
     this.handlers = new Map(handlerEntries(handlers));
     this.now = now;
     this.leaseMs = leaseMs;
@@ -65,6 +80,7 @@ export class OutboxDispatcher {
 
     const claimed = await this.queue.claim({
       workerId: this.workerId,
+      scope: this.scope,
       eventTypes,
       now: this.now(),
       leaseMs: this.leaseMs,
