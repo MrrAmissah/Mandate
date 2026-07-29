@@ -71,6 +71,7 @@ postgresTest('PostgreSQL binds one receipt to one completed action attempt', asy
     const completed = await store.transaction((transaction) => completeAttempt({
       transaction,
       ownership,
+      authentication,
       attemptId: attempt.id,
       input: {
         executionStatus: 'SUCCEEDED',
