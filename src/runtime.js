@@ -2,6 +2,7 @@ import { createApiCredentialRecord, assertCredentialUsable, hashApiKey, verifyAp
 import { createStaticApiKeyAuthenticator, createStoredApiKeyAuthenticator } from './auth/authentication.js';
 import { createReceiptSigner } from './crypto/receipt-signer.js';
 import { MemoryStore } from './store/memory-store.js';
+import { ensurePostgresBootstrap } from './store/postgres-bootstrap.js';
 import { createPostgresPool, PostgresStore } from './store/postgres-store.js';
 
 function booleanValue(value, fallback = false) {
@@ -94,7 +95,7 @@ export async function createRuntime({ env = process.env } = {}) {
       name: env.MANDATE_API_CREDENTIAL_NAME ?? 'Runtime bootstrap credential',
       scopes
     }, apiKey);
-    await store.ensureBootstrap({ tenantId, tenantName, environment, credential });
+    await ensurePostgresBootstrap(store, { tenantId, tenantName, environment, credential });
   } catch (error) {
     await store.close();
     throw error;
