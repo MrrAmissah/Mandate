@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
+    "worker:attempt-expiry": "node scripts/run-action-attempt-expiry.js",
     "test": "node --test",
     "check": "npm run check:syntax && node --test",
     "check:syntax": "node scripts/check-syntax.js",
