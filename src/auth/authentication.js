@@ -8,6 +8,8 @@ export const API_SCOPES = Object.freeze({
   APPROVALS_WRITE: 'approvals:write',
   AUTHORIZATIONS_READ: 'authorizations:read',
   AUTHORIZATIONS_WRITE: 'authorizations:write',
+  ACTION_ATTEMPTS_READ: 'action_attempts:read',
+  ACTION_ATTEMPTS_WRITE: 'action_attempts:write',
   RECEIPTS_READ: 'receipts:read',
   RECEIPTS_WRITE: 'receipts:write'
 });
