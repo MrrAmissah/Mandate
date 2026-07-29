@@ -89,6 +89,8 @@ POST /v1/receipts
 
 Receipt issuance requires `receipts:write` and a `COMPLETED` attempt. The server loads the immutable decision and mandate, copies the stored completion evidence, signs the canonical payload, and writes exactly one root receipt for both the attempt and decision.
 
+Before signing, the runtime signer must exactly match the tenant/environment key registry's current `ACTIVE` key, including its public-key fingerprint. PostgreSQL holds that key row with a shared transaction lock until the root receipt commits, preventing rotation or revocation from crossing the signing boundary. A stale, retired, revoked, mismatched, or unregistered signer returns `503 SIGNING_KEY_NOT_ACTIVE` and no receipt is created.
+
 Attempt-bound root receipts use schema version `1.1` and include `actionAttemptId`. Their `executedAt` is the attempt's `completedAt`, not the later signature time.
 
 A mandate revoked after completion does not prevent issuing evidence of the already completed action. Revocation blocks new reservations; it does not erase history.
@@ -107,9 +109,9 @@ POST /v1/receipts/{rcpt_id}/supersede
 }
 ```
 
-A correction is a new version `1.2` receipt. It points to its direct predecessor through signed `supersedesReceiptId` and records a signed `supersessionReason`. It preserves all execution evidence from the predecessor and is signed by the current runtime key.
+A correction is a new version `1.2` receipt. It points to its direct predecessor through signed `supersedesReceiptId` and records a signed `supersessionReason`. It preserves all execution evidence from the predecessor and is signed by the current active runtime key.
 
-The predecessor must be an attempt-bound v1.1 or v1.2 receipt and must verify through an active or retired key in the same tenant/environment scope. Revoked, unknown, or tampered predecessors fail closed. Each predecessor has at most one successor, so corrections form a linear chain and never rewrite the root.
+The predecessor must be an attempt-bound v1.1 or v1.2 receipt and must verify through an active or retired key in the same tenant/environment scope. Revoked, unknown, or tampered predecessors fail closed. The successor signer must remain the exact active scoped key until commit. Each predecessor has at most one successor, so corrections form a linear chain and never rewrite the root.
 
 See [Append-only receipt supersession](RECEIPT_SUPERSESSION.md) for the full persistence, concurrency, and error contract.
 
