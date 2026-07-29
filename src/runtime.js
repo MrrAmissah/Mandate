@@ -25,7 +25,7 @@ function scopesFrom(value) {
   return [...new Set(scopes)];
 }
 
-function assertRuntimePosture({ mode, environment, apiKey, scopes, privateKeyPem, publicKeyPem, keyId }) {
+function assertRuntimePosture({ mode, environment, apiKey, scopes, privateKeyPem, publicKeyPem, keyIdConfigured }) {
   if (!['memory', 'postgres'].includes(mode)) throw new Error('MANDATE_STORE must be memory or postgres.');
   if (!['test', 'live'].includes(environment)) throw new Error('MANDATE_ENVIRONMENT must be test or live.');
   if (environment !== 'live') return;
@@ -33,7 +33,7 @@ function assertRuntimePosture({ mode, environment, apiKey, scopes, privateKeyPem
   if (!apiKey || apiKey === 'local-development-only') throw new Error('MANDATE_API_KEY must be configured before starting a live environment.');
   if (scopes.includes('*')) throw new Error('Live credentials may not use the wildcard scope.');
   if (!privateKeyPem || !publicKeyPem) throw new Error('Live environments require persistent receipt signing keys.');
-  if (!keyId || keyId === 'local-dev-ed25519') throw new Error('Live environments require an explicit persistent MANDATE_KEY_ID.');
+  if (!keyIdConfigured) throw new Error('Live environments require an explicit persistent MANDATE_KEY_ID.');
 }
 
 export async function createRuntime({ env = process.env } = {}) {
@@ -48,7 +48,11 @@ export async function createRuntime({ env = process.env } = {}) {
   const publicKeyPem = env.MANDATE_PUBLIC_KEY_PEM;
   const keyId = env.MANDATE_KEY_ID ?? 'key_local_dev_ed25519';
 
-  assertRuntimePosture({ mode, environment, apiKey, scopes, privateKeyPem, publicKeyPem, keyId });
+  assertRuntimePosture({
+    mode, environment, apiKey, scopes, privateKeyPem, publicKeyPem,
+    keyIdConfigured: typeof env.MANDATE_KEY_ID === 'string' && env.MANDATE_KEY_ID.length > 0
+  });
+
   const signer = createReceiptSigner({ privateKeyPem, publicKeyPem, keyId });
   const ownership = { tenantId, environment };
 
