@@ -32,6 +32,10 @@ async function sha256(path) {
   return createHash('sha256').update(await readFile(path)).digest('hex');
 }
 
+function comparePaths(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function containsPath(parent, child) {
   const path = relative(parent, child);
   return path === '' || (!path.startsWith('..') && !isAbsolute(path));
@@ -50,7 +54,7 @@ function safeOutputDirectory(value, packageDirectory) {
 
 function expectedPackageFiles(packageJson) {
   const declared = Array.isArray(packageJson.files) ? packageJson.files : [];
-  return [...new Set(['README.md', 'package.json', ...declared])].sort();
+  return [...new Set(['README.md', 'package.json', ...declared])].sort(comparePaths);
 }
 
 async function assertPublicPackageSources(packageDirectory, expectedFiles) {
@@ -89,7 +93,7 @@ function normalizedFiles(report) {
   if (!Array.isArray(report.files)) throw new Error('npm pack report did not include files.');
   return report.files
     .map((file) => ({ path: file.path, size: Number(file.size) }))
-    .sort((left, right) => left.path.localeCompare(right.path));
+    .sort((left, right) => comparePaths(left.path, right.path));
 }
 
 function assertExactFileSet(report, expectedFiles) {
