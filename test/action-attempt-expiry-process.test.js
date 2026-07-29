@@ -14,7 +14,10 @@ function capturingLogger() {
   };
 }
 
-test('expiry process configuration requires explicit live identity and bounded settings', () => {
+test('expiry process configuration requires a database, explicit live identity, and bounded settings', () => {
+  assert.throws(() => parseActionAttemptExpiryConfig({
+    MANDATE_ENVIRONMENT: 'test'
+  }), /DATABASE_URL is required/);
   assert.throws(() => parseActionAttemptExpiryConfig({
     DATABASE_URL: 'postgresql://example',
     MANDATE_ENVIRONMENT: 'live'
@@ -24,7 +27,7 @@ test('expiry process configuration requires explicit live identity and bounded s
     DATABASE_URL: 'postgresql://example',
     MANDATE_ENVIRONMENT: 'live',
     MANDATE_TENANT_ID: 'ten_live',
-    MANDATE_EXPIRY_WORKER_ID: 'expiry-worker-live-01',
+    MANDATE_EXPIRY_WORKER_ID: 'expiry.worker-live-01.example.internal',
     MANDATE_EXPIRY_POLL_INTERVAL_MS: '500',
     MANDATE_EXPIRY_BATCH_LIMIT: '25',
     MANDATE_DATABASE_POOL_MAX: '4',
@@ -37,7 +40,7 @@ test('expiry process configuration requires explicit live identity and bounded s
     databasePoolMax: 4,
     environment: 'live',
     tenantId: 'ten_live',
-    workerId: 'expiry-worker-live-01',
+    workerId: 'expiry.worker-live-01.example.internal',
     pollIntervalMs: 500,
     batchLimit: 25
   });
