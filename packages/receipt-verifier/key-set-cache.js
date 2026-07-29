@@ -58,7 +58,7 @@ export function createStrictKeySetCache({
     const refreshEpoch = epoch;
     const operation = (async () => {
       try {
-        const loaded = normalizeKeySet(await load({ scopeId }));
+        const loaded = normalizeKeySet(await load(Object.freeze({ scopeId })));
         const loadedAtMs = timestamp(clock);
         if (refreshEpoch !== epoch) throw new MandateKeySetUnavailableError();
         generation += 1;
@@ -94,8 +94,15 @@ export function createStrictKeySetCache({
   return Object.freeze({
     scopeId,
 
-    async get({ forceRefresh = false } = {}) {
-      return (await obtain(Boolean(forceRefresh))).record.keySet;
+    async get(options = {}) {
+      if (!options || typeof options !== 'object' || Array.isArray(options)) {
+        throw new TypeError('get options must be an object.');
+      }
+      const { forceRefresh = false } = options;
+      if (typeof forceRefresh !== 'boolean') {
+        throw new TypeError('forceRefresh must be a boolean.');
+      }
+      return (await obtain(forceRefresh)).record.keySet;
     },
 
     async verify(receipt) {
