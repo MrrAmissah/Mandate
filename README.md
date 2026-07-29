@@ -12,6 +12,14 @@ It answers three questions ordinary application authorization does not answer we
 2. Which caller acquired and completed the one execution opportunity represented by an authorization decision?
 3. What verifiable evidence records the authority, execution, outcome, and any later append-only correction?
 
+## Architecture at a glance
+
+<p align="center">
+  <img src="./assets/mandate-architecture.svg" alt="Mandate-API control flow from principal and AI agent through policy evaluation, optional human approval, execution, and a signed action receipt" width="100%" />
+</p>
+
+Mandate-API sits between agents and tools. It allows permitted actions, pauses sensitive actions for human approval, blocks prohibited actions, and records completed execution as independently verifiable evidence.
+
 ## Current milestone: durable execution and receipt lifecycle
 
 The current platform binds authorization decisions to one execution attempt, terminal evidence, one immutable root receipt, and an optional linear chain of signed correction receipts. PostgreSQL time also expires unused reservations through a separately composed worker process.
@@ -88,7 +96,6 @@ The package under `packages/receipt-verifier` verifies a receipt against an alre
 import { verifyMandateReceipt } from '@mandate-api/receipt-verifier';
 
 const result = verifyMandateReceipt(receipt, discoveryResponse);
-
 if (!result.valid) {
   console.error(result.reason);
 }
