@@ -1,5 +1,8 @@
 BEGIN;
 
+DELETE FROM mandate.idempotency_records
+WHERE scope LIKE 'supersede-receipt:%';
+
 DROP TRIGGER IF EXISTS receipts_immutable ON mandate.receipts;
 
 DO $$
