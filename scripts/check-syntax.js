@@ -21,7 +21,11 @@ function check(path) {
   });
 }
 
-const files = [...await collect('src'), ...await collect('scripts')]
+const files = [
+  ...await collect('src'),
+  ...await collect('scripts'),
+  ...await collect('packages')
+]
   .filter((path) => path !== 'scripts/check-syntax.js')
   .sort();
 for (const file of files) await check(file);
