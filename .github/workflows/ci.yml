@@ -3,14 +3,47 @@ on:
   pull_request:
   push:
     branches: [main]
+
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mandate
+          POSTGRES_PASSWORD: mandate
+          POSTGRES_DB: mandate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mandate -d mandate"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci --ignore-scripts
+      - name: Install exact dependencies and refresh lockfile
+        run: npm install --ignore-scripts
       - run: npm run check
+      - name: Apply PostgreSQL migrations
+        run: npm run migrate
+        env:
+          DATABASE_URL: postgresql://mandate:mandate@127.0.0.1:5432/mandate
+      - name: Run PostgreSQL integration tests
+        run: npm run test:postgres
+        env:
+          DATABASE_URL: postgresql://mandate:mandate@127.0.0.1:5432/mandate
+      - name: Upload generated package lock
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-lock
+          path: package-lock.json
+          if-no-files-found: error
