@@ -94,8 +94,8 @@ test('expiry drain is bounded and ordered by expiry time', async () => {
   });
   const first = await worker.drain({ limit: 2 });
   assert.deepEqual(first.expired.map((item) => item.id), ['att_due_first', 'att_due_middle']);
-  assert.equal(first.hasMore, true);
+  assert.equal(first.limitReached, true);
   const second = await worker.drain({ limit: 2 });
   assert.deepEqual(second.expired.map((item) => item.id), ['att_due_later']);
-  assert.equal(second.hasMore, false);
+  assert.equal(second.limitReached, false);
 });
