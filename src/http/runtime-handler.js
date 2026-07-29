@@ -1,8 +1,18 @@
-import { API_SCOPES, requireScope } from '../auth/authentication.js';
+import { recordSecurityEvent } from '../application/security-events.js';
+import { reserveActionAttempt } from '../application/action-attempt-service.js';
+import { API_SCOPES, ownershipFrom, requireScope } from '../auth/authentication.js';
 import { verifyReceiptWithRegistry } from '../domain/receipts.js';
 import { DomainError } from '../domain/errors.js';
 import { createApp } from '../app.js';
-import { readJson, resolveRequestId, sendJson } from './utils.js';
+import { paginate, parsePageRequest } from './pagination.js';
+import {
+  readJson,
+  requestFingerprint,
+  resolveRequestId,
+  routeMatch,
+  sendJson
+} from './utils.js';
+import { getActionAttempt, listActionAttempts } from '../store/action-attempts.js';
 
 function publicVerificationKey(key) {
   return {
@@ -16,6 +26,11 @@ function publicVerificationKey(key) {
   };
 }
 
+function isActionAttemptRoute(method, pathname) {
+  return (pathname === '/v1/action-attempts' && ['GET', 'POST'].includes(method))
+    || (method === 'GET' && Boolean(routeMatch(pathname, '/v1/action-attempts/:id')));
+}
+
 export function createRuntimeHandler(runtime) {
   if (!runtime?.signingKeys) throw new TypeError('A signing-key registry is required.');
   if (!runtime?.authenticator) throw new TypeError('An API authenticator is required.');
@@ -26,7 +41,8 @@ export function createRuntimeHandler(runtime) {
     const method = request.method ?? 'GET';
     const isDiscovery = method === 'GET' && url.pathname === '/.well-known/mandate-keys';
     const isVerification = method === 'POST' && url.pathname === '/v1/receipts/verify';
-    if (!isDiscovery && !isVerification) return application(request, response);
+    const handlesActionAttempt = isActionAttemptRoute(method, url.pathname);
+    if (!isDiscovery && !isVerification && !handlesActionAttempt) return application(request, response);
 
     const requestId = resolveRequestId(request.headers['x-request-id']);
     const respond = (status, body, extraHeaders = {}) => sendJson(response, status, body, {
@@ -46,13 +62,72 @@ export function createRuntimeHandler(runtime) {
       }
 
       const authentication = await runtime.authenticator.authenticate(request.headers['x-api-key']);
-      requireScope(authentication, API_SCOPES.RECEIPTS_READ);
-      const body = await readJson(request);
-      return respond(200, {
-        valid: await verifyReceiptWithRegistry(body.receipt, runtime.signingKeys),
-        keyId: body.receipt?.keyId ?? null,
-        algorithm: body.receipt?.algorithm ?? null
-      });
+      const ownership = ownershipFrom(authentication);
+
+      if (isVerification) {
+        requireScope(authentication, API_SCOPES.RECEIPTS_READ);
+        const body = await readJson(request);
+        return respond(200, {
+          valid: await verifyReceiptWithRegistry(body.receipt, runtime.signingKeys),
+          keyId: body.receipt?.keyId ?? null,
+          algorithm: body.receipt?.algorithm ?? null
+        });
+      }
+
+      if (method === 'POST' && url.pathname === '/v1/action-attempts') {
+        requireScope(authentication, API_SCOPES.ACTION_ATTEMPTS_WRITE);
+        const body = await readJson(request);
+        const attempt = await runtime.store.transaction(async (transaction) => transaction.idempotent(
+          ownership,
+          'reserve-action-attempt',
+          request.headers['idempotency-key'],
+          requestFingerprint({ method, pathname: url.pathname, body }),
+          async () => {
+            const reserved = await reserveActionAttempt({
+              transaction,
+              ownership,
+              authentication,
+              input: body,
+              requestId,
+              now: new Date()
+            });
+            await recordSecurityEvent({
+              transaction,
+              ownership,
+              authentication,
+              requestId,
+              type: 'action_attempt.reserved',
+              objectType: 'action_attempt',
+              objectId: reserved.id,
+              data: {
+                decisionId: reserved.decisionId,
+                mandateId: reserved.mandateId,
+                expiresAt: reserved.expiresAt
+              }
+            });
+            return reserved;
+          }
+        ));
+        return respond(201, attempt);
+      }
+
+      if (method === 'GET' && url.pathname === '/v1/action-attempts') {
+        requireScope(authentication, API_SCOPES.ACTION_ATTEMPTS_READ);
+        return respond(200, paginate(
+          await listActionAttempts(runtime.store, ownership),
+          { ...parsePageRequest(url), timestampField: 'reservedAt' }
+        ));
+      }
+
+      const params = routeMatch(url.pathname, '/v1/action-attempts/:id');
+      if (method === 'GET' && params) {
+        requireScope(authentication, API_SCOPES.ACTION_ATTEMPTS_READ);
+        const attempt = await getActionAttempt(runtime.store, ownership, params.id);
+        if (!attempt) throw new DomainError('ACTION_ATTEMPT_NOT_FOUND', 'The action attempt does not exist.', 404);
+        return respond(200, attempt);
+      }
+
+      throw new DomainError('NOT_FOUND', 'Route not found.', 404);
     } catch (error) {
       if (error instanceof DomainError) {
         return respond(error.status, {
