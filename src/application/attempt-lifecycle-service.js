@@ -1,5 +1,5 @@
 import { completeActionAttempt, cancelActionAttempt } from '../domain/action-attempt-transitions.js';
-import { issueReceipt } from '../domain/receipts.js';
+import { issueReceipt, requireActiveReceiptSigner } from '../domain/receipts.js';
 import { DomainError } from '../domain/errors.js';
 import { assertObject, requiredString } from '../domain/validate.js';
 import {
@@ -62,6 +62,7 @@ export async function issueAttemptReceipt({
   ownership,
   input,
   signer,
+  signingKeys = null,
   now = new Date()
 }) {
   assertObject(input);
@@ -79,6 +80,14 @@ export async function issueAttemptReceipt({
   if (await findReceiptByAttempt(transaction, ownership, actionAttemptId)
     || await findReceiptByDecision(transaction, ownership, attempt.decisionId)) {
     throw new DomainError('RECEIPT_ALREADY_EXISTS', 'This action attempt already has a receipt.', 409);
+  }
+  if (signingKeys) {
+    await requireActiveReceiptSigner({
+      signer,
+      signingKeys,
+      queryable: transaction?.queryable,
+      lock: Boolean(transaction?.queryable)
+    });
   }
 
   const decision = await transaction.get('decisions', ownership, attempt.decisionId);
