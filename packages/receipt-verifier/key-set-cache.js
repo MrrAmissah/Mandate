@@ -97,12 +97,27 @@ export function createStrictKeySetCache({
     return verification;
   }
 
+  function rememberMissingGeneration(record, expectedState = null) {
+    if (cached?.generation !== record.generation) return;
+    if (expectedState && unknownRefreshState !== expectedState && unknownRefreshState !== null) return;
+    unknownRefreshState = {
+      sourceGeneration: record.generation,
+      promise: null,
+      outcome: 'missing'
+    };
+  }
+
   async function refreshUnknownKey(receipt, initialVerification, sourceRecord) {
     const existing = unknownRefreshState;
     if (existing?.sourceGeneration === sourceRecord.generation) {
       if (!existing.promise) return settledUnknownResult(existing, receipt, initialVerification);
       const shared = await existing.promise;
-      return shared.unavailable ? unavailableResult(receipt) : verifyReceipt(receipt, shared.record.keySet);
+      if (shared.unavailable) return unavailableResult(receipt);
+      const sharedVerification = verifyReceipt(receipt, shared.record.keySet);
+      if (sharedVerification.reason === keyNotFoundReason) {
+        rememberMissingGeneration(shared.record, existing);
+      }
+      return sharedVerification;
     }
 
     const state = {
@@ -131,11 +146,7 @@ export function createStrictKeySetCache({
           ? { sourceGeneration: sourceRecord.generation, promise: null, outcome: 'unavailable' }
           : null;
       } else if (verification.reason === keyNotFoundReason) {
-        unknownRefreshState = {
-          sourceGeneration: refreshed.record.generation,
-          promise: null,
-          outcome: 'missing'
-        };
+        rememberMissingGeneration(refreshed.record, state);
       } else {
         unknownRefreshState = null;
       }
@@ -173,11 +184,7 @@ export function createStrictKeySetCache({
       if (verification.reason !== keyNotFoundReason) return verification;
 
       if (obtained.refreshed) {
-        unknownRefreshState = {
-          sourceGeneration: obtained.record.generation,
-          promise: null,
-          outcome: 'missing'
-        };
+        rememberMissingGeneration(obtained.record);
         return verification;
       }
 
