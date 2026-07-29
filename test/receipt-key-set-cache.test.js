@@ -84,6 +84,59 @@ test('an unknown key refreshes once only when the first attempt used an existing
   const before = loads;
   assert.equal((await coldMissing.verify(data.receipt)).reason, RECEIPT_VERIFICATION_REASONS.KEY_NOT_FOUND);
   assert.equal(loads, before + 1);
+  assert.equal(
+    (await coldMissing.verify({ ...data.receipt, keyId: 'key_random_unknown' })).reason,
+    RECEIPT_VERIFICATION_REASONS.KEY_NOT_FOUND
+  );
+  assert.equal(loads, before + 1);
+});
+
+test('missing keys trigger at most one forced refresh per cached generation', async () => {
+  const data = await fixture();
+  let loads = 0;
+  const cache = createMandateKeySetCache({
+    scopeId: 'bounded-unknown-refresh',
+    load() {
+      loads += 1;
+      return { keys: [] };
+    }
+  });
+
+  await cache.get();
+  assert.equal(loads, 1);
+  assert.equal((await cache.verify(data.receipt)).reason, RECEIPT_VERIFICATION_REASONS.KEY_NOT_FOUND);
+  assert.equal(loads, 2);
+  for (const keyId of ['key_random_1', 'key_random_2', 'key_random_3']) {
+    assert.equal(
+      (await cache.verify({ ...data.receipt, keyId })).reason,
+      RECEIPT_VERIFICATION_REASONS.KEY_NOT_FOUND
+    );
+  }
+  assert.equal(loads, 2);
+});
+
+test('concurrent unknown-key callers share the same forced refresh result', async () => {
+  const data = await fixture();
+  const pending = deferred();
+  let loads = 0;
+  const cache = createMandateKeySetCache({
+    scopeId: 'unknown-refresh-single-flight',
+    load() {
+      loads += 1;
+      if (loads === 1) return { keys: [] };
+      return pending.promise;
+    }
+  });
+
+  await cache.get();
+  const first = cache.verify(data.receipt);
+  const second = cache.verify(data.receipt);
+  assert.equal(loads, 2);
+  pending.resolve({ keys: [data.verificationKey] });
+
+  const results = await Promise.all([first, second]);
+  assert.equal(results.every((result) => result.valid), true);
+  assert.equal(loads, 2);
 });
 
 test('concurrent refreshes are single-flight and return an immutable cloned key set', async () => {
@@ -143,6 +196,33 @@ test('expired cache data is never used when refresh fails', async () => {
     assert.doesNotMatch(error.message, /sensitive transport detail/);
     return true;
   });
+});
+
+test('a failed unknown-key refresh is not repeated for random keys on the same generation', async () => {
+  const data = await fixture();
+  let loads = 0;
+  let fail = false;
+  const cache = createMandateKeySetCache({
+    scopeId: 'failed-unknown-refresh',
+    load() {
+      loads += 1;
+      if (fail) throw new Error('sensitive discovery outage');
+      return { keys: [] };
+    }
+  });
+
+  await cache.get();
+  fail = true;
+  assert.equal(
+    (await cache.verify(data.receipt)).reason,
+    RECEIPT_VERIFICATION_REASONS.KEY_SET_UNAVAILABLE
+  );
+  assert.equal(loads, 2);
+  assert.equal(
+    (await cache.verify({ ...data.receipt, keyId: 'key_random_after_failure' })).reason,
+    RECEIPT_VERIFICATION_REASONS.KEY_SET_UNAVAILABLE
+  );
+  assert.equal(loads, 2);
 });
 
 test('malformed receipts and unsupported algorithms do not invoke the loader', async () => {
