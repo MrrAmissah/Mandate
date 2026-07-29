@@ -86,14 +86,15 @@ The application defines and enforces the meaning of `scopeId`. One cache instanc
 
 Cache invariants:
 
-1. concurrent refreshes share one loader call;
+1. concurrent ordinary refreshes and unknown-key refreshes share one loader operation and result;
 2. the cache lifetime begins after loading completes;
 3. expired key data is never used when a refresh fails;
 4. malformed receipts and unsupported algorithms fail without calling the loader;
-5. an unknown key triggers one forced refresh only when verification first used an already cached key set;
-6. invalidation prevents an older in-flight refresh from repopulating the cache;
-7. loader errors return `KEY_SET_UNAVAILABLE` and do not expose transport details;
-8. cached keys are cloned and frozen before use.
+5. unknown-key discovery is attempted at most once per cached generation, even when callers submit many different random key IDs;
+6. a missing or failed unknown-key refresh suppresses repeated discovery traffic until the cache advances or is invalidated;
+7. invalidation prevents an older in-flight refresh from repopulating the cache;
+8. loader errors return `KEY_SET_UNAVAILABLE` and do not expose transport details;
+9. cached keys are cloned and frozen before use.
 
 The default lifetime is five minutes, matching the current discovery `max-age`. Applications may set a stricter value but should not exceed their security policy or the server's advertised cache lifetime.
 
