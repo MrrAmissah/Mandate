@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { canonicalize } from '../crypto/canonical-json.js';
 import { DomainError } from './errors.js';
 import { assertObject, requiredString, sha256String } from './validate.js';
 
 export function hashJson(value) {
-  const digest = createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const digest = createHash('sha256').update(canonicalize(value)).digest('hex');
   return `sha256:${digest}`;
 }
 
@@ -19,7 +20,7 @@ export function issueReceipt({ input, decision, mandate, signer, now = new Date(
 
   const payload = {
     id: `rcpt_${randomUUID()}`,
-    version: '2026-07-01',
+    version: '1.0',
     keyId: signer.keyId,
     algorithm: signer.algorithm,
     decisionId: decision.id,
@@ -35,7 +36,9 @@ export function issueReceipt({ input, decision, mandate, signer, now = new Date(
     provider: input.provider ? requiredString(input.provider, 'provider') : null,
     model: input.model ? requiredString(input.model, 'model') : null,
     approvalId: decision.approvalId,
-    executedAt: now.toISOString()
+    authorizedAt: decision.evaluatedAt ?? null,
+    executedAt: now.toISOString(),
+    issuedAt: now.toISOString()
   };
 
   if (!['SUCCEEDED', 'FAILED', 'PARTIAL'].includes(payload.executionStatus)) {
@@ -49,5 +52,6 @@ export function verifyReceipt(receipt, signer) {
   assertObject(receipt, 'receipt');
   const { signature, ...payload } = receipt;
   if (typeof signature !== 'string' || signature.length === 0) return false;
+  if (payload.keyId !== signer.keyId || payload.algorithm !== signer.algorithm) return false;
   return signer.verifyPayload(payload, signature);
 }

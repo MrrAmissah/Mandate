@@ -20,7 +20,9 @@ export function createApprovalRequest(input, now = new Date()) {
     expiresAt,
     decidedAt: null,
     decidedBy: null,
-    decisionReason: null
+    decisionReason: null,
+    consumedAt: null,
+    consumedByDecisionId: null
   };
 }
 
@@ -28,6 +30,9 @@ export function decideApproval(approval, input, now = new Date()) {
   assertObject(input);
   if (approval.status !== 'PENDING') {
     throw new DomainError('APPROVAL_ALREADY_DECIDED', 'This approval request has already been decided.', 409);
+  }
+  if (approval.expiresAt && Date.parse(now) >= Date.parse(approval.expiresAt)) {
+    throw new DomainError('APPROVAL_EXPIRED', 'This approval request has expired.', 409);
   }
   const decision = requiredString(input.decision, 'decision').toUpperCase();
   if (!['APPROVED', 'REJECTED'].includes(decision)) {
@@ -39,5 +44,20 @@ export function decideApproval(approval, input, now = new Date()) {
     decidedAt: now.toISOString(),
     decidedBy: requiredString(input.decidedBy, 'decidedBy'),
     decisionReason: requiredString(input.reason, 'reason')
+  };
+}
+
+export function consumeApproval(approval, decisionId, now = new Date()) {
+  if (approval.status !== 'APPROVED') {
+    throw new DomainError('APPROVAL_NOT_USABLE', 'Only an approved, unused approval can be consumed.', 409);
+  }
+  if (approval.expiresAt && Date.parse(now) >= Date.parse(approval.expiresAt)) {
+    throw new DomainError('APPROVAL_EXPIRED', 'This approval request has expired.', 409);
+  }
+  return {
+    ...approval,
+    status: 'CONSUMED',
+    consumedAt: now.toISOString(),
+    consumedByDecisionId: requiredString(decisionId, 'decisionId')
   };
 }
