@@ -1,10 +1,19 @@
-<p align="center">
-  <img src="./assets/mandate-logo.png" alt="Mandate-API logo" width="160" />
-</p>
+<img src="./assets/mandate-logo.PNG" alt="Mandate-API logo" width="92" align="left" />
 
 # Mandate-API
 
-**Mandate-API is a provider-independent trust layer for AI agents: delegated authorization, approval gates, single-use execution attempts, and cryptographically signed action receipts.**
+**Policy-governed authorization for AI agents and automation.**
+
+<br clear="left" />
+
+[![Build](https://img.shields.io/github/actions/workflow/status/MrrAmissah/Mandate/ci.yml?branch=main&label=build)](https://github.com/MrrAmissah/Mandate/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/github/actions/workflow/status/MrrAmissah/Mandate/ci.yml?branch=main&label=tests)](https://github.com/MrrAmissah/Mandate/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-3f3f46)](./LICENSE)
+![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![OpenAPI](https://img.shields.io/badge/OpenAPI-v0.7.0-6BA539?logo=openapiinitiative&logoColor=white)
+
+Mandate-API is a provider-independent trust layer for AI agents: delegated authorization, approval gates, single-use execution attempts, and cryptographically signed action receipts.
 
 It answers three questions ordinary application authorization does not answer well:
 
