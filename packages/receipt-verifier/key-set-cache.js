@@ -208,6 +208,7 @@ export function createStrictKeySetCache({
     invalidate() {
       epoch += 1;
       cached = null;
+      refreshing = null;
       unknownRefreshState = null;
     },
 
