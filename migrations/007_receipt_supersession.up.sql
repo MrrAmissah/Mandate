@@ -11,13 +11,23 @@ ALTER TABLE mandate.receipts
 
 ALTER TABLE mandate.receipts
   ADD CONSTRAINT receipts_supersession_shape CHECK (
-    (supersedes_receipt_id IS NULL AND supersession_reason IS NULL)
+    (
+      supersedes_receipt_id IS NULL
+      AND supersession_reason IS NULL
+      AND NOT (payload ? 'supersedesReceiptId')
+      AND NOT (payload ? 'supersessionReason')
+    )
     OR (
       supersedes_receipt_id IS NOT NULL
       AND action_attempt_id IS NOT NULL
       AND supersession_reason IS NOT NULL
       AND char_length(supersession_reason) BETWEEN 1 AND 1000
       AND supersedes_receipt_id <> id
+      AND payload ->> 'version' = '1.2'
+      AND payload ->> 'supersedesReceiptId' = supersedes_receipt_id
+      AND payload ->> 'supersessionReason' = supersession_reason
+      AND payload ->> 'decisionId' = decision_id
+      AND payload ->> 'actionAttemptId' = action_attempt_id
     )
   ),
   ADD CONSTRAINT receipts_execution_identity_unique
