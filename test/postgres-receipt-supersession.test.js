@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createReceiptSigner } from '../src/crypto/receipt-signer.js';
 import { PostgresSigningKeyRegistry } from '../src/crypto/signing-key-registry.js';
-import { issueReceipt, verifyReceiptWithRegistry } from '../src/domain/receipts.js';
+import {
+  issueReceipt,
+  issueSupersedingReceipt,
+  verifyReceiptWithRegistry
+} from '../src/domain/receipts.js';
 import { supersedeReceipt } from '../src/application/receipt-supersession-service.js';
 import { saveReceiptForAttempt } from '../src/store/action-attempts.js';
 import { applyMigrations } from '../src/store/postgres-migrations.js';
@@ -196,6 +200,27 @@ test('PostgreSQL receipt supersession has one winner, preserves history, and sup
     assert.equal(second.supersedesReceiptId, first.id);
     assert.equal(second.actionAttemptId, root.actionAttemptId);
     assert.equal(await verifyReceiptWithRegistry(second, registry), true);
+
+    const misaligned = issueSupersedingReceipt({
+      receipt: first,
+      reason: 'The signed predecessor differs from the indexed predecessor.',
+      signer: currentSigner,
+      now: new Date('2026-07-29T18:05:30.000Z')
+    });
+    const { signature: misalignedSignature, ...misalignedPayload } = misaligned;
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO mandate.receipts
+          (tenant_id, environment, id, decision_id, mandate_id, action_attempt_id, key_id,
+           algorithm, payload, signature, issued_at, supersedes_receipt_id, supersession_reason)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [ownership.tenantId, ownership.environment, misaligned.id, misaligned.decisionId,
+          misaligned.mandateId, misaligned.actionAttemptId, misaligned.keyId,
+          misaligned.algorithm, JSON.stringify(misalignedPayload), misalignedSignature,
+          misaligned.issuedAt, second.id, misaligned.supersessionReason]
+      ),
+      (error) => error.code === '23514' && error.constraint === 'receipts_supersession_shape'
+    );
 
     const rows = await pool.query(
       `SELECT id, payload, signature, supersedes_receipt_id
