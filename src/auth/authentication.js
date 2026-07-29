@@ -77,9 +77,16 @@ export function createStoredApiKeyAuthenticator({ store, hashApiKey, verifyApiKe
       } catch {
         throw new DomainError('UNAUTHORIZED', 'A valid x-api-key header is required.', 401);
       }
-      const credential = assertCredentialUsable(await store.findCredentialBySecretHash(secretHash), now());
+      const observedAt = now();
+      const credential = assertCredentialUsable(await store.findCredentialBySecretHash(secretHash), observedAt);
       if (!verifyApiKey(secret, credential.secretHash)) {
         throw new DomainError('UNAUTHORIZED', 'A valid x-api-key header is required.', 401);
+      }
+      if (typeof store.markCredentialUsed === 'function') {
+        const marked = await store.markCredentialUsed(credential, observedAt);
+        if (!marked) {
+          throw new DomainError('UNAUTHORIZED', 'A valid x-api-key header is required.', 401);
+        }
       }
       return Object.freeze({
         tenantId: credential.tenantId,
