@@ -33,6 +33,9 @@ function log(logger, level, event) {
 }
 
 export function parseActionAttemptExpiryConfig(env = process.env) {
+  if (!env.DATABASE_URL) {
+    throw new Error('DATABASE_URL is required for the action-attempt expiry worker.');
+  }
   const environment = env.MANDATE_ENVIRONMENT;
   if (!['test', 'live'].includes(environment)) {
     throw new Error('MANDATE_ENVIRONMENT must be explicitly set to test or live.');
