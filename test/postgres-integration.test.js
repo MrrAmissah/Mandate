@@ -135,6 +135,8 @@ integration('mandates and idempotency survive pool and application restarts', as
     await withServer(firstStore, async (baseUrl) => {
       const created = await createMandate(baseUrl, secret, {}, { 'idempotency-key': idempotencyKey });
       assert.equal(created.response.status, 201);
+      assert.deepEqual(created.body.resources, ['github:owner/repository']);
+      assert.deepEqual(created.body.allowedActions, ['repository.read']);
       mandate = created.body;
     });
   } finally {
@@ -146,7 +148,10 @@ integration('mandates and idempotency survive pool and application restarts', as
     await withServer(restartedStore, async (baseUrl) => {
       const read = await fetch(`${baseUrl}/v1/mandates/${mandate.id}`, { headers: headers(secret) });
       assert.equal(read.status, 200);
-      assert.equal((await read.json()).id, mandate.id);
+      const readBody = await read.json();
+      assert.equal(readBody.id, mandate.id);
+      assert.deepEqual(readBody.resources, ['github:owner/repository']);
+      assert.deepEqual(readBody.allowedActions, ['repository.read']);
 
       const replay = await createMandate(baseUrl, secret, {}, { 'idempotency-key': idempotencyKey });
       assert.equal(replay.response.status, 201);
