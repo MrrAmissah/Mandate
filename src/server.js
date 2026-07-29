@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { createApp } from './app.js';
+import { createRuntimeHandler } from './http/runtime-handler.js';
 import { createRuntime } from './runtime.js';
 
 const port = Number(process.env.PORT ?? 8787);
@@ -8,7 +8,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 }
 
 const runtime = await createRuntime();
-const server = createServer(createApp(runtime));
+const server = createServer(createRuntimeHandler(runtime));
 let closing = false;
 
 async function shutdown(signal) {
