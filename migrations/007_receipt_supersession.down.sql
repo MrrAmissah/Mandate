@@ -2,8 +2,20 @@ BEGIN;
 
 DROP TRIGGER IF EXISTS receipts_immutable ON mandate.receipts;
 
-DELETE FROM mandate.receipts
-WHERE supersedes_receipt_id IS NOT NULL;
+DO $$
+BEGIN
+  LOOP
+    DELETE FROM mandate.receipts AS receipt
+    WHERE receipt.supersedes_receipt_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM mandate.receipts AS successor
+        WHERE successor.supersedes_receipt_id = receipt.id
+      );
+    EXIT WHEN NOT FOUND;
+  END LOOP;
+END;
+$$;
 
 DROP INDEX IF EXISTS mandate.receipts_execution_chain_idx;
 DROP INDEX IF EXISTS mandate.receipts_one_successor_idx;
