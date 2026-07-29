@@ -16,9 +16,23 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   });
 }
 
-const runtime = await createActionAttemptExpiryRuntime();
-try {
-  await runtime.process.run({ signal: controller.signal });
-} finally {
-  await runtime.close();
+async function main() {
+  const runtime = await createActionAttemptExpiryRuntime();
+  try {
+    await runtime.process.run({ signal: controller.signal });
+  } finally {
+    await runtime.close();
+  }
 }
+
+main().catch((error) => {
+  const errorCode = typeof error?.code === 'string' && /^[A-Z0-9_]{2,80}$/.test(error.code)
+    ? error.code
+    : 'EXPIRY_STARTUP_FAILED';
+  console.error(JSON.stringify({
+    event: 'action_attempt_expiry.startup_failed',
+    at: new Date().toISOString(),
+    errorCode
+  }));
+  process.exitCode = 1;
+});
