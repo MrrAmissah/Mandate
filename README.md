@@ -1,6 +1,6 @@
 <p align="center">
 
-  <img src="./assets/mandate-logo.PNG" alt="Mandate-API logo" width="160" />
+  <img src="./assets/mandate-logo.png" alt="Mandate-API logo" width="160" />
 
 </p>
 
