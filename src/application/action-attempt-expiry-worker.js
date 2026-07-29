@@ -76,6 +76,6 @@ export class ActionAttemptExpiryWorker {
       if (result.status === 'IDLE') break;
       expired.push(result.actionAttempt);
     }
-    return Object.freeze({ expired, hasMore: expired.length === limit });
+    return Object.freeze({ expired, limitReached: expired.length === limit });
   }
 }
