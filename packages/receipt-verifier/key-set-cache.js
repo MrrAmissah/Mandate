@@ -52,8 +52,7 @@ export function createStrictKeySetCache({
   let refreshing = null;
   let epoch = 0;
   let generation = 0;
-  let unknownRefreshGeneration = null;
-  let unknownRefreshUnavailable = false;
+  let unknownRefreshState = null;
 
   async function refresh() {
     if (refreshing) return refreshing;
@@ -93,6 +92,58 @@ export function createStrictKeySetCache({
     return Object.freeze({ record: await refresh(), refreshed: true });
   }
 
+  function settledUnknownResult(state, receipt, verification) {
+    if (state.outcome === 'unavailable') return unavailableResult(receipt);
+    return verification;
+  }
+
+  async function refreshUnknownKey(receipt, initialVerification, sourceRecord) {
+    const existing = unknownRefreshState;
+    if (existing?.sourceGeneration === sourceRecord.generation) {
+      if (!existing.promise) return settledUnknownResult(existing, receipt, initialVerification);
+      const shared = await existing.promise;
+      return shared.unavailable ? unavailableResult(receipt) : verifyReceipt(receipt, shared.record.keySet);
+    }
+
+    const state = {
+      sourceGeneration: sourceRecord.generation,
+      promise: null,
+      outcome: null
+    };
+    const operation = (async () => {
+      try {
+        return Object.freeze({ record: (await obtain(true)).record, unavailable: false });
+      } catch {
+        return Object.freeze({ record: null, unavailable: true });
+      }
+    })();
+    state.promise = operation;
+    unknownRefreshState = state;
+
+    const refreshed = await operation;
+    const verification = refreshed.unavailable
+      ? null
+      : verifyReceipt(receipt, refreshed.record.keySet);
+
+    if (unknownRefreshState === state) {
+      if (refreshed.unavailable) {
+        unknownRefreshState = cached?.generation === sourceRecord.generation
+          ? { sourceGeneration: sourceRecord.generation, promise: null, outcome: 'unavailable' }
+          : null;
+      } else if (verification.reason === keyNotFoundReason) {
+        unknownRefreshState = {
+          sourceGeneration: refreshed.record.generation,
+          promise: null,
+          outcome: 'missing'
+        };
+      } else {
+        unknownRefreshState = null;
+      }
+    }
+
+    return refreshed.unavailable ? unavailableResult(receipt) : verification;
+  }
+
   return Object.freeze({
     scopeId,
 
@@ -118,45 +169,25 @@ export function createStrictKeySetCache({
         return unavailableResult(receipt);
       }
 
-      let verification = verifyReceipt(receipt, obtained.record.keySet);
+      const verification = verifyReceipt(receipt, obtained.record.keySet);
       if (verification.reason !== keyNotFoundReason) return verification;
 
-      const currentGeneration = obtained.record.generation;
       if (obtained.refreshed) {
-        unknownRefreshGeneration = currentGeneration;
-        unknownRefreshUnavailable = false;
+        unknownRefreshState = {
+          sourceGeneration: obtained.record.generation,
+          promise: null,
+          outcome: 'missing'
+        };
         return verification;
       }
-      if (unknownRefreshGeneration === currentGeneration) {
-        return unknownRefreshUnavailable ? unavailableResult(receipt) : verification;
-      }
 
-      unknownRefreshGeneration = currentGeneration;
-      unknownRefreshUnavailable = false;
-      let refreshed;
-      try {
-        refreshed = await obtain(true);
-      } catch {
-        unknownRefreshUnavailable = true;
-        return unavailableResult(receipt);
-      }
-
-      verification = verifyReceipt(receipt, refreshed.record.keySet);
-      if (verification.reason === keyNotFoundReason) {
-        unknownRefreshGeneration = refreshed.record.generation;
-        unknownRefreshUnavailable = false;
-      } else {
-        unknownRefreshGeneration = null;
-        unknownRefreshUnavailable = false;
-      }
-      return verification;
+      return refreshUnknownKey(receipt, verification, obtained.record);
     },
 
     invalidate() {
       epoch += 1;
       cached = null;
-      unknownRefreshGeneration = null;
-      unknownRefreshUnavailable = false;
+      unknownRefreshState = null;
     },
 
     snapshot() {
