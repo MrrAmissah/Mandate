@@ -1,0 +1,32 @@
+[
+  {
+    "name": "action changed",
+    "field": "action",
+    "value": "repository.write",
+    "expectedReason": "INVALID_SIGNATURE"
+  },
+  {
+    "name": "output hash changed",
+    "field": "outputHash",
+    "value": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "expectedReason": "INVALID_SIGNATURE"
+  },
+  {
+    "name": "attempt identity changed",
+    "field": "actionAttemptId",
+    "value": "att_conformance_tampered",
+    "expectedReason": "INVALID_SIGNATURE"
+  },
+  {
+    "name": "issue time changed",
+    "field": "issuedAt",
+    "value": "2026-07-29T12:00:03.000Z",
+    "expectedReason": "INVALID_SIGNATURE"
+  },
+  {
+    "name": "signature malformed",
+    "field": "signature",
+    "value": "not+a+base64url+signature",
+    "expectedReason": "INVALID_SIGNATURE"
+  }
+]
