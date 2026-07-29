@@ -54,7 +54,7 @@ function decision() {
   };
 }
 
-async function seedExecution(store, pool, oldSigner) {
+async function bootstrap(store) {
   await store.ensureBootstrap({
     ...ownership,
     tenantName: 'Receipt supersession PostgreSQL test',
@@ -69,6 +69,9 @@ async function seedExecution(store, pool, oldSigner) {
       expiresAt: null
     }
   });
+}
+
+async function seedExecution(store, pool, oldSigner) {
   await store.save('mandates', ownership, mandate());
   await store.save('decisions', ownership, decision());
   await pool.query(
@@ -113,6 +116,8 @@ test('PostgreSQL receipt supersession has one winner, preserves history, and sup
   try {
     await applyMigrations(pool, { logger: { log() {} } });
     const store = new PostgresStore(pool);
+    await bootstrap(store);
+
     const oldSigner = createReceiptSigner({ keyId: 'key_receipt_supersession_old' });
     const currentSigner = createReceiptSigner({ keyId: 'key_receipt_supersession_current' });
     const registry = new PostgresSigningKeyRegistry(pool, ownership, { retryDelay: async () => {} });
