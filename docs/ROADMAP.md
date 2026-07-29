@@ -57,7 +57,7 @@ Remaining operational hardening:
 
 ## Phase 3 — execution and receipt lifecycle
 
-Status: core lifecycle and expiry process merged; observability in progress.
+Status: core lifecycle and expiry operations merged; verification products in progress.
 
 ### Phase 3A — single-use decision reservation
 
@@ -143,9 +143,9 @@ Delivered:
 
 ### Phase 3B.3 — expiry observability and supervision
 
-Status: implementation branch.
+Status: merged.
 
-Delivered in the branch:
+Delivered:
 
 - database-time scoped backlog inspection;
 - reserved count, due count, oldest due timestamp, and oldest overdue age;
@@ -154,32 +154,52 @@ Delivered in the branch:
 - stable readiness reasons for starting, failures, staleness, and shutdown;
 - Prometheus-compatible low-cardinality metrics;
 - health listener startup after migration readiness and shutdown before pool closure;
+- malformed-target protection and completion-time freshness;
 - memory, HTTP, entry-point, and real-PostgreSQL backlog tests.
 
-Remaining before observability closes:
+Remaining deployment work:
 
-- exact-head CI and review merge gate;
 - platform-specific service manifest;
 - restricted runtime database role;
 - deployment network policy for non-loopback health binding;
 - alert thresholds and overdue-backlog runbook;
 - supervisor restart policy.
 
-### Phase 3C — verification products and corrections
+### Phase 3C.1 — offline verification and conformance
+
+Status: implementation branch.
+
+Delivered in the branch:
+
+- zero-dependency Node.js ESM verifier package with TypeScript declarations;
+- exact active/retired Ed25519 verification semantics;
+- stable failure reasons for malformed receipts, unknown/revoked keys, invalid key material, and tampering;
+- one canonical JSON implementation shared by server issuance and offline verification;
+- public-only signed receipt fixture with no private key;
+- tamper corpus covering action, output, attempt identity, issue time, and signature mutation;
+- parity tests against an independent server-style crypto verifier;
+- package syntax included in the repository check gate.
+
+Remaining before Phase 3C.1 closes:
+
+- exact-head CI and review merge gate;
+- package publication automation and provenance attestation;
+- documented key-set cache helper or SDK integration.
+
+### Phase 3C.2 — receipt corrections and compact forms
 
 Scope:
 
 - receipt correction/supersession model;
-- offline TypeScript verifier package;
-- downloadable key-set caching rules;
-- conformance fixtures and tamper corpus;
+- downloadable key-set caching rules and refresh helper;
 - optional compact/JWS representation after compatibility review.
 
 Exit gate:
 
 - historical verification survives rotation;
 - corrections never rewrite signed history;
-- offline and server verification produce identical results.
+- offline and server verification produce identical results;
+- published package provenance and reproducible fixtures are documented.
 
 ## Phase 4 — approval operations
 
