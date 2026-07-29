@@ -1,33 +1,28 @@
 openapi: 3.1.0
 info:
   title: Mandate-API
-  version: 0.2.0
+  version: 0.3.0
   summary: Delegated authorization and signed action receipts for AI agents
   description: |
     Mandate-API is a provider-independent trust layer for agent actions.
-
-    The current API is a domain-kernel and contract-hardening release. It provides
-    scoped mandates, deterministic authorization decisions, human approval gates,
-    revocation, signed receipts, receipt verification, request correlation, and
-    payload-bound idempotency. The current in-memory store and single service API
-    key are development-only boundaries.
+    Phase 2A adds tenant-aware transaction semantics, scoped authentication,
+    cursor pagination, append-only audit events, a transactional outbox contract,
+    and the first PostgreSQL migration. The default runtime remains the in-memory
+    reference store until Phase 2B.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
 servers:
   - url: http://localhost:8787
     description: Local development
-
 tags:
   - name: System
   - name: Mandates
   - name: Approvals
   - name: Authorizations
   - name: Receipts
-
 security:
   - ApiKey: []
-
 paths:
   /health:
     get:
@@ -39,315 +34,105 @@ paths:
         '200':
           description: Service is accepting requests
           headers:
-            X-Request-Id:
-              $ref: '#/components/headers/RequestId'
+            X-Request-Id: { $ref: '#/components/headers/RequestId' }
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HealthResponse'
-
+                type: object
+                required: [status, service, requestId]
+                properties:
+                  status: { type: string, const: ok }
+                  service: { type: string, const: mandate-api }
+                  requestId: { type: string }
   /.well-known/mandate-keys:
     get:
       tags: [System]
       operationId: listVerificationKeys
       summary: List public receipt verification keys
-      description: |
-        Returns the currently configured public verification key. The production
-        design will support multiple active and retired keys and converge on a
-        JWKS-compatible representation.
       security: []
       responses:
         '200':
-          description: Public verification keys
+          description: Verification keys
           headers:
-            X-Request-Id:
-              $ref: '#/components/headers/RequestId'
+            X-Request-Id: { $ref: '#/components/headers/RequestId' }
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/VerificationKeysResponse'
-
+                type: object
+                required: [keys, requestId]
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      required: [keyId, algorithm, publicKeyPem]
+                      properties:
+                        keyId: { type: string }
+                        algorithm: { type: string, const: Ed25519 }
+                        publicKeyPem: { type: string }
+                  requestId: { type: string }
   /v1/mandates:
     post:
       tags: [Mandates]
       operationId: createMandate
       summary: Create an active delegated mandate
+      x-required-scope: mandates:write
       parameters:
-        - $ref: '#/components/parameters/RequestId'
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/CreateMandateRequest'
-            examples:
-              draftPullRequest:
-                value:
-                  principalId: user_prince
-                  agentId: agent_coder
-                  purpose: Inspect a repository and open a draft pull request
-                  resources:
-                    - github:MrrAmissah/Mandate
-                  allowedActions:
-                    - repository.read
-                    - branch.create
-                    - commit.create
-                    - pull_request.create_draft
-                  deniedActions:
-                    - pull_request.merge
-                    - repository.settings.*
-                  approvalRequiredActions:
-                    - commit.create
-                  validUntil: '2030-01-01T00:00:00.000Z'
-                  maxUses: 20
+            schema: { $ref: '#/components/schemas/CreateMandateRequest' }
       responses:
-        '201':
-          description: Mandate created
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/RequestId'
+        '201': { $ref: '#/components/responses/MandateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    get:
+      tags: [Mandates]
+      operationId: listMandates
+      summary: List tenant-visible mandates
+      x-required-scope: mandates:read
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/StartingAfter' }
+      responses:
+        '200':
+          description: Tenant-scoped mandate page
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/Mandate'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '413':
-          $ref: '#/components/responses/PayloadTooLarge'
-
+              schema: { $ref: '#/components/schemas/MandateListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /v1/mandates/{id}:
     get:
       tags: [Mandates]
       operationId: getMandate
-      summary: Retrieve a mandate
+      summary: Retrieve a tenant-visible mandate
+      x-required-scope: mandates:read
       parameters:
-        - $ref: '#/components/parameters/RequestId'
-        - $ref: '#/components/parameters/MandateId'
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/MandateId' }
       responses:
-        '200':
-          description: Mandate found
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/RequestId'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Mandate'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
+        '200': { $ref: '#/components/responses/MandateResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /v1/mandates/{id}/revoke:
     post:
       tags: [Mandates]
       operationId: revokeMandate
-      summary: Revoke an active mandate
+      summary: Revoke a mandate
+      x-required-scope: mandates:write
       parameters:
-        - $ref: '#/components/parameters/RequestId'
-        - $ref: '#/components/parameters/IdempotencyKey'
-        - $ref: '#/components/parameters/MandateId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RevokeMandateRequest'
-      responses:
-        '200':
-          description: Mandate revoked
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/RequestId'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Mandate'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-
-  /v1/approvals:
-    post:
-      tags: [Approvals]
-      operationId: createApproval
-      summary: Create a human approval request
-      description: |
-        Creates an approval bound to an exact mandate, agent, action, and resource.
-        Approved requests are single-use in the current implementation.
-      parameters:
-        - $ref: '#/components/parameters/RequestId'
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateApprovalRequest'
-      responses:
-        '201':
-          description: Approval request created
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/RequestId'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Approval'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-
-  /v1/approvals/{id}/decide:
-    post:
-      tags: [Approvals]
-      operationId: decideApproval
-      summary: Approve or reject a pending request
-      parameters:
-        - $ref: '#/components/parameters/RequestId'
-        - $ref: '#/components/parameters/IdempotencyKey'
-        - $ref: '#/components/parameters/ApprovalId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DecideApprovalRequest'
-      responses:
-        '200':
-          description: Approval decision recorded
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/RequestId'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Approval'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-
-  /v1/authorize:
-    post:
-      tags: [Authorizations]
-      operationId: authorizeAction
-      summary: Evaluate a proposed agent action
-      description: |
-        Returns a deterministic `ALLOW`, `DENY`, or `REQUIRE_APPROVAL` decision.
-        An allowed decision increments the mandate use count. A matching approved
-        approval is consumed by the first allowed authorization.
-      parameters:
-        - $ref: '#/components/parameters/RequestId'
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AuthorizationRequest'
-      responses:
-        '200':
-          description: Authorization decision
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/RequestId'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthorizationDecision'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '409':
-          $ref: '#/components/responses/Conflict'
-
-  /v1/receipts:
-    post:
-      tags: [Receipts]
-      operationId: issueReceipt
-      summary: Issue a signed receipt for an allowed action
-      description: |
-        The receipt attests that Mandate-API signed the supplied execution evidence.
-        It does not independently prove that an external tool performed the action.
-      parameters:
-        - $ref: '#/components/parameters/RequestId'
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/IssueReceiptRequest'
-      responses:
-        '201':
-          description: Signed action receipt
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/RequestId'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Receipt'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-
-  /v1/receipts/{id}:
-    get:
-      tags: [Receipts]
-      operationId: getReceipt
-      summary: Retrieve a signed receipt
-      parameters:
-        - $ref: '#/components/parameters/RequestId'
-        - $ref: '#/components/parameters/ReceiptId'
-      responses:
-        '200':
-          description: Receipt found
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/RequestId'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Receipt'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /v1/receipts/verify:
-    post:
-      tags: [Receipts]
-      operationId: verifyReceipt
-      summary: Verify a signed receipt
-      parameters:
-        - $ref: '#/components/parameters/RequestId'
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/MandateId' }
       requestBody:
         required: true
         content:
@@ -355,501 +140,506 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [receipt]
+              required: [reason]
               properties:
-                receipt:
-                  $ref: '#/components/schemas/Receipt'
+                reason: { type: string, minLength: 1, maxLength: 1000 }
+      responses:
+        '200': { $ref: '#/components/responses/MandateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/approvals:
+    post:
+      tags: [Approvals]
+      operationId: createApproval
+      summary: Request exact human approval
+      x-required-scope: approvals:write
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateApprovalRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/ApprovalResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    get:
+      tags: [Approvals]
+      operationId: listApprovals
+      summary: List tenant-visible approvals
+      x-required-scope: approvals:read
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/StartingAfter' }
       responses:
         '200':
-          description: Verification result
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/RequestId'
+          description: Tenant-scoped approval page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApprovalListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/approvals/{id}:
+    get:
+      tags: [Approvals]
+      operationId: getApproval
+      summary: Retrieve an approval
+      x-required-scope: approvals:read
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/ApprovalId' }
+      responses:
+        '200': { $ref: '#/components/responses/ApprovalResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/approvals/{id}/decide:
+    post:
+      tags: [Approvals]
+      operationId: decideApproval
+      summary: Approve or reject a pending request
+      x-required-scope: approvals:write
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/ApprovalId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision, decidedBy]
+              properties:
+                decision: { type: string, enum: [APPROVED, REJECTED] }
+                decidedBy: { type: string, minLength: 1 }
+                reason: { type: string, maxLength: 2000 }
+      responses:
+        '200': { $ref: '#/components/responses/ApprovalResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/authorize:
+    post:
+      tags: [Authorizations]
+      operationId: authorizeAction
+      summary: Evaluate a proposed agent action
+      description: |
+        Produces ALLOW, DENY, or REQUIRE_APPROVAL. An ALLOW decision, mandate-use
+        increment, matching approval consumption, audit event, and outbox record
+        are one transaction in the persistence contract.
+      x-required-scope: authorizations:write
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthorizationRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/DecisionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/decisions:
+    get:
+      tags: [Authorizations]
+      operationId: listDecisions
+      summary: List immutable authorization decisions
+      x-required-scope: authorizations:read
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/StartingAfter' }
+      responses:
+        '200':
+          description: Tenant-scoped decision page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DecisionListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/decisions/{id}:
+    get:
+      tags: [Authorizations]
+      operationId: getDecision
+      summary: Retrieve an immutable decision
+      x-required-scope: authorizations:read
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/DecisionId' }
+      responses:
+        '200': { $ref: '#/components/responses/DecisionResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/receipts:
+    post:
+      tags: [Receipts]
+      operationId: issueReceipt
+      summary: Issue one signed execution receipt for an allowed decision
+      x-required-scope: receipts:write
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IssueReceiptRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/ReceiptResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    get:
+      tags: [Receipts]
+      operationId: listReceipts
+      summary: List signed receipts
+      x-required-scope: receipts:read
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/StartingAfter' }
+      responses:
+        '200':
+          description: Tenant-scoped receipt page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReceiptListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/receipts/verify:
+    post:
+      tags: [Receipts]
+      operationId: verifyReceipt
+      summary: Verify a signed receipt
+      x-required-scope: receipts:read
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [receipt]
+              properties:
+                receipt: { $ref: '#/components/schemas/Receipt' }
+      responses:
+        '200':
+          description: Signature verification result
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ReceiptVerification'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
+                type: object
+                required: [valid, keyId, algorithm]
+                properties:
+                  valid: { type: boolean }
+                  keyId: { type: [string, 'null'] }
+                  algorithm: { type: [string, 'null'] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/receipts/{id}:
+    get:
+      tags: [Receipts]
+      operationId: getReceipt
+      summary: Retrieve a signed receipt
+      x-required-scope: receipts:read
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/ReceiptId' }
+      responses:
+        '200': { $ref: '#/components/responses/ReceiptResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     ApiKey:
       type: apiKey
       in: header
       name: x-api-key
-      description: Development-only service API key. Target v1 uses scoped bearer credentials.
-
+      description: Temporary header for the developer preview. Stored credentials are tenant and environment scoped.
+  headers:
+    RequestId:
+      description: Effective request correlation ID
+      schema: { type: string }
   parameters:
     RequestId:
       in: header
       name: X-Request-Id
       required: false
-      description: Optional client correlation ID. Invalid values are replaced by the server.
-      schema:
-        type: string
-        minLength: 8
-        maxLength: 128
-        pattern: '^[A-Za-z0-9._:-]+$'
+      schema: { type: string, maxLength: 128 }
     IdempotencyKey:
       in: header
       name: Idempotency-Key
       required: false
-      description: |
-        Replays with the same canonical request return the original resource.
-        Reuse with a different request payload returns `IDEMPOTENCY_CONFLICT`.
-      schema:
-        type: string
-        minLength: 1
-        maxLength: 255
+      schema: { type: string, maxLength: 255 }
+    Limit:
+      in: query
+      name: limit
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    StartingAfter:
+      in: query
+      name: startingAfter
+      required: false
+      schema: { type: string }
     MandateId:
       in: path
       name: id
       required: true
-      schema:
-        type: string
-        pattern: '^mnd_.+'
+      schema: { type: string, pattern: '^mnd_.+' }
     ApprovalId:
       in: path
       name: id
       required: true
-      schema:
-        type: string
-        pattern: '^apr_.+'
+      schema: { type: string, pattern: '^apr_.+' }
+    DecisionId:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, pattern: '^dec_.+' }
     ReceiptId:
       in: path
       name: id
       required: true
-      schema:
-        type: string
-        pattern: '^rcpt_.+'
-
-  headers:
-    RequestId:
-      description: Effective request correlation identifier
-      schema:
-        type: string
-
+      schema: { type: string, pattern: '^rcpt_.+' }
   responses:
-    BadRequest:
-      description: Invalid request
+    MandateResponse:
+      description: Mandate
       headers:
-        X-Request-Id:
-          $ref: '#/components/headers/RequestId'
+        X-Request-Id: { $ref: '#/components/headers/RequestId' }
       content:
         application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
+          schema: { $ref: '#/components/schemas/Mandate' }
+    ApprovalResponse:
+      description: Approval
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Approval' }
+    DecisionResponse:
+      description: Authorization decision
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthorizationDecision' }
+    ReceiptResponse:
+      description: Signed receipt
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Receipt' }
+    BadRequest:
+      description: Invalid input
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
     Unauthorized:
       description: Missing or invalid API credential
-      headers:
-        X-Request-Id:
-          $ref: '#/components/headers/RequestId'
       content:
         application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Forbidden:
+      description: API credential is missing the required scope
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            error:
+              code: MISSING_SCOPE
+              message: The API credential is missing the required scope.
+              details: { requiredScope: mandates:write }
+              requestId: req_example
     NotFound:
-      description: Resource not found
-      headers:
-        X-Request-Id:
-          $ref: '#/components/headers/RequestId'
+      description: Resource is missing or not visible to the authenticated tenant
       content:
         application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
     Conflict:
-      description: Resource state or idempotency conflict
-      headers:
-        X-Request-Id:
-          $ref: '#/components/headers/RequestId'
+      description: State or idempotency conflict
       content:
         application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-    PayloadTooLarge:
-      description: Request body exceeds 256 KB
-      headers:
-        X-Request-Id:
-          $ref: '#/components/headers/RequestId'
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
   schemas:
-    HealthResponse:
-      type: object
-      additionalProperties: false
-      required: [status, service, requestId]
-      properties:
-        status:
-          type: string
-          const: ok
-        service:
-          type: string
-          const: mandate-api
-        requestId:
-          type: string
-
-    VerificationKey:
-      type: object
-      additionalProperties: false
-      required: [keyId, algorithm, publicKeyPem]
-      properties:
-        keyId:
-          type: string
-        algorithm:
-          type: string
-          const: Ed25519
-        publicKeyPem:
-          type: string
-
-    VerificationKeysResponse:
-      type: object
-      additionalProperties: false
-      required: [keys, requestId]
-      properties:
-        keys:
-          type: array
-          items:
-            $ref: '#/components/schemas/VerificationKey'
-        requestId:
-          type: string
-
     CreateMandateRequest:
       type: object
       additionalProperties: false
       required: [principalId, agentId, purpose, resources, allowedActions]
       properties:
-        principalId:
-          type: string
-          minLength: 1
-        agentId:
-          type: string
-          minLength: 1
-        purpose:
-          type: string
-          minLength: 1
-        resources:
-          type: array
-          minItems: 1
-          items:
-            type: string
-            minLength: 1
-        allowedActions:
-          type: array
-          minItems: 1
-          items:
-            type: string
-            minLength: 1
-        deniedActions:
-          type: array
-          items:
-            type: string
-            minLength: 1
-          default: []
-        approvalRequiredActions:
-          type: array
-          items:
-            type: string
-            minLength: 1
-          default: []
-        validFrom:
-          type: string
-          format: date-time
-        validUntil:
-          type: [string, 'null']
-          format: date-time
-        maxUses:
-          type: [integer, 'null']
-          minimum: 1
-        constraints:
-          type: object
-          additionalProperties: true
-
+        principalId: { type: string, minLength: 1 }
+        agentId: { type: string, minLength: 1 }
+        purpose: { type: string, minLength: 1, maxLength: 1000 }
+        resources: { type: array, minItems: 1, items: { type: string } }
+        allowedActions: { type: array, minItems: 1, items: { type: string } }
+        deniedActions: { type: array, items: { type: string }, default: [] }
+        approvalRequiredActions: { type: array, items: { type: string }, default: [] }
+        validFrom: { type: string, format: date-time }
+        validUntil: { type: [string, 'null'], format: date-time }
+        maxUses: { type: [integer, 'null'], minimum: 1 }
+        constraints: { type: object, additionalProperties: true, default: {} }
     Mandate:
       allOf:
-        - $ref: '#/components/schemas/CreateMandateRequest'
+        - { $ref: '#/components/schemas/CreateMandateRequest' }
         - type: object
-          additionalProperties: true
-          required: [id, status, uses, createdAt, revokedAt, revokeReason]
+          required: [id, status, uses, createdAt, revokedAt, revocationReason]
           properties:
-            id:
-              type: string
-              pattern: '^mnd_.+'
-            status:
-              type: string
-              enum: [ACTIVE, REVOKED]
-            uses:
-              type: integer
-              minimum: 0
-            createdAt:
-              type: string
-              format: date-time
-            revokedAt:
-              type: [string, 'null']
-              format: date-time
-            revokeReason:
-              type: [string, 'null']
-
-    RevokeMandateRequest:
-      type: object
-      additionalProperties: false
-      required: [reason]
-      properties:
-        reason:
-          type: string
-          minLength: 1
-
+            id: { type: string, pattern: '^mnd_.+' }
+            status: { type: string, enum: [ACTIVE, REVOKED, EXPIRED] }
+            uses: { type: integer, minimum: 0 }
+            createdAt: { type: string, format: date-time }
+            revokedAt: { type: [string, 'null'], format: date-time }
+            revocationReason: { type: [string, 'null'] }
     CreateApprovalRequest:
       type: object
       additionalProperties: false
       required: [mandateId, agentId, action, resource, summary]
       properties:
-        mandateId:
-          type: string
-          pattern: '^mnd_.+'
-        agentId:
-          type: string
-        action:
-          type: string
-        resource:
-          type: string
-        summary:
-          type: string
-        expiresAt:
-          type: [string, 'null']
-          format: date-time
-
-    DecideApprovalRequest:
-      type: object
-      additionalProperties: false
-      required: [decision, decidedBy, reason]
-      properties:
-        decision:
-          type: string
-          enum: [APPROVED, REJECTED]
-        decidedBy:
-          type: string
-        reason:
-          type: string
-
+        mandateId: { type: string, pattern: '^mnd_.+' }
+        agentId: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        summary: { type: string, minLength: 1, maxLength: 2000 }
+        expiresAt: { type: [string, 'null'], format: date-time }
     Approval:
       allOf:
-        - $ref: '#/components/schemas/CreateApprovalRequest'
+        - { $ref: '#/components/schemas/CreateApprovalRequest' }
         - type: object
-          additionalProperties: true
-          required:
-            - id
-            - status
-            - requestedAt
-            - decidedAt
-            - decidedBy
-            - decisionReason
-            - consumedAt
-            - consumedByDecisionId
+          required: [id, status, requestedAt, decidedAt, decidedBy, decisionReason, consumedAt, consumedByDecisionId]
           properties:
-            id:
-              type: string
-              pattern: '^apr_.+'
-            status:
-              type: string
-              enum: [PENDING, APPROVED, REJECTED, CONSUMED]
-            requestedAt:
-              type: string
-              format: date-time
-            decidedAt:
-              type: [string, 'null']
-              format: date-time
-            decidedBy:
-              type: [string, 'null']
-            decisionReason:
-              type: [string, 'null']
-            consumedAt:
-              type: [string, 'null']
-              format: date-time
-            consumedByDecisionId:
-              type: [string, 'null']
-
+            id: { type: string, pattern: '^apr_.+' }
+            status: { type: string, enum: [PENDING, APPROVED, REJECTED, CONSUMED, EXPIRED, CANCELLED] }
+            requestedAt: { type: string, format: date-time }
+            decidedAt: { type: [string, 'null'], format: date-time }
+            decidedBy: { type: [string, 'null'] }
+            decisionReason: { type: [string, 'null'] }
+            consumedAt: { type: [string, 'null'], format: date-time }
+            consumedByDecisionId: { type: [string, 'null'] }
     AuthorizationRequest:
       type: object
       additionalProperties: false
       required: [mandateId, agentId, action, resource]
       properties:
-        mandateId:
-          type: string
-          pattern: '^mnd_.+'
-        agentId:
-          type: string
-        action:
-          type: string
-        resource:
-          type: string
-        approvalId:
-          type: [string, 'null']
-          pattern: '^apr_.+'
-        context:
-          type: object
-          additionalProperties: true
-          default: {}
-
+        mandateId: { type: string, pattern: '^mnd_.+' }
+        agentId: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        approvalId: { type: [string, 'null'], pattern: '^apr_.+' }
+        context: { type: object, additionalProperties: true, default: {} }
     AuthorizationDecision:
       type: object
       additionalProperties: false
-      required:
-        - id
-        - mandateId
-        - agentId
-        - action
-        - resource
-        - evaluatedAt
-        - outcome
-        - reasonCode
-        - reason
-        - approvalId
+      required: [id, mandateId, agentId, action, resource, context, evaluatedAt, outcome, reasonCode, reason, approvalId, requestId]
       properties:
-        id:
-          type: string
-          pattern: '^dec_.+'
-        mandateId:
-          type: string
-        agentId:
-          type: string
-        action:
-          type: string
-        resource:
-          type: string
-        evaluatedAt:
-          type: string
-          format: date-time
-        outcome:
-          type: string
-          enum: [ALLOW, DENY, REQUIRE_APPROVAL]
-        reasonCode:
-          type: string
-        reason:
-          type: string
-        approvalId:
-          type: [string, 'null']
-
-    Sha256Digest:
-      type: string
-      pattern: '^sha256:[a-f0-9]{64}$'
-
+        id: { type: string, pattern: '^dec_.+' }
+        mandateId: { type: string }
+        agentId: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        context: { type: object, additionalProperties: true }
+        evaluatedAt: { type: string, format: date-time }
+        outcome: { type: string, enum: [ALLOW, DENY, REQUIRE_APPROVAL] }
+        reasonCode: { type: string }
+        reason: { type: string }
+        approvalId: { type: [string, 'null'] }
+        requestId: { type: string }
     IssueReceiptRequest:
       type: object
       additionalProperties: false
       required: [decisionId, executionStatus, inputHash, outputHash, tool]
       properties:
-        decisionId:
-          type: string
-          pattern: '^dec_.+'
-        executionStatus:
-          type: string
-          enum: [SUCCEEDED, FAILED, PARTIAL]
-        inputHash:
-          $ref: '#/components/schemas/Sha256Digest'
-        outputHash:
-          $ref: '#/components/schemas/Sha256Digest'
-        tool:
-          type: string
-        provider:
-          type: [string, 'null']
-        model:
-          type: [string, 'null']
-
+        decisionId: { type: string, pattern: '^dec_.+' }
+        executionStatus: { type: string, enum: [SUCCEEDED, FAILED, PARTIAL] }
+        inputHash: { type: string, pattern: '^sha256:[a-f0-9]{64}$' }
+        outputHash: { type: string, pattern: '^sha256:[a-f0-9]{64}$' }
+        tool: { type: string }
+        provider: { type: [string, 'null'] }
+        model: { type: [string, 'null'] }
     Receipt:
       type: object
-      additionalProperties: false
-      required:
-        - id
-        - version
-        - keyId
-        - algorithm
-        - decisionId
-        - mandateId
-        - principalId
-        - agentId
-        - action
-        - resource
-        - executionStatus
-        - inputHash
-        - outputHash
-        - tool
-        - provider
-        - model
-        - approvalId
-        - authorizedAt
-        - executedAt
-        - issuedAt
-        - signature
+      additionalProperties: true
+      required: [id, version, keyId, algorithm, decisionId, mandateId, principalId, agentId, action, resource, executionStatus, inputHash, outputHash, tool, approvalId, authorizedAt, executedAt, issuedAt, signature]
       properties:
-        id:
-          type: string
-          pattern: '^rcpt_.+'
-        version:
-          type: string
-          const: '1.0'
-        keyId:
-          type: string
-        algorithm:
-          type: string
-          const: Ed25519
-        decisionId:
-          type: string
-        mandateId:
-          type: string
-        principalId:
-          type: string
-        agentId:
-          type: string
-        action:
-          type: string
-        resource:
-          type: string
-        executionStatus:
-          type: string
-          enum: [SUCCEEDED, FAILED, PARTIAL]
-        inputHash:
-          $ref: '#/components/schemas/Sha256Digest'
-        outputHash:
-          $ref: '#/components/schemas/Sha256Digest'
-        tool:
-          type: string
-        provider:
-          type: [string, 'null']
-        model:
-          type: [string, 'null']
-        approvalId:
-          type: [string, 'null']
-        authorizedAt:
-          type: [string, 'null']
-          format: date-time
-        executedAt:
-          type: string
-          format: date-time
-        issuedAt:
-          type: string
-          format: date-time
-        signature:
-          type: string
-          description: Base64url Ed25519 signature over the canonical receipt payload
-
-    ReceiptVerification:
+        id: { type: string, pattern: '^rcpt_.+' }
+        version: { type: string, const: '1.0' }
+        keyId: { type: string }
+        algorithm: { type: string, const: Ed25519 }
+        decisionId: { type: string }
+        mandateId: { type: string }
+        principalId: { type: string }
+        agentId: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        executionStatus: { type: string, enum: [SUCCEEDED, FAILED, PARTIAL] }
+        inputHash: { type: string }
+        outputHash: { type: string }
+        tool: { type: string }
+        provider: { type: [string, 'null'] }
+        model: { type: [string, 'null'] }
+        approvalId: { type: [string, 'null'] }
+        authorizedAt: { type: [string, 'null'], format: date-time }
+        executedAt: { type: string, format: date-time }
+        issuedAt: { type: string, format: date-time }
+        signature: { type: string }
+    Page:
       type: object
-      additionalProperties: false
-      required: [valid, keyId, algorithm]
+      required: [hasMore, nextCursor]
       properties:
-        valid:
-          type: boolean
-        keyId:
-          type: [string, 'null']
-        algorithm:
-          type: [string, 'null']
-
+        hasMore: { type: boolean }
+        nextCursor: { type: [string, 'null'] }
+    MandateListResponse:
+      allOf:
+        - { $ref: '#/components/schemas/Page' }
+        - type: object
+          required: [data]
+          properties:
+            data: { type: array, items: { $ref: '#/components/schemas/Mandate' } }
+    ApprovalListResponse:
+      allOf:
+        - { $ref: '#/components/schemas/Page' }
+        - type: object
+          required: [data]
+          properties:
+            data: { type: array, items: { $ref: '#/components/schemas/Approval' } }
+    DecisionListResponse:
+      allOf:
+        - { $ref: '#/components/schemas/Page' }
+        - type: object
+          required: [data]
+          properties:
+            data: { type: array, items: { $ref: '#/components/schemas/AuthorizationDecision' } }
+    ReceiptListResponse:
+      allOf:
+        - { $ref: '#/components/schemas/Page' }
+        - type: object
+          required: [data]
+          properties:
+            data: { type: array, items: { $ref: '#/components/schemas/Receipt' } }
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -860,13 +650,7 @@ components:
           additionalProperties: false
           required: [code, message, details, requestId]
           properties:
-            code:
-              type: string
-              examples: [IDEMPOTENCY_CONFLICT]
-            message:
-              type: string
-            details:
-              type: [object, 'null']
-              additionalProperties: true
-            requestId:
-              type: string
+            code: { type: string }
+            message: { type: string }
+            details: { type: [object, 'null'], additionalProperties: true }
+            requestId: { type: string }
