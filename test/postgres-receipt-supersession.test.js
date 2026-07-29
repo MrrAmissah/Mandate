@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { createReceiptSigner } from '../src/crypto/receipt-signer.js';
 import { PostgresSigningKeyRegistry } from '../src/crypto/signing-key-registry.js';
 import { issueReceipt, verifyReceiptWithRegistry } from '../src/domain/receipts.js';
@@ -9,6 +10,7 @@ import { applyMigrations } from '../src/store/postgres-migrations.js';
 import { createPostgresPool, PostgresStore } from '../src/store/postgres-store.js';
 
 const connectionString = process.env.DATABASE_URL;
+const downMigrationUrl = new URL('../migrations/007_receipt_supersession.down.sql', import.meta.url);
 const ownership = { tenantId: 'ten_receipt_supersession_pg', environment: 'test' };
 const mandateId = 'mnd_receipt_supersession_pg';
 const decisionId = 'dec_receipt_supersession_pg';
@@ -109,6 +111,17 @@ async function seedExecution(store, pool, oldSigner) {
   return root;
 }
 
+async function supersessionColumnsExist(pool) {
+  const result = await pool.query(
+    `SELECT COUNT(*)::integer AS count
+     FROM information_schema.columns
+     WHERE table_schema = 'mandate'
+       AND table_name = 'receipts'
+       AND column_name IN ('supersedes_receipt_id', 'supersession_reason')`
+  );
+  return Number(result.rows[0].count) === 2;
+}
+
 test('PostgreSQL receipt supersession has one winner, preserves history, and supports a linear chain', {
   skip: !connectionString
 }, async () => {
@@ -197,6 +210,28 @@ test('PostgreSQL receipt supersession has one winner, preserves history, and sup
     assert.equal(rows.rows.filter((row) => row.supersedes_receipt_id === first.id).length, 1);
     const persistedRoot = rows.rows.find((row) => row.id === root.id);
     assert.deepEqual({ ...persistedRoot.payload, signature: persistedRoot.signature }, root);
+
+    const downSql = await readFile(downMigrationUrl, 'utf8');
+    await pool.query(downSql);
+    assert.equal(await supersessionColumnsExist(pool), false);
+    const migrationAfterDown = await pool.query(
+      `SELECT 1 FROM mandate.schema_migrations WHERE version = '007_receipt_supersession'`
+    );
+    assert.equal(migrationAfterDown.rowCount, 0);
+    const remainingReceipts = await pool.query(
+      `SELECT payload, signature FROM mandate.receipts
+       WHERE tenant_id = $1 AND environment = $2 AND action_attempt_id = $3`,
+      [ownership.tenantId, ownership.environment, attemptId]
+    );
+    assert.equal(remainingReceipts.rowCount, 1);
+    assert.deepEqual(
+      { ...remainingReceipts.rows[0].payload, signature: remainingReceipts.rows[0].signature },
+      root
+    );
+
+    const reapplied = await applyMigrations(pool, { logger: { log() {} } });
+    assert.deepEqual(reapplied.applied, ['007_receipt_supersession']);
+    assert.equal(await supersessionColumnsExist(pool), true);
   } finally {
     await pool.end();
   }
