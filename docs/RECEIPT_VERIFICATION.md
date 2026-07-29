@@ -92,9 +92,9 @@ Cache invariants:
 4. malformed receipts and unsupported algorithms fail without calling the loader;
 5. unknown-key discovery is attempted at most once per cached generation, even when callers submit many different random key IDs;
 6. a missing or failed unknown-key refresh suppresses repeated discovery traffic until the cache advances or is invalidated;
-7. invalidation prevents an older in-flight refresh from repopulating the cache;
+7. invalidation detaches a pending loader immediately, permits a new generation to start, and prevents the older completion from repopulating the cache;
 8. loader errors return `KEY_SET_UNAVAILABLE` and do not expose transport details;
-9. cached keys are cloned and frozen before use.
+9. cached records retain only public discovery fields and are frozen before use.
 
 The default lifetime is five minutes, matching the current discovery `max-age`. Applications may set a stricter value but should not exceed their security policy or the server's advertised cache lifetime.
 
