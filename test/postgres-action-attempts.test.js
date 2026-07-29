@@ -31,7 +31,7 @@ postgresTest('PostgreSQL permits exactly one reservation for an ALLOW decision',
       `INSERT INTO mandate.api_credentials
         (tenant_id, environment, id, name, secret_hash, prefix, last_four, scopes, status, created_at)
        VALUES ($1,$2,$3,'Attempt credential',$4,'mnd_test_','0000',$5,'ACTIVE',$6)`,
-      [tenantId, environment, credentialId, '0'.repeat(64),
+      [tenantId, environment, credentialId, suffix.padEnd(64, '0'),
         ['action_attempts:read', 'action_attempts:write'], now.toISOString()]
     );
     await pool.query(
@@ -39,7 +39,8 @@ postgresTest('PostgreSQL permits exactly one reservation for an ALLOW decision',
         (tenant_id, environment, id, status, principal_id, agent_id, purpose, resources,
          allowed_actions, denied_actions, approval_required_actions, constraints, valid_from,
          valid_until, max_uses, uses, version, created_at)
-       VALUES ($1,$2,$3,'ACTIVE','principal_pg','agent_pg','One protected write',$4,$5,$6,$7,$8,$9,5,1,0,$8)`,
+       VALUES ($1,$2,$3,'ACTIVE','principal_pg','agent_pg','One protected write',
+         $4,$5,$6,$6,$7,$8,$9,5,1,0,$8)`,
       [tenantId, environment, mandateId, JSON.stringify(['github:repo']),
         JSON.stringify(['repository.write']), JSON.stringify([]), JSON.stringify({}),
         now.toISOString(), '2030-01-01T00:00:00.000Z']
@@ -80,11 +81,6 @@ postgresTest('PostgreSQL permits exactly one reservation for an ALLOW decision',
     assert.equal(stored.rows[0].status, 'RESERVED');
     assert.equal(stored.rows[0].reserved_by_credential_id, credentialId);
   } finally {
-    await pool.query('DELETE FROM mandate.action_attempts WHERE tenant_id = $1', [tenantId]).catch(() => {});
-    await pool.query('DELETE FROM mandate.authorization_decisions WHERE tenant_id = $1', [tenantId]).catch(() => {});
-    await pool.query('DELETE FROM mandate.mandates WHERE tenant_id = $1', [tenantId]).catch(() => {});
-    await pool.query('DELETE FROM mandate.api_credentials WHERE tenant_id = $1', [tenantId]).catch(() => {});
-    await pool.query('DELETE FROM mandate.tenants WHERE id = $1', [tenantId]).catch(() => {});
     await store.close();
   }
 });
