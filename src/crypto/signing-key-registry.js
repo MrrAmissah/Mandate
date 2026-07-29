@@ -2,9 +2,13 @@ import { createHash, createPublicKey, verify } from 'node:crypto';
 import { canonicalize } from './canonical-json.js';
 
 const STATUS = Object.freeze({ ACTIVE: 'ACTIVE', RETIRED: 'RETIRED', REVOKED: 'REVOKED' });
+const RETRYABLE_DATABASE_CODES = new Set(['40001', '40P01', '23505']);
 
 function normalizePublicKey(publicKeyPem) {
   const key = createPublicKey(publicKeyPem.replaceAll('\\n', '\n'));
+  if (key.asymmetricKeyType !== 'ed25519') {
+    throw new TypeError('Only Ed25519 public keys are supported.');
+  }
   const pem = key.export({ type: 'spki', format: 'pem' }).toString();
   const der = key.export({ type: 'spki', format: 'der' });
   const fingerprint = `sha256:${createHash('sha256').update(der).digest('hex')}`;
@@ -32,59 +36,82 @@ function rowToKey(row) {
   };
 }
 
+function retryDelayMilliseconds(attempt) {
+  return Math.min(10 * (2 ** (attempt - 1)), 100);
+}
+
+async function defaultRetryDelay(attempt) {
+  await new Promise((resolve) => setTimeout(resolve, retryDelayMilliseconds(attempt)));
+}
+
 export class PostgresSigningKeyRegistry {
-  constructor(pool, ownership) {
+  constructor(pool, ownership, { maximumTransactionAttempts = 4, retryDelay = defaultRetryDelay } = {}) {
+    if (!Number.isInteger(maximumTransactionAttempts) || maximumTransactionAttempts < 1) {
+      throw new TypeError('maximumTransactionAttempts must be a positive integer.');
+    }
+    if (typeof retryDelay !== 'function') throw new TypeError('retryDelay must be a function.');
     this.pool = pool;
     this.ownership = ownership;
+    this.maximumTransactionAttempts = maximumTransactionAttempts;
+    this.retryDelay = retryDelay;
   }
 
   async registerActive({ keyId, algorithm = 'Ed25519', publicKeyPem, activatedAt = new Date() }) {
     validateKeyId(keyId);
     if (algorithm !== 'Ed25519') throw new TypeError('Only Ed25519 signing keys are supported.');
     const normalized = normalizePublicKey(publicKeyPem);
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
-      const existing = await client.query(
-        `SELECT * FROM mandate.signing_keys
-         WHERE tenant_id = $1 AND environment = $2 AND key_id = $3
-         FOR UPDATE`,
-        [this.ownership.tenantId, this.ownership.environment, keyId]
-      );
-      if (existing.rowCount > 0 && existing.rows[0].fingerprint !== normalized.fingerprint) {
-        throw new Error('SIGNING_KEY_ID_REUSE');
-      }
-      if (existing.rowCount > 0 && existing.rows[0].status === STATUS.REVOKED) {
-        throw new Error('SIGNING_KEY_REVOKED');
-      }
 
-      await client.query(
-        `UPDATE mandate.signing_keys
-         SET status = 'RETIRED', retired_at = COALESCE(retired_at, $4::timestamptz)
-         WHERE tenant_id = $1 AND environment = $2 AND algorithm = $3
-           AND status = 'ACTIVE' AND key_id <> $5`,
-        [this.ownership.tenantId, this.ownership.environment, algorithm, activatedAt.toISOString(), keyId]
-      );
+    for (let attempt = 1; attempt <= this.maximumTransactionAttempts; attempt += 1) {
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+        const existing = await client.query(
+          `SELECT * FROM mandate.signing_keys
+           WHERE tenant_id = $1 AND environment = $2 AND key_id = $3
+           FOR UPDATE`,
+          [this.ownership.tenantId, this.ownership.environment, keyId]
+        );
+        if (existing.rowCount > 0 && existing.rows[0].fingerprint !== normalized.fingerprint) {
+          throw new Error('SIGNING_KEY_ID_REUSE');
+        }
+        if (existing.rowCount > 0 && existing.rows[0].status === STATUS.REVOKED) {
+          throw new Error('SIGNING_KEY_REVOKED');
+        }
 
-      const result = await client.query(
-        `INSERT INTO mandate.signing_keys
-          (tenant_id, environment, key_id, algorithm, public_key_pem, fingerprint, status, activated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,'ACTIVE',$7)
-         ON CONFLICT (tenant_id, environment, key_id) DO UPDATE SET
-           status = 'ACTIVE', retired_at = NULL
-         RETURNING *`,
-        [this.ownership.tenantId, this.ownership.environment, keyId, algorithm,
-          normalized.pem, normalized.fingerprint, activatedAt.toISOString()]
-      );
-      await client.query('COMMIT');
-      return rowToKey(result.rows[0]);
-    } catch (error) {
-      await client.query('ROLLBACK').catch(() => {});
-      throw error;
-    } finally {
-      client.release();
+        await client.query(
+          `UPDATE mandate.signing_keys
+           SET status = 'RETIRED', retired_at = COALESCE(retired_at, $4::timestamptz)
+           WHERE tenant_id = $1 AND environment = $2 AND algorithm = $3
+             AND status = 'ACTIVE' AND key_id <> $5`,
+          [this.ownership.tenantId, this.ownership.environment, algorithm, activatedAt.toISOString(), keyId]
+        );
+
+        const result = await client.query(
+          `INSERT INTO mandate.signing_keys
+            (tenant_id, environment, key_id, algorithm, public_key_pem, fingerprint, status, activated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,'ACTIVE',$7)
+           ON CONFLICT (tenant_id, environment, key_id) DO UPDATE SET
+             status = 'ACTIVE', retired_at = NULL
+           RETURNING *`,
+          [this.ownership.tenantId, this.ownership.environment, keyId, algorithm,
+            normalized.pem, normalized.fingerprint, activatedAt.toISOString()]
+        );
+        await client.query('COMMIT');
+        return rowToKey(result.rows[0]);
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        if (RETRYABLE_DATABASE_CODES.has(error.code) && attempt < this.maximumTransactionAttempts) {
+          await this.retryDelay(attempt);
+          continue;
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
     }
+
+    throw new Error('Signing-key registration exhausted its transaction attempts.');
   }
 
   async listDiscoverable() {
@@ -107,6 +134,7 @@ export class PostgresSigningKeyRegistry {
     );
     if (result.rowCount !== 1) return false;
     const publicKey = createPublicKey(result.rows[0].public_key_pem);
+    if (publicKey.asymmetricKeyType !== 'ed25519') return false;
     return verify(null, Buffer.from(canonicalize(payload)), publicKey, Buffer.from(signature, 'base64url'));
   }
 
