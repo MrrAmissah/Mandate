@@ -9,15 +9,16 @@ This phase provides the execution substrate only. It does not register webhook, 
 ## Safety rules
 
 1. **No handler means no claim.** A dispatcher with no handlers returns `NO_HANDLERS`. A message whose exact event type is not registered remains `PENDING`.
-2. **Claim commits before handler I/O.** PostgreSQL leases the message and commits before the handler runs.
-3. **Claims use `FOR UPDATE SKIP LOCKED`.** Multiple workers can claim different due messages without blocking one another.
-4. **One exact lease owner may complete.** Completion verifies tenant, environment, message ID, worker ID, attempt number, status, and unexpired lease.
-5. **Late workers cannot overwrite.** A worker returning after expiry or takeover records `LEASE_LOST`; it does not change the current message state.
-6. **Stale leases are recoverable.** Reclaim records immutable `LEASE_EXPIRED` evidence before issuing the next attempt.
-7. **Retries are bounded.** Handler failures return the message to `PENDING` with bounded exponential backoff until the configured maximum, then move it to `DEAD_LETTER`.
-8. **Errors are sanitized.** Attempts store only an uppercase machine-safe code. Exception messages, provider bodies, secrets, and stack traces are not persisted.
-9. **Attempt history is append-only.** PostgreSQL rejects update or deletion of `outbox_attempts` rows.
-10. **Event types are exact.** There is no wildcard or catch-all handler in the core dispatcher.
+2. **Workers are environment-partitioned.** Every dispatcher declares exactly one `test` or `live` environment. It may optionally narrow claims to one tenant. A test worker cannot claim a live message.
+3. **Claim commits before handler I/O.** PostgreSQL leases the message and commits before the handler runs.
+4. **Claims use `FOR UPDATE SKIP LOCKED`.** Multiple workers can claim different due messages without blocking one another.
+5. **One exact lease owner may complete.** Completion verifies tenant, environment, message ID, worker ID, attempt number, status, and unexpired lease.
+6. **Late workers cannot overwrite.** A worker returning after expiry or takeover records `LEASE_LOST`; it does not change the current message state.
+7. **Stale leases are recoverable.** Reclaim records immutable `LEASE_EXPIRED` evidence before issuing the next attempt.
+8. **Retries are bounded.** Handler failures return the message to `PENDING` with bounded exponential backoff until the configured maximum, then move it to `DEAD_LETTER`.
+9. **Errors are sanitized.** Attempts store only an uppercase machine-safe code. Exception messages, provider bodies, secrets, and stack traces are not persisted.
+10. **Attempt history is append-only.** PostgreSQL rejects update or deletion of `outbox_attempts` rows.
+11. **Event types are exact.** There is no wildcard or catch-all handler in the core dispatcher.
 
 ## Message lifecycle
 
@@ -56,7 +57,11 @@ More than one evidence outcome may reference one attempt number. For example, a 
 ```js
 const dispatcher = new OutboxDispatcher({
   queue,
-  workerId: 'worker_eu_01',
+  workerId: 'worker_test_01',
+  scope: {
+    environment: 'test',
+    tenantId: 'ten_example' // Optional: omit for all tenants in test.
+  },
   handlers: {
     'mandate.created': async (payload, message) => {
       // Perform one idempotent external side effect.
