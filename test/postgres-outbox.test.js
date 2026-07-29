@@ -79,6 +79,7 @@ async function withServer(harness, run) {
 }
 
 async function createMandateEvent(harness, suffix = randomUUID()) {
+  let mandateId;
   await withServer(harness, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/v1/mandates`, {
       method: 'POST',
@@ -95,9 +96,10 @@ async function createMandateEvent(harness, suffix = randomUUID()) {
       })
     });
     assert.equal(response.status, 201);
+    mandateId = (await response.json()).id;
   });
   const messages = await harness.store.list('outboxMessages', harness.owner);
-  return messages.at(-1);
+  return messages.find((message) => message.aggregateId === mandateId);
 }
 
 integration('outbox migration registry and immutable attempt table exist', async () => {
@@ -108,7 +110,7 @@ integration('outbox migration registry and immutable attempt table exist', async
     );
     assert.equal(migration.rowCount, 1);
     const table = await harness.pool.query("SELECT to_regclass('mandate.outbox_attempts') AS name");
-    assert.equal(table.rows[0].name, 'mandate.outbox_attempts');
+    assert.ok(table.rows[0].name);
   } finally {
     await harness.close();
   }
@@ -121,6 +123,7 @@ integration('unregistered event types remain pending and unclaimed', async () =>
     const dispatcher = new OutboxDispatcher({
       queue: harness.queue,
       workerId: 'worker_unregistered',
+      scope: harness.owner,
       handlers: { 'receipt.issued': async () => {} },
       now: () => eventTime
     });
@@ -143,6 +146,7 @@ integration('successful delivery is processed once with immutable attempt eviden
     const dispatcher = new OutboxDispatcher({
       queue: harness.queue,
       workerId: 'worker_success',
+      scope: harness.owner,
       handlers: {
         'mandate.created': async (payload) => delivered.push(payload)
       },
@@ -180,6 +184,7 @@ integration('failed handlers retry with backoff and dead-letter at the configure
     const dispatcher = new OutboxDispatcher({
       queue: harness.queue,
       workerId: 'worker_failure',
+      scope: harness.owner,
       handlers: {
         'mandate.created': async () => {
           const error = new Error('private provider body');
@@ -219,22 +224,26 @@ integration('expired leases are recovered and the old worker cannot overwrite th
     const message = await createMandateEvent(harness);
     const firstClaim = await harness.queue.claim({
       workerId: 'worker_old',
+      scope: harness.owner,
       eventTypes: ['mandate.created'],
       now: eventTime,
       leaseMs: 1_000,
       maxAttempts: 3
     });
     assert.equal(firstClaim.kind, 'CLAIMED');
+    assert.equal(firstClaim.message.id, message.id);
 
     const recoveryTime = new Date(eventTime.getTime() + 1_001);
     const secondClaim = await harness.queue.claim({
       workerId: 'worker_new',
+      scope: harness.owner,
       eventTypes: ['mandate.created'],
       now: recoveryTime,
       leaseMs: 5_000,
       maxAttempts: 3
     });
     assert.equal(secondClaim.kind, 'CLAIMED');
+    assert.equal(secondClaim.message.id, message.id);
     assert.equal(secondClaim.message.attemptCount, 2);
 
     const oldCompletion = await harness.queue.succeed(firstClaim.message, {
@@ -263,8 +272,9 @@ integration('expired leases are recovered and the old worker cannot overwrite th
 integration('concurrent workers claim different messages with SKIP LOCKED', async () => {
   const harness = await createHarness();
   try {
-    await createMandateEvent(harness, 'one');
-    await createMandateEvent(harness, 'two');
+    const firstMessage = await createMandateEvent(harness, 'one');
+    const secondMessage = await createMandateEvent(harness, 'two');
+    const expected = new Set([firstMessage.id, secondMessage.id]);
     const handled = [];
     const handler = async (_payload, message) => {
       handled.push(message.id);
@@ -272,19 +282,21 @@ integration('concurrent workers claim different messages with SKIP LOCKED', asyn
     const first = new OutboxDispatcher({
       queue: new PostgresOutboxQueue(harness.pool),
       workerId: 'worker_parallel_one',
+      scope: harness.owner,
       handlers: { 'mandate.created': handler },
       now: () => eventTime
     });
     const second = new OutboxDispatcher({
       queue: new PostgresOutboxQueue(harness.pool),
       workerId: 'worker_parallel_two',
+      scope: harness.owner,
       handlers: { 'mandate.created': handler },
       now: () => eventTime
     });
 
     const results = await Promise.all([first.pollOnce(), second.pollOnce()]);
     assert.deepEqual(results.map((result) => result.kind), ['PROCESSED', 'PROCESSED']);
-    assert.equal(new Set(handled).size, 2);
+    assert.deepEqual(new Set(handled), expected);
     const messages = await harness.store.list('outboxMessages', harness.owner);
     assert.equal(messages.filter((value) => value.status === 'PROCESSED').length, 2);
   } finally {
