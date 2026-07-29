@@ -28,6 +28,10 @@ function timestamp(value) {
   return value ? new Date(value).toISOString() : null;
 }
 
+function json(value) {
+  return JSON.stringify(value);
+}
+
 function credentialFromRow(row) {
   return row && {
     id: row.id,
@@ -257,8 +261,8 @@ class PostgresView {
              version = mandate.mandates.version + 1, revoked_at = EXCLUDED.revoked_at,
              revocation_reason = EXCLUDED.revocation_reason`,
           [scope.tenantId, scope.environment, entity.id, entity.status, entity.principalId,
-            entity.agentId, entity.purpose, entity.resources, entity.allowedActions,
-            entity.deniedActions, entity.approvalRequiredActions, entity.constraints,
+            entity.agentId, entity.purpose, json(entity.resources), json(entity.allowedActions),
+            json(entity.deniedActions), json(entity.approvalRequiredActions), json(entity.constraints),
             entity.validFrom, entity.validUntil, entity.maxUses, entity.uses, entity.createdAt,
             entity.revokedAt, entity.revocationReason]
         );
@@ -289,7 +293,7 @@ class PostgresView {
              reason_code, reason, approval_id, evaluated_at, request_id)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
           [scope.tenantId, scope.environment, entity.id, entity.mandateId, entity.agentId,
-            entity.action, entity.resource, entity.context ?? {}, entity.outcome,
+            entity.action, entity.resource, json(entity.context ?? {}), entity.outcome,
             entity.reasonCode, entity.reason, entity.approvalId, entity.evaluatedAt,
             entity.requestId]
         );
@@ -302,7 +306,7 @@ class PostgresView {
              signature, issued_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
           [scope.tenantId, scope.environment, entity.id, entity.decisionId, entity.mandateId,
-            entity.keyId, entity.algorithm, payload, signature, entity.issuedAt]
+            entity.keyId, entity.algorithm, json(payload), signature, entity.issuedAt]
         );
         break;
       }
@@ -315,7 +319,7 @@ class PostgresView {
            RETURNING sequence`,
           [scope.tenantId, scope.environment, entity.id, entity.type, entity.objectType,
             entity.objectId, entity.actorType, entity.actorId, entity.requestId,
-            entity.data ?? {}, entity.createdAt]
+            json(entity.data ?? {}), entity.createdAt]
         );
         return { ...structuredClone(entity), sequence: Number(result.rows[0].sequence) };
       }
@@ -327,7 +331,7 @@ class PostgresView {
              processed_at, last_error_code, created_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
           [scope.tenantId, scope.environment, entity.id, entity.eventType, entity.aggregateType,
-            entity.aggregateId, entity.auditEventId, entity.payload, entity.status,
+            entity.aggregateId, entity.auditEventId, json(entity.payload), entity.status,
             entity.attemptCount ?? 0, entity.availableAt, entity.lockedBy ?? null,
             entity.lockedAt ?? null, entity.lockExpiresAt ?? null, entity.processedAt ?? null,
             entity.lastErrorCode ?? null, entity.createdAt]
@@ -375,7 +379,7 @@ class PostgresView {
         (tenant_id, environment, scope, idempotency_key, request_fingerprint, response_status,
          response_headers, response_body, created_at, expires_at)
        VALUES ($1,$2,$3,$4,$5,200,'{}'::jsonb,$6,now(),now() + interval '7 days')`,
-      [tenant.tenantId, tenant.environment, scope, key, fingerprint, value]
+      [tenant.tenantId, tenant.environment, scope, key, fingerprint, json(value)]
     );
     return structuredClone(value);
   }
