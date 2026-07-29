@@ -1,5 +1,5 @@
 import { DomainError } from '../domain/errors.js';
-import { issueSupersedingReceipt } from '../domain/receipts.js';
+import { issueSupersedingReceipt, verifyReceiptWithRegistry } from '../domain/receipts.js';
 import { assertObject, requiredString } from '../domain/validate.js';
 import {
   findReceiptSuccessor,
@@ -13,6 +13,7 @@ export async function supersedeReceipt({
   receiptId,
   input,
   signer,
+  signingKeys,
   now = new Date()
 }) {
   assertObject(input);
@@ -20,6 +21,13 @@ export async function supersedeReceipt({
   const predecessor = await lockReceiptForSupersession(transaction, ownership, receiptId);
   if (!predecessor) {
     throw new DomainError('RECEIPT_NOT_FOUND', 'The receipt does not exist.', 404);
+  }
+  if (!await verifyReceiptWithRegistry(predecessor, signingKeys)) {
+    throw new DomainError(
+      'RECEIPT_NOT_VERIFIABLE',
+      'The predecessor receipt cannot be verified with a trusted key.',
+      409
+    );
   }
   const successor = await findReceiptSuccessor(transaction, ownership, receiptId);
   if (successor) {
