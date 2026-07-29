@@ -65,6 +65,17 @@ export function createReservedActionAttempt({
     reservedAt,
     expiresAt: new Date(now.getTime() + parsed.expiresInSeconds * 1000).toISOString(),
     requestId,
+    executionStatus: null,
+    inputHash: null,
+    outputHash: null,
+    tool: null,
+    provider: null,
+    model: null,
+    completedAt: null,
+    completionRequestId: null,
+    terminatedAt: null,
+    terminationReason: null,
+    terminationRequestId: null,
     version: 0
   });
 }
