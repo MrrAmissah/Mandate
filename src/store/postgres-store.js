@@ -241,218 +241,4 @@ class PostgresView {
              expires_at = EXCLUDED.expires_at, revoked_at = EXCLUDED.revoked_at,
              revocation_reason = EXCLUDED.revocation_reason, last_used_at = EXCLUDED.last_used_at`,
           [scope.tenantId, scope.environment, entity.id, entity.name, entity.secretHash, entity.prefix,
-            entity.lastFour, entity.scopes, entity.status, entity.createdAt, entity.expiresAt,
-            entity.revokedAt, entity.revocationReason, entity.lastUsedAt]
-        );
-        break;
-      case 'mandates':
-        await this.queryable.query(
-          `INSERT INTO mandate.mandates
-            (tenant_id, environment, id, status, principal_id, agent_id, purpose, resources,
-             allowed_actions, denied_actions, approval_required_actions, constraints, valid_from,
-             valid_until, max_uses, uses, version, created_at, revoked_at, revocation_reason)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0,$17,$18,$19)
-           ON CONFLICT (tenant_id, environment, id) DO UPDATE SET
-             status = EXCLUDED.status, resources = EXCLUDED.resources,
-             allowed_actions = EXCLUDED.allowed_actions, denied_actions = EXCLUDED.denied_actions,
-             approval_required_actions = EXCLUDED.approval_required_actions,
-             constraints = EXCLUDED.constraints, valid_until = EXCLUDED.valid_until,
-             max_uses = EXCLUDED.max_uses, uses = EXCLUDED.uses,
-             version = mandate.mandates.version + 1, revoked_at = EXCLUDED.revoked_at,
-             revocation_reason = EXCLUDED.revocation_reason`,
-          [scope.tenantId, scope.environment, entity.id, entity.status, entity.principalId,
-            entity.agentId, entity.purpose, json(entity.resources), json(entity.allowedActions),
-            json(entity.deniedActions), json(entity.approvalRequiredActions), json(entity.constraints),
-            entity.validFrom, entity.validUntil, entity.maxUses, entity.uses, entity.createdAt,
-            entity.revokedAt, entity.revocationReason]
-        );
-        break;
-      case 'approvals':
-        await this.queryable.query(
-          `INSERT INTO mandate.approvals
-            (tenant_id, environment, id, mandate_id, agent_id, action, resource, summary, status,
-             requested_at, expires_at, decided_at, decided_by, decision_reason, consumed_at,
-             consumed_by_decision_id, version)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0)
-           ON CONFLICT (tenant_id, environment, id) DO UPDATE SET
-             status = EXCLUDED.status, decided_at = EXCLUDED.decided_at,
-             decided_by = EXCLUDED.decided_by, decision_reason = EXCLUDED.decision_reason,
-             consumed_at = EXCLUDED.consumed_at,
-             consumed_by_decision_id = EXCLUDED.consumed_by_decision_id,
-             version = mandate.approvals.version + 1`,
-          [scope.tenantId, scope.environment, entity.id, entity.mandateId, entity.agentId,
-            entity.action, entity.resource, entity.summary, entity.status, entity.requestedAt,
-            entity.expiresAt, entity.decidedAt, entity.decidedBy, entity.decisionReason,
-            entity.consumedAt, entity.consumedByDecisionId]
-        );
-        break;
-      case 'decisions':
-        await this.queryable.query(
-          `INSERT INTO mandate.authorization_decisions
-            (tenant_id, environment, id, mandate_id, agent_id, action, resource, context, outcome,
-             reason_code, reason, approval_id, evaluated_at, request_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-          [scope.tenantId, scope.environment, entity.id, entity.mandateId, entity.agentId,
-            entity.action, entity.resource, json(entity.context ?? {}), entity.outcome,
-            entity.reasonCode, entity.reason, entity.approvalId, entity.evaluatedAt,
-            entity.requestId]
-        );
-        break;
-      case 'receipts': {
-        const { signature, ...payload } = entity;
-        await this.queryable.query(
-          `INSERT INTO mandate.receipts
-            (tenant_id, environment, id, decision_id, mandate_id, key_id, algorithm, payload,
-             signature, issued_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-          [scope.tenantId, scope.environment, entity.id, entity.decisionId, entity.mandateId,
-            entity.keyId, entity.algorithm, json(payload), signature, entity.issuedAt]
-        );
-        break;
-      }
-      case 'auditEvents': {
-        const result = await this.queryable.query(
-          `INSERT INTO mandate.audit_events
-            (tenant_id, environment, id, sequence, type, object_type, object_id, actor_type,
-             actor_id, request_id, data, created_at)
-           VALUES ($1,$2,$3,0,$4,$5,$6,$7,$8,$9,$10,$11)
-           RETURNING sequence`,
-          [scope.tenantId, scope.environment, entity.id, entity.type, entity.objectType,
-            entity.objectId, entity.actorType, entity.actorId, entity.requestId,
-            json(entity.data ?? {}), entity.createdAt]
-        );
-        return { ...structuredClone(entity), sequence: Number(result.rows[0].sequence) };
-      }
-      case 'outboxMessages':
-        await this.queryable.query(
-          `INSERT INTO mandate.outbox_messages
-            (tenant_id, environment, id, event_type, aggregate_type, aggregate_id, audit_event_id,
-             payload, status, attempt_count, available_at, locked_by, locked_at, lock_expires_at,
-             processed_at, last_error_code, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
-          [scope.tenantId, scope.environment, entity.id, entity.eventType, entity.aggregateType,
-            entity.aggregateId, entity.auditEventId, json(entity.payload), entity.status,
-            entity.attemptCount ?? 0, entity.availableAt, entity.lockedBy ?? null,
-            entity.lockedAt ?? null, entity.lockExpiresAt ?? null, entity.processedAt ?? null,
-            entity.lastErrorCode ?? null, entity.createdAt]
-        );
-        break;
-      default:
-        throw new TypeError(`Unknown entity kind: ${kind}`);
-    }
-    return structuredClone(entity);
-  }
-
-  async appendAudit(owner, event) {
-    return this.save('auditEvents', owner, event);
-  }
-
-  async enqueueOutbox(owner, message) {
-    return this.save('outboxMessages', owner, message);
-  }
-
-  async idempotent(owner, scope, key, fingerprint, create) {
-    const tenant = ownership(owner);
-    if (!key) return structuredClone(await create());
-
-    const existing = await this.queryable.query(
-      `SELECT request_fingerprint, response_body
-       FROM mandate.idempotency_records
-       WHERE tenant_id = $1 AND environment = $2 AND scope = $3 AND idempotency_key = $4
-       FOR UPDATE`,
-      [tenant.tenantId, tenant.environment, scope, key]
-    );
-    if (existing.rows[0]) {
-      if (existing.rows[0].request_fingerprint !== fingerprint) {
-        throw new DomainError(
-          'IDEMPOTENCY_CONFLICT',
-          'This idempotency key was already used with a different request payload.',
-          409
-        );
-      }
-      return structuredClone(existing.rows[0].response_body);
-    }
-
-    const value = await create();
-    await this.queryable.query(
-      `INSERT INTO mandate.idempotency_records
-        (tenant_id, environment, scope, idempotency_key, request_fingerprint, response_status,
-         response_headers, response_body, created_at, expires_at)
-       VALUES ($1,$2,$3,$4,$5,200,'{}'::jsonb,$6,now(),now() + interval '7 days')`,
-      [tenant.tenantId, tenant.environment, scope, key, fingerprint, json(value)]
-    );
-    return structuredClone(value);
-  }
-}
-
-export class PostgresStore extends PostgresView {
-  constructor(pool, { maximumTransactionAttempts = 4 } = {}) {
-    super(pool);
-    this.pool = pool;
-    this.maximumTransactionAttempts = maximumTransactionAttempts;
-  }
-
-  async transaction(work) {
-    for (let attempt = 1; attempt <= this.maximumTransactionAttempts; attempt += 1) {
-      const client = await this.pool.connect();
-      try {
-        await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
-        const result = await work(new PostgresView(client, { lockReads: true }));
-        await client.query('COMMIT');
-        return structuredClone(result);
-      } catch (error) {
-        await client.query('ROLLBACK').catch(() => {});
-        if (RETRYABLE_CODES.has(error.code) && attempt < this.maximumTransactionAttempts) continue;
-        throw error;
-      } finally {
-        client.release();
-      }
-    }
-    throw new Error('PostgreSQL transaction retry limit exhausted.');
-  }
-
-  async ensureBootstrap({ tenantId, tenantName = 'Local tenant', environment, credential }) {
-    const scope = ownership({ tenantId, environment });
-    await this.transaction(async (transaction) => {
-      await transaction.queryable.query(
-        `INSERT INTO mandate.tenants (id, name, status, created_at, updated_at)
-         VALUES ($1,$2,'ACTIVE',now(),now())
-         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = now()`,
-        [scope.tenantId, tenantName]
-      );
-      await transaction.queryable.query(
-        `INSERT INTO mandate.api_credentials
-          (tenant_id, environment, id, name, secret_hash, prefix, last_four, scopes, status,
-           created_at, expires_at, revoked_at, revocation_reason, last_used_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'ACTIVE',$9,$10,NULL,NULL,NULL)
-         ON CONFLICT (tenant_id, environment, id) DO UPDATE SET
-           name = EXCLUDED.name,
-           secret_hash = CASE WHEN mandate.api_credentials.status = 'ACTIVE'
-             THEN EXCLUDED.secret_hash ELSE mandate.api_credentials.secret_hash END,
-           prefix = CASE WHEN mandate.api_credentials.status = 'ACTIVE'
-             THEN EXCLUDED.prefix ELSE mandate.api_credentials.prefix END,
-           last_four = CASE WHEN mandate.api_credentials.status = 'ACTIVE'
-             THEN EXCLUDED.last_four ELSE mandate.api_credentials.last_four END,
-           scopes = CASE WHEN mandate.api_credentials.status = 'ACTIVE'
-             THEN EXCLUDED.scopes ELSE mandate.api_credentials.scopes END,
-           expires_at = CASE WHEN mandate.api_credentials.status = 'ACTIVE'
-             THEN EXCLUDED.expires_at ELSE mandate.api_credentials.expires_at END`,
-        [scope.tenantId, scope.environment, credential.id, credential.name,
-          credential.secretHash, credential.prefix, credential.lastFour, credential.scopes,
-          credential.createdAt, credential.expiresAt]
-      );
-    });
-  }
-
-  async close() {
-    await this.pool.end();
-  }
-}
-
-export async function createPostgresPool({ connectionString, max = 10, ssl = false } = {}) {
-  if (!connectionString) throw new Error('DATABASE_URL is required for PostgreSQL mode.');
-  const module = await import('pg');
-  const Pool = module.Pool ?? module.default?.Pool;
-  if (!Pool) throw new Error('The pg package did not expose Pool.');
-  return new Pool({ connectionString, max, ssl });
-}
+            entity.lastFour, entity.scopes, entity.stat≤»="25›Ö•–Å—°•Ãπ≈’ï…ÂÖâ±îπ≈’ï…‰†(ÄÄÄÄÄÄÄÄÄÅÅ%9MIPÅ%9Q<ÅµÖπëÖ—îπ…ïçï•¡—Ã(ÄÄÄÄÄÄÄÄÄÄÄÄ°—ïπÖπ—}•ê∞ÅïπŸ•…Ωπµïπ–∞Å•ê∞Åëïç•Õ•Ωπ}•ê∞ÅµÖπëÖ—ï}•ê∞Å≠ïÂ}•ê∞ÅÖ±ùΩ…•—°¥∞Å¡ÖÂ±ΩÖê∞(ÄÄÄÄÄÄÄÄÄÄÄÄÅÕ•ùπÖ—’…î∞Å•ÕÕ’ïë}Ö–§(ÄÄÄÄÄÄÄÄÄÄÅY1ULÄ†êƒ∞ê»∞êÃ∞ê–∞ê‘∞êÿ∞ê‹∞ê‡∞ê‰∞êƒ¿•Ä∞(ÄÄÄÄÄÄÄÄÄÅmÕçΩ¡îπ—ïπÖπ—%ê∞ÅÕçΩ¡îπïπŸ•…Ωπµïπ–∞Åïπ—•—‰π•ê∞Åïπ—•—‰πëïç•Õ•Ωπ%ê∞Åïπ—•—‰πµÖπëÖ—ï%ê∞(ÄÄÄÄÄÄÄÄÄÄÄÅïπ—•—‰π≠ïÂ%ê∞Åïπ—•—‰πÖ±ùΩ…•—°¥∞Å©ÕΩ∏°¡ÖÂ±ΩÖê§∞ÅÕ•ùπÖ—’…î∞Åïπ—•—‰π•ÕÕ’ïë—t(ÄÄÄÄÄÄÄÄ§Ï(ÄÄÄÄÄÄÄÅâ…ïÖ¨Ï(ÄÄÄÄÄÅÙ(ÄÄÄÄÄÅçÖÕîÄùÖ’ë•—Ÿïπ—ÃúËÅÏ(ÄÄÄÄÄÄÄÅçΩπÕ–Å…ïÕ’±–ÄÙÅÖ›Ö•–Å—°•Ãπ≈’ï…ÂÖâ±îπ≈’ï…‰†(ÄÄÄÄÄÄÄÄÄÅÅ%9MIPÅ%9Q<ÅµÖπëÖ—îπÖ’ë•—}ïŸïπ—Ã(ÄÄÄÄÄÄÄÄÄÄÄÄ°—ïπÖπ—}•ê∞ÅïπŸ•…Ωπµïπ–∞Å•ê∞ÅÕï≈’ïπçî∞Å—Â¡î∞ÅΩâ©ïç—}—Â¡î∞ÅΩâ©ïç—}•ê∞ÅÖç—Ω…}—Â¡î∞(ÄÄÄÄÄÄÄÄÄÄÄÄÅÖç—Ω…}•ê∞Å…ï≈’ïÕ—}•ê∞ÅëÖ—Ñ∞Åç…ïÖ—ïë}Ö–§(ÄÄÄÄÄÄÄÄÄÄÅY1ULÄ†êƒ∞ê»∞êÃ∞¿∞ê–∞ê‘∞êÿ∞ê‹∞ê‡∞ê‰∞êƒ¿∞êƒƒ§(ÄÄÄÄÄÄÄÄÄÄÅIQUI9%9ÅÕï≈’ïπçïÄ∞(ÄÄÄÄÄÄÄÄÄÅmÕçΩ¡îπ—ïπÖπ—%ê∞ÅÕçΩ¡îπïπŸ•…Ωπµïπ–∞Åïπ—•—‰π•ê∞Åïπ—•—‰π—Â¡î∞Åïπ—•—‰πΩâ©ïç—QÂ¡î∞(ÄÄÄÄÄÄÄÄÄÄÄÅïπ—•—‰πΩâ©ïç—%ê∞Åïπ—•—‰πÖç—Ω…QÂ¡î∞Åïπ—•—‰πÖç—Ω…%ê∞Åïπ—•—‰π…ï≈’ïÕ—%ê∞(ÄÄÄÄÄÄÄÄÄÄÄÅ©ÕΩ∏°ïπ—•—‰πëÖ—ÑÄ¸¸ÅÌÙ§∞Åïπ—•—‰πç…ïÖ—ïë—t(ÄÄÄÄÄÄÄÄ§Ï(ÄÄÄÄÄÄÄÅ…ï—’…∏ÅÏÄ∏∏πÕ—…’ç—’…ïë±Ωπî°ïπ—•—‰§∞ÅÕï≈’ïπçîËÅ9’µâï»°…ïÕ’±–π…Ω›Õl¡tπÕï≈’ïπçî§ÅÙÏ(ÄÄÄÄÄÅÙ(ÄÄÄÄÄÅçÖÕîÄùΩ’—âΩ·5ïÕÕÖùïÃúË(ÄÄÄÄÄÄÄÅÖ›Ö•–Å—°•Ãπ≈’ï…ÂÖâ±îπ≈’ï…‰†(ÄÄÄÄÄÄÄÄÄÅÅ%9MIPÅ%9Q<ÅµÖπëÖ—îπΩ’—âΩ·}µïÕÕÖùïÃ(ÄÄÄÄÄÄÄÄÄÄÄÄ°—ïπÖπ—}•ê∞ÅïπŸ•…Ωπµïπ–∞Å•ê∞ÅïŸïπ—}—Â¡î∞ÅÖùù…ïùÖ—ï}—Â¡î∞ÅÖùù…ïùÖ—ï}•ê∞ÅÖ’ë•—}ïŸïπ—}•ê∞(ÄÄÄÄÄÄÄÄÄÄÄÄÅ¡ÖÂ±ΩÖê∞ÅÕ—Ö—’Ã∞ÅÖ——ïµ¡—}çΩ’π–∞ÅÖŸÖ•±Öâ±ï}Ö–∞Å±Ωç≠ïë}â‰∞Å±Ωç≠ïë}Ö–∞Å±Ωç≠}ï·¡•…ïÕ}Ö–∞(ÄÄÄÄÄÄÄÄÄÄÄÄÅ¡…ΩçïÕÕïë}Ö–∞Å±ÖÕ—}ï……Ω…}çΩëî∞Åç…ïÖ—ïë}Ö–§(ÄÄÄÄÄÄÄÄÄÄÅY1ULÄ†êƒ∞ê»∞êÃ∞ê–∞ê‘∞êÿ∞ê‹∞ê‡∞ê‰∞êƒ¿∞êƒƒ∞êƒ»∞êƒÃ∞êƒ–∞êƒ‘∞êƒÿ∞êƒ‹•Ä∞(ÄÄÄÄÄÄÄÄÄÅmÕçΩ¡îπ—ïπÖπ—%ê∞ÅÕçΩ¡îπïπŸ•…Ωπµïπ–∞Åïπ—•—‰π•ê∞Åïπ—•—‰πïŸïπ—QÂ¡î∞Åïπ—•—‰πÖùù…ïùÖ—ïQÂ¡î∞(ÄÄÄÄÄÄÄÄÄÄÄÅïπ—•—‰πÖùù…ïùÖ—ï%ê∞Åïπ—•—‰πÖ’ë•—Ÿïπ—%ê∞Å©ÕΩ∏°ïπ—•—‰π¡ÖÂ±ΩÖê§∞Åïπ—•—‰πÕ—Ö—’Ã∞(ÄÄÄÄÄÄÄÄÄÄÄÅïπ—•—‰πÖ——ïµ¡—Ω’π–Ä¸¸Ä¿∞Åïπ—•—‰πÖŸÖ•±Öâ±ï–∞Åïπ—•—‰π±Ωç≠ïë	‰Ä¸¸Åπ’±∞∞(ÄÄÄÄÄÄÄÄÄÄÄÅïπ—•—‰π±Ωç≠ïë–Ä¸¸Åπ’±∞∞Åïπ—•—‰π±Ωç≠·¡•…ïÕ–Ä¸¸Åπ’±∞∞Åïπ—•—‰π¡…ΩçïÕÕïë–Ä¸¸Åπ’±∞∞(ÄÄÄÄÄÄÄÄÄÄÄÅïπ—•—‰π±ÖÕ—……Ω…ΩëîÄ¸¸Åπ’±∞∞Åïπ—•—‰πç…ïÖ—ïë—t(ÄÄÄÄÄÄÄÄ§Ï(ÄÄÄÄÄÄÄÅâ…ïÖ¨Ï(ÄÄÄÄÄÅëïôÖ’±–Ë(ÄÄÄÄÄÄÄÅ—°…Ω‹Åπï‹ÅQÂ¡ï……Ω»°ÅUπ≠πΩ›∏Åïπ—•—‰Å≠•πêËÄëÌ≠•πëıÄ§Ï(ÄÄÄÅÙ(ÄÄÄÅ…ï—’…∏ÅÕ—…’ç—’…ïë±Ωπî°ïπ—•—‰§Ï(ÄÅÙ((ÄÅÖÕÂπåÅÖ¡¡ïπë’ë•–°Ω›πï»∞ÅïŸïπ–§ÅÏ(ÄÄÄÅ…ï—’…∏Å—°•ÃπÕÖŸî†ùÖ’ë•—Ÿïπ—Ãú∞ÅΩ›πï»∞ÅïŸïπ–§Ï(ÄÅÙ((ÄÅÖÕÂπåÅïπ≈’ï’ï=’—âΩ‡°Ω›πï»∞ÅµïÕÕÖùî§ÅÏ(ÄÄÄÅ…ï—’…∏Å—°•ÃπÕÖŸî†ùΩ’—âΩ·5ïÕÕÖùïÃú∞ÅΩ›πï»∞ÅµïÕÕÖùî§Ï(ÄÅÙ((ÄÅÖÕÂπåÅ•ëïµ¡Ω—ïπ–°Ω›πï»∞ÅÕçΩ¡î∞Å≠ï‰∞Åô•πùï…¡…•π–∞Åç…ïÖ—î§ÅÏ(ÄÄÄÅçΩπÕ–Å—ïπÖπ–ÄÙÅΩ›πï…Õ°•¿°Ω›πï»§Ï(ÄÄÄÅ•òÄ†Ö≠ï‰§Å…ï—’…∏ÅÕ—…’ç—’…ïë±Ωπî°Ö›Ö•–Åç…ïÖ—î†§§Ï((ÄÄÄÅçΩπÕ–Åï·•Õ—•πúÄÙÅÖ›Ö•–Å—°•Ãπ≈’ï…ÂÖâ±îπ≈’ï…‰†(ÄÄÄÄÄÅÅM1PÅ…ï≈’ïÕ—}ô•πùï…¡…•π–∞Å…ïÕ¡ΩπÕï}âΩë‰(ÄÄÄÄÄÄÅI=4ÅµÖπëÖ—îπ•ëïµ¡Ω—ïπçÂ}…ïçΩ…ëÃ(ÄÄÄÄÄÄÅ]!IÅ—ïπÖπ—}•êÄÙÄêƒÅ9ÅïπŸ•…Ωπµïπ–ÄÙÄê»Å9ÅÕçΩ¡îÄÙÄêÃÅ9Å•ëïµ¡Ω—ïπçÂ}≠ï‰ÄÙÄê–(ÄÄÄÄÄÄÅ=HÅUAQÄ∞(ÄÄÄÄÄÅm—ïπÖπ–π—ïπÖπ—%ê∞Å—ïπÖπ–πïπŸ•…Ωπµïπ–∞ÅÕçΩ¡î∞Å≠ïÂt(ÄÄÄÄ§Ï(ÄÄÄÅ•òÄ°ï·•Õ—•πúπ…Ω›Õl¡t§ÅÏ(ÄÄÄÄÄÅ•òÄ°ï·•Õ—•πúπ…Ω›Õl¡tπ…ï≈’ïÕ—}ô•πùï…¡…•π–ÄÑÙÙÅô•πùï…¡…•π–§ÅÏ(ÄÄÄÄÄÄÄÅ—°…Ω‹Åπï‹ÅΩµÖ•π……Ω»†(ÄÄÄÄÄÄÄÄÄÄù%5A=Q9e}=91%Pú∞(ÄÄÄÄÄÄÄÄÄÄùQ°•ÃÅ•ëïµ¡Ω—ïπç‰Å≠ï‰Å›ÖÃÅÖ±…ïÖë‰Å’ÕïêÅ›•—†ÅÑÅë•ôôï…ïπ–Å…ï≈’ïÕ–Å¡ÖÂ±ΩÖê∏ú∞(ÄÄÄÄÄÄÄÄÄÄ–¿‰(ÄÄÄÄÄÄÄÄ§Ï(ÄÄÄÄÄÅÙ(ÄÄÄÄÄÅ…ï—’…∏ÅÕ—…’ç—’…ïë±Ωπî°ï·•Õ—•πúπ…Ω›Õl¡tπ…ïÕ¡ΩπÕï}âΩë‰§Ï(ÄÄÄÅÙ((ÄÄÄÅçΩπÕ–ÅŸÖ±’îÄÙÅÖ›Ö•–Åç…ïÖ—î†§Ï(ÄÄÄÅÖ›Ö•–Å—°•Ãπ≈’ï…ÂÖâ±îπ≈’ï…‰†(ÄÄÄÄÄÅÅ%9MIPÅ%9Q<ÅµÖπëÖ—îπ•ëïµ¡Ω—ïπçÂ}…ïçΩ…ëÃ(ÄÄÄÄÄÄÄÄ°—ïπÖπ—}•ê∞ÅïπŸ•…Ωπµïπ–∞ÅÕçΩ¡î∞Å•ëïµ¡Ω—ïπçÂ}≠ï‰∞Å…ï≈’ïÕ—}ô•πùï…¡…•π–∞Å…ïÕ¡ΩπÕï}Õ—Ö—’Ã∞(ÄÄÄÄÄÄÄÄÅ…ïÕ¡ΩπÕï}°ïÖëï…Ã∞Å…ïÕ¡ΩπÕï}âΩë‰∞Åç…ïÖ—ïë}Ö–∞Åï·¡•…ïÕ}Ö–§(ÄÄÄÄÄÄÅY1ULÄ†êƒ∞ê»∞êÃ∞ê–∞ê‘∞»¿¿∞ùÌÙúËÈ©ÕΩπà∞êÿ±πΩ‹†§±πΩ‹†§Ä¨Å•π—ï…ŸÖ∞Äú‹ÅëÖÂÃú•Ä∞(ÄÄÄÄÄÅm—ïπÖπ–π—ïπÖπ—%ê∞Å—ïπÖπ–πïπŸ•…Ωπµïπ–∞ÅÕçΩ¡î∞Å≠ï‰∞Åô•πùï…¡…•π–∞Å©ÕΩ∏°ŸÖ±’î•t(ÄÄÄÄ§Ï(ÄÄÄÅ…ï—’…∏ÅÕ—…’ç—’…ïë±Ωπî°ŸÖ±’î§Ï(ÄÅÙ)Ù()ï·¡Ω…–Åç±ÖÕÃÅAΩÕ—ù…ïÕM—Ω…îÅï·—ïπëÃÅAΩÕ—ù…ïÕY•ï‹ÅÏ(ÄÅçΩπÕ—…’ç—Ω»°¡ΩΩ∞∞ÅÏÅµÖ·•µ’µQ…ÖπÕÖç—•Ωπ——ïµ¡—ÃÄÙÄ–ÅÙÄÙÅÌÙ§ÅÏ(ÄÄÄÅÕ’¡ï»°¡ΩΩ∞§Ï(ÄÄÄÅ—°•Ãπ¡ΩΩ∞ÄÙÅ¡ΩΩ∞Ï(ÄÄÄÅ—°•ÃπµÖ·•µ’µQ…ÖπÕÖç—•Ωπ——ïµ¡—ÃÄÙÅµÖ·•µ’µQ…ÖπÕÖç—•Ωπ——ïµ¡—ÃÏ(ÄÅÙ((ÄÅÖÕÂπåÅ—…ÖπÕÖç—•Ω∏°›Ω…¨§ÅÏ(ÄÄÄÅôΩ»Ä°±ï–ÅÖ——ïµ¡–ÄÙÄƒÏÅÖ——ïµ¡–ÄÙÅ—°•ÃπµÖ·•µ’µQ…ÖπÕÖç—•Ωπ——ïµ¡—ÃÏÅÖ——ïµ¡–Ä¨ÙÄƒ§ÅÏ(ÄÄÄÄÄÅçΩπÕ–Åç±•ïπ–ÄÙÅÖ›Ö•–Å—°•Ãπ¡ΩΩ∞πçΩππïç–†§Ï(ÄÄÄÄÄÅ—…‰ÅÏ(ÄÄÄÄÄÄÄÅÖ›Ö•–Åç±•ïπ–π≈’ï…‰†ù	%8Å%M=1Q%=8Å1Y0ÅMI%1%i	1ú§Ï(ÄÄÄÄÄÄÄÅçΩπÕ–Å…ïÕ’±–ÄÙÅÖ›Ö•–Å›Ω…¨°πï‹ÅAΩÕ—ù…ïÕY•ï‹°ç±•ïπ–∞ÅÏÅ±Ωç≠IïÖëÃËÅ—…’îÅÙ§§Ï(ÄÄÄÄÄÄÄÅÖ›Ö•–Åç±•ïπ–π≈’ï…‰†ù=55%Pú§Ï(ÄÄÄÄÄÄÄÅ…ï—’…∏ÅÕ—…’ç—’…ïë±Ωπî°…ïÕ’±–§Ï(ÄÄÄÄÄÅÙÅçÖ—ç†Ä°ï……Ω»§ÅÏ(ÄÄÄÄÄÄÄÅÖ›Ö•–Åç±•ïπ–π≈’ï…‰†ùI=11	,ú§πçÖ—ç†††§ÄÙ¯ÅÌÙ§Ï(ÄÄÄÄÄÄÄÅ•òÄ°IQIe	1}=Lπ°ÖÃ°ï……Ω»πçΩëî§ÄòòÅÖ——ïµ¡–ÄÅ—°•ÃπµÖ·•µ’µQ…ÖπÕÖç—•Ωπ——ïµ¡—Ã§ÅçΩπ—•π’îÏ(ÄÄÄÄÄÄÄÅ—°…Ω‹Åï……Ω»Ï(ÄÄÄÄÄÅÙÅô•πÖ±±‰ÅÏ(ÄÄÄÄÄÄÄÅç±•ïπ–π…ï±ïÖÕî†§Ï(ÄÄÄÄÄÅÙ(ÄÄÄÅÙ(ÄÄÄÅ—°…Ω‹Åπï‹Å……Ω»†ùAΩÕ—ù…ïME0Å—…ÖπÕÖç—•Ω∏Å…ï—…‰Å±•µ•–Åï·°Ö’Õ—ïê∏ú§Ï(ÄÅÙ((ÄÅÖÕÂπåÅïπÕ’…ï	ΩΩ—Õ—…Ö¿°ÏÅ—ïπÖπ—%ê∞Å—ïπÖπ—9ÖµîÄÙÄù1ΩçÖ∞Å—ïπÖπ–ú∞ÅïπŸ•…Ωπµïπ–∞Åç…ïëïπ—•Ö∞ÅÙ§ÅÏ(ÄÄÄÅçΩπÕ–ÅÕçΩ¡îÄÙÅΩ›πï…Õ°•¿°ÏÅ—ïπÖπ—%ê∞ÅïπŸ•…Ωπµïπ–ÅÙ§Ï(ÄÄÄÅçΩπÕ–Åç±•ïπ–ÄÙÅÖ›Ö•–Å—°•Ãπ¡ΩΩ∞πçΩππïç–†§Ï(ÄÄÄÅ±ï–Å±Ωç≠ïêÄÙÅôÖ±ÕîÏ((ÄÄÄÅ—…‰ÅÏ(ÄÄÄÄÄÅÖ›Ö•–Åç±•ïπ–π≈’ï…‰†ùM1PÅ¡ù}ÖëŸ•ÕΩ…Â}±Ωç¨°°ÖÕ°—ï·—ï·—ïπëïê†êƒ∞Ä¿§§ú∞ÅlùµÖπëÖ—îÈâΩΩ—Õ—…Ö¿ùt§Ï(ÄÄÄÄÄÅ±Ωç≠ïêÄÙÅ—…’îÏ(ÄÄÄÄÄÅÖ›Ö•–Åç±•ïπ–π≈’ï…‰†ù	%8ú§Ï(ÄÄÄÄÄÅÖ›Ö•–Åç±•ïπ–π≈’ï…‰†(ÄÄÄÄÄÄÄÅÅ%9MIPÅ%9Q<ÅµÖπëÖ—îπ—ïπÖπ—ÃÄ°•ê∞ÅπÖµî∞ÅÕ—Ö—’Ã∞Åç…ïÖ—ïë}Ö–∞Å’¡ëÖ—ïë}Ö–§(ÄÄÄÄÄÄÄÄÅY1ULÄ†êƒ∞ê»∞ùQ%Yú±πΩ‹†§±πΩ‹†§§(ÄÄÄÄÄÄÄÄÅ=8Å=91%PÄ°•ê§Å<ÅUAQÅMPÅπÖµîÄÙÅa1UππÖµî∞Å’¡ëÖ—ïë}Ö–ÄÙÅπΩ‹†•Ä∞(ÄÄÄÄÄÄÄÅmÕçΩ¡îπ—ïπÖπ—%ê∞Å—ïπÖπ—9Öµït(ÄÄÄÄÄÄ§Ï(ÄÄÄÄÄÅÖ›Ö•–Åç±•ïπ–π≈’ï…‰†(ÄÄÄÄÄÄÄÅÅ%9MIPÅ%9Q<ÅµÖπëÖ—îπÖ¡•}ç…ïëïπ—•Ö±Ã(ÄÄÄÄÄÄÄÄÄÄ°—ïπÖπ—}•ê∞ÅïπŸ•…Ωπµïπ–∞Å•ê∞ÅπÖµî∞ÅÕïç…ï—}°ÖÕ†∞Å¡…ïô•‡∞Å±ÖÕ—}ôΩ’»∞ÅÕçΩ¡ïÃ∞ÅÕ—Ö—’Ã∞(ÄÄÄÄÄÄÄÄÄÄÅç…ïÖ—ïë}Ö–∞Åï·¡•…ïÕ}Ö–∞Å…ïŸΩ≠ïë}Ö–∞Å…ïŸΩçÖ—•Ωπ}…ïÖÕΩ∏∞Å±ÖÕ—}’Õïë}Ö–§(ÄÄÄÄÄÄÄÄÅY1ULÄ†êƒ∞ê»∞êÃ∞ê–∞ê‘∞êÿ∞ê‹∞ê‡∞ùQ%Yú∞ê‰∞êƒ¿±9U10±9U10±9U10§(ÄÄÄÄÄÄÄÄÅ=8Å=91%PÄ°—ïπÖπ—}•ê∞ÅïπŸ•…Ωπµïπ–∞Å•ê§Å<ÅUAQÅMP(ÄÄÄÄÄÄÄÄÄÄÅπÖµîÄÙÅa1UππÖµî∞(ÄÄÄÄÄÄÄÄÄÄÅÕïç…ï—}°ÖÕ†ÄÙÅMÅ]!8ÅµÖπëÖ—îπÖ¡•}ç…ïëïπ—•Ö±ÃπÕ—Ö—’ÃÄÙÄùQ%Yú(ÄÄÄÄÄÄÄÄÄÄÄÄÅQ!8Åa1UπÕïç…ï—}°ÖÕ†Å1MÅµÖπëÖ—îπÖ¡•}ç…ïëïπ—•Ö±ÃπÕïç…ï—}°ÖÕ†Å9∞(ÄÄÄÄÄÄÄÄÄÄÅ¡…ïô•‡ÄÙÅMÅ]!8ÅµÖπëÖ—îπÖ¡•}ç…ïëïπ—•Ö±ÃπÕ—Ö—’ÃÄÙÄùQ%Yú(ÄÄÄÄÄÄÄÄÄÄÄÄÅQ!8Åa1Uπ¡…ïô•‡Å1MÅµÖπëÖ—îπÖ¡•}ç…ïëïπ—•Ö±Ãπ¡…ïô•‡Å9∞(ÄÄÄÄÄÄÄÄÄÄÅ±ÖÕ—}ôΩ’»ÄÙÅMÅ]!8ÅµÖπëÖ—îπÖ¡•}ç…ïëïπ—•Ö±ÃπÕ—Ö—’ÃÄÙÄùQ%Yú(ÄÄÄÄÄÄÄÄÄÄÄÄÅQ!8Åa1Uπ±ÖÕ—}ôΩ’»Å1MÅµÖπëÖ—îπÖ¡•}ç…ïëïπ—•Ö±Ãπ±ÖÕ—}ôΩ’»Å9∞(ÄÄÄÄÄÄÄÄÄÄÅÕçΩ¡ïÃÄÙÅMÅ]!8ÅµÖπëÖ—îπÖ¡•}ç…ïëïπ—•Ö±ÃπÕ—Ö—’ÃÄÙÄùQ%Yú(ÄÄÄÄÄÄÄÄÄÄÄÄÅQ!8Åa1UπÕçΩ¡ïÃÅ1MÅµÖπëÖ—îπÖ¡•}ç…ïëïπ—•Ö±ÃπÕçΩ¡ïÃÅ9∞(ÄÄÄÄÄÄÄÄÄÄÅï·¡•…ïÕ}Ö–ÄÙÅMÅ]!8ÅµÖπëÖ—îπÖ¡•}ç…ïëïπ—•Ö±ÃπÕ—Ö—’ÃÄÙÄùQ%Yú(ÄÄÄÄÄÄÄÄÄÄÄÄÅQ!8Åa1Uπï·¡•…ïÕ}Ö–Å1MÅµÖπëÖ—îπÖ¡•}ç…ïëïπ—•Ö±Ãπï·¡•…ïÕ}Ö–Å9Ä∞(ÄÄÄÄÄÄÄÅmÕçΩ¡îπ—ïπÖπ—%ê∞ÅÕçΩ¡îπïπŸ•…Ωπµïπ–∞Åç…ïëïπ—•Ö∞π•ê∞Åç…ïëïπ—•Ö∞ππÖµî∞(ÄÄÄÄÄÄÄÄÄÅç…ïëïπ—•Ö∞πÕïç…ï—!ÖÕ†∞Åç…ïëïπ—•Ö∞π¡…ïô•‡∞Åç…ïëïπ—•Ö∞π±ÖÕ—Ω’»∞Åç…ïëïπ—•Ö∞πÕçΩ¡ïÃ∞(ÄÄÄÄÄÄÄÄÄÅç…ïëïπ—•Ö∞πç…ïÖ—ïë–∞Åç…ïëïπ—•Ö∞πï·¡•…ïÕ—t(ÄÄÄÄÄÄ§Ï(ÄÄÄÄÄÅÖ›Ö•–Åç±•ïπ–π≈’ï…‰†ù=55%Pú§Ï(ÄÄÄÅÙÅçÖ—ç†Ä°ï……Ω»§ÅÏ(ÄÄÄÄÄÅÖ›Ö•–Åç±•ïπ–π≈’ï…‰†ùI=11	,ú§πçÖ—ç†††§ÄÙ¯ÅÌÙ§Ï(ÄÄÄÄÄÅ—°…Ω‹Åï……Ω»Ï(ÄÄÄÅÙÅô•πÖ±±‰ÅÏ(ÄÄÄÄÄÅ•òÄ°±Ωç≠ïê§ÅÏ(ÄÄÄÄÄÄÄÅÖ›Ö•–Åç±•ïπ–π≈’ï…‰†ùM1PÅ¡ù}ÖëŸ•ÕΩ…Â}’π±Ωç¨°°ÖÕ°—ï·—ï·—ïπëïê†êƒ∞Ä¿§§ú∞ÅlùµÖπëÖ—îÈâΩΩ—Õ—…Ö¿ùt§(ÄÄÄÄÄÄÄÄÄÄπçÖ—ç†††§ÄÙ¯ÅÌÙ§Ï(ÄÄÄÄÄÅÙ(ÄÄÄÄÄÅç±•ïπ–π…ï±ïÖÕî†§Ï(ÄÄÄÅÙ(ÄÅÙ((ÄÅÖÕÂπåÅç±ΩÕî†§ÅÏ(ÄÄÄÅÖ›Ö•–Å—°•Ãπ¡ΩΩ∞πïπê†§Ï(ÄÅÙ)Ù()ï·¡Ω…–ÅÖÕÂπåÅô’πç—•Ω∏Åç…ïÖ—ïAΩÕ—ù…ïÕAΩΩ∞°ÏÅçΩππïç—•ΩπM—…•πú∞ÅµÖ‡ÄÙÄƒ¿∞ÅÕÕ∞ÄÙÅôÖ±ÕîÅÙÄÙÅÌÙ§ÅÏ(ÄÅ•òÄ†ÖçΩππïç—•ΩπM—…•πú§Å—°…Ω‹Åπï‹Å……Ω»†ùQ	M}UI0Å•ÃÅ…ï≈’•…ïêÅôΩ»ÅAΩÕ—ù…ïME0ÅµΩëî∏ú§Ï(ÄÅçΩπÕ–ÅµΩë’±îÄÙÅÖ›Ö•–Å•µ¡Ω…–†ù¡úú§Ï(ÄÅçΩπÕ–ÅAΩΩ∞ÄÙÅµΩë’±îπAΩΩ∞Ä¸¸ÅµΩë’±îπëïôÖ’±–¸πAΩΩ∞Ï(ÄÅ•òÄ†ÖAΩΩ∞§Å—°…Ω‹Åπï‹Å……Ω»†ùQ°îÅ¡úÅ¡Öç≠ÖùîÅë•êÅπΩ–Åï·¡ΩÕîÅAΩΩ∞∏ú§Ï(ÄÅ…ï—’…∏Åπï‹ÅAΩΩ∞°ÏÅçΩππïç—•ΩπM—…•πú∞ÅµÖ‡∞ÅÕÕ∞ÅÙ§Ï)Ù(
