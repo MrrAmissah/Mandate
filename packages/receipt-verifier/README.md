@@ -51,13 +51,15 @@ const result = await cache.verify(receipt);
 Cache rules:
 
 - one cache instance belongs permanently to one caller-defined `scopeId`;
-- concurrent refreshes share one loader operation;
+- concurrent ordinary and unknown-key refreshes share one loader operation and result;
 - freshness begins when loading completes;
 - expired data is never used when refresh fails;
-- a receipt using an unknown key refreshes once only when the first check used an existing cache entry;
 - malformed receipts and unsupported algorithms fail before the loader runs;
+- unknown-key discovery is attempted at most once per cached generation, including across random key IDs;
+- a missing or failed unknown-key refresh suppresses repeated loader traffic until the cache genuinely advances or is invalidated;
 - `invalidate()` prevents an in-flight older refresh from repopulating the cache;
-- loader errors become `KEY_SET_UNAVAILABLE` without exposing transport details.
+- loader errors become `KEY_SET_UNAVAILABLE` without exposing transport details;
+- cached key objects are cloned and frozen before use.
 
 The loader receives `{ scopeId }`, but the package neither interprets that value nor chooses an endpoint. The application must prevent one cache instance from being reused across tenants or `test`/`live` environments.
 
