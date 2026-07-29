@@ -269,6 +269,7 @@ export function createRuntimeHandler(runtime) {
               receiptId: receiptSupersession.id,
               input: body,
               signer: runtime.signer,
+              signingKeys: runtime.signingKeys,
               now: new Date()
             });
             await recordSecurityEvent({
