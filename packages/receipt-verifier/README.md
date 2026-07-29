@@ -63,6 +63,24 @@ Cache rules:
 
 The loader receives `{ scopeId }`, but the package neither interprets that value nor chooses an endpoint. The application must prevent one cache instance from being reused across tenants or `test`/`live` environments.
 
+## Build a verified release artifact
+
+From the repository root:
+
+```bash
+npm run package:receipt-verifier
+```
+
+The command performs two isolated local `npm pack` runs and fails unless their SHA-256 digests and npm integrity metadata match. It also verifies the exact public file set and rejects PEM private-key material before packing.
+
+Successful output is written to `artifacts/receipt-verifier/`:
+
+- `mandate-api-receipt-verifier-<version>.tgz`;
+- `manifest.json` with package identity, SHA-256, npm shasum/integrity, sizes, entry count, and file inventory;
+- `SHA256SUMS` for independent verification.
+
+The manifest deliberately contains no build timestamp, machine path, runner identity, or secret. CI uploads these files as a short-lived GitHub Actions artifact. It does not publish to npm and requires no registry token.
+
 ## Trust boundary
 
 A valid result proves that the supplied public key signed the canonical receipt payload and that the payload has not changed. It does not prove the origin of the supplied key set, current mandate validity, legal authority, or the truth of facts outside the signed payload.

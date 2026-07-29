@@ -1,0 +1,53 @@
+name: Receipt Verifier Artifact
+
+on:
+  pull_request:
+    paths:
+      - 'packages/receipt-verifier/**'
+      - 'scripts/package-receipt-verifier.js'
+      - 'test/receipt-verifier-release-artifact*.test.js'
+      - 'test/offline-receipt-verifier-package.test.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/receipt-verifier-artifact.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/receipt-verifier/**'
+      - 'scripts/package-receipt-verifier.js'
+      - 'test/receipt-verifier-release-artifact*.test.js'
+      - 'test/offline-receipt-verifier-package.test.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/receipt-verifier-artifact.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Verify package and release artifact tests
+        run: >-
+          node --test
+          test/offline-receipt-verifier-package.test.js
+          test/offline-receipt-verifier.test.js
+          test/receipt-key-set-cache*.test.js
+          test/receipt-verifier-release-artifact*.test.js
+      - name: Build reproducible package artifact
+        run: npm run package:receipt-verifier
+      - name: Upload verified package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: receipt-verifier-${{ github.sha }}
+          path: artifacts/receipt-verifier/
+          if-no-files-found: error
+          retention-days: 14
