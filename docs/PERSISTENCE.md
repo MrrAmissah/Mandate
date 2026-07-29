@@ -38,7 +38,7 @@ An idempotency record is scoped by tenant, environment, operation scope, and cal
 
 ## Immutable records
 
-Authorization decisions, signed receipts, and audit events are insert-only. PostgreSQL triggers reject update and delete attempts. Corrections are represented by new records that reference or supersede the original; history is never rewritten.
+Authorization decisions, signed receipts, and audit events are insert-only. A decision preserves the requested `mandateId` even when policy returns `MANDATE_NOT_FOUND`; that field is therefore not a mandate foreign key, while receipt issuance still requires a real allowed decision and active mandate. PostgreSQL triggers reject update and delete attempts. Corrections are represented by new records that reference or supersede the original; history is never rewritten.
 
 ## Credential storage
 

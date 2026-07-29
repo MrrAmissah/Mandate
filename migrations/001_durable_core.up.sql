@@ -129,8 +129,8 @@ CREATE TABLE mandate.authorization_decisions (
   evaluated_at timestamptz NOT NULL,
   request_id text NOT NULL,
   PRIMARY KEY (tenant_id, environment, id),
-  FOREIGN KEY (tenant_id, environment, mandate_id)
-    REFERENCES mandate.mandates (tenant_id, environment, id) ON DELETE RESTRICT,
+  -- mandate_id records the requested opaque identifier even when the decision is
+  -- MANDATE_NOT_FOUND, so it deliberately is not a foreign key.
   FOREIGN KEY (tenant_id, environment, approval_id)
     REFERENCES mandate.approvals (tenant_id, environment, id) ON DELETE RESTRICT
 );

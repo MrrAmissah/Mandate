@@ -47,6 +47,15 @@ test('schema enforces idempotency, one receipt per decision, and outbox leases',
   assert.match(sql, /status = 'PROCESSING'.*locked_by IS NOT NULL/s);
 });
 
+test('missing-mandate denials remain persistable while receipts require real mandates', async () => {
+  const sql = await migration();
+  const decisions = sql.match(new RegExp('CREATE TABLE mandate\\.authorization_decisions \\(([\\s\\S]*?)\\n\\);'))[1];
+  assert.doesNotMatch(decisions, /FOREIGN KEY \(tenant_id, environment, mandate_id\)/);
+
+  const receipts = sql.match(new RegExp('CREATE TABLE mandate\\.receipts \\(([\\s\\S]*?)\\n\\);'))[1];
+  assert.match(receipts, /FOREIGN KEY \(tenant_id, environment, mandate_id\)/);
+});
+
 test('development down migration removes only the dedicated schema', async () => {
   const sql = await readFile(downPath, 'utf8');
   assert.equal(sql.trim(), 'BEGIN;\nDROP SCHEMA IF EXISTS mandate CASCADE;\nCOMMIT;');
