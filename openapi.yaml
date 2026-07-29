@@ -799,6 +799,11 @@ components:
               version: { const: '1.2' }
           then:
             required: [supersedesReceiptId, supersessionReason]
+          else:
+            not:
+              anyOf:
+                - required: [supersedesReceiptId]
+                - required: [supersessionReason]
     ErrorResponse:
       type: object
       additionalProperties: false
