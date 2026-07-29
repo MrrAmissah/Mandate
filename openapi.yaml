@@ -383,6 +383,7 @@ paths:
       tags: [Receipts]
       operationId: issueAttemptReceipt
       summary: Sign evidence from a completed action attempt
+      description: Fails closed when the configured signer is not the active scoped signing key.
       x-required-scope: receipts:write
       parameters:
         - { $ref: '#/components/parameters/RequestId' }
@@ -399,6 +400,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     get:
       tags: [Receipts]
       operationId: listReceipts
@@ -438,8 +440,9 @@ paths:
       summary: Append a signed successor to an execution receipt
       description: |
         Creates one direct successor that preserves the predecessor's execution evidence.
-        The predecessor must verify through an active or retired scoped key. A predecessor
-        may have at most one successor, producing a linear append-only chain.
+        The predecessor must verify through an active or retired scoped key. The configured
+        successor signer must be the current active scoped key. A predecessor may have at most
+        one successor, producing a linear append-only chain.
       x-required-scope: receipts:write
       parameters:
         - { $ref: '#/components/parameters/RequestId' }
@@ -457,6 +460,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /v1/receipts/verify:
     post:
       tags: [Receipts]
@@ -594,6 +598,11 @@ components:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
     Conflict:
       description: State, idempotency, or concurrency conflict
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    ServiceUnavailable:
+      description: Receipt signing is unavailable; code SIGNING_KEY_NOT_ACTIVE
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
