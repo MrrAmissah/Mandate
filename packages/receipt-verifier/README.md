@@ -57,9 +57,9 @@ Cache rules:
 - malformed receipts and unsupported algorithms fail before the loader runs;
 - unknown-key discovery is attempted at most once per cached generation, including across random key IDs;
 - a missing or failed unknown-key refresh suppresses repeated loader traffic until the cache genuinely advances or is invalidated;
-- `invalidate()` prevents an in-flight older refresh from repopulating the cache;
+- `invalidate()` detaches a pending loader immediately, permits a new generation to start, and prevents the older completion from repopulating the cache;
 - loader errors become `KEY_SET_UNAVAILABLE` without exposing transport details;
-- cached key objects are cloned and frozen before use.
+- cached key objects contain only public discovery fields and are frozen before use.
 
 The loader receives `{ scopeId }`, but the package neither interprets that value nor chooses an endpoint. The application must prevent one cache instance from being reused across tenants or `test`/`live` environments.
 
