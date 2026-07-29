@@ -1,12 +1,13 @@
 openapi: 3.1.0
 info:
   title: Mandate-API
-  version: 0.6.0
-  summary: Delegated authorization, single-use execution attempts, and signed receipts for AI agents
+  version: 0.7.0
+  summary: Delegated authorization, single-use execution attempts, and append-only signed receipts for AI agents
   description: |
     Mandate-API is a provider-independent trust layer for consequential agent actions.
-    An ALLOW decision must be reserved by one ActionAttempt, completed with execution
-    evidence, and then converted into at most one Ed25519-signed Receipt.
+    An ALLOW decision must be reserved by one ActionAttempt and completed with execution
+    evidence before one root Receipt is signed. Corrections append a linear signed successor
+    chain; they never rewrite the original receipt or its execution evidence.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -430,6 +431,32 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1/receipts/{id}/supersede:
+    post:
+      tags: [Receipts]
+      operationId: supersedeReceipt
+      summary: Append a signed successor to an execution receipt
+      description: |
+        Creates one direct successor that preserves the predecessor's execution evidence.
+        The predecessor must verify through an active or retired scoped key. A predecessor
+        may have at most one successor, producing a linear append-only chain.
+      x-required-scope: receipts:write
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/ReceiptId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupersedeReceiptRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/ReceiptResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /v1/receipts/verify:
     post:
       tags: [Receipts]
@@ -722,13 +749,19 @@ components:
       required: [actionAttemptId]
       properties:
         actionAttemptId: { type: string, pattern: '^att_.+' }
+    SupersedeReceiptRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 1000 }
     Receipt:
       type: object
-      additionalProperties: true
-      required: [id, version, keyId, algorithm, decisionId, mandateId, actionAttemptId, principalId, agentId, action, resource, executionStatus, inputHash, outputHash, tool, approvalId, authorizedAt, executedAt, issuedAt, signature]
+      additionalProperties: false
+      required: [id, version, keyId, algorithm, decisionId, mandateId, actionAttemptId, principalId, agentId, action, resource, executionStatus, inputHash, outputHash, tool, provider, model, approvalId, authorizedAt, executedAt, issuedAt, signature]
       properties:
         id: { type: string, pattern: '^rcpt_.+' }
-        version: { type: string, const: '1.1' }
+        version: { type: string, enum: ['1.1', '1.2'] }
         keyId: { type: string }
         algorithm: { type: string, const: Ed25519 }
         decisionId: { type: string, pattern: '^dec_.+' }
@@ -748,7 +781,15 @@ components:
         authorizedAt: { type: [string, 'null'], format: date-time }
         executedAt: { type: string, format: date-time }
         issuedAt: { type: string, format: date-time }
+        supersedesReceiptId: { type: string, pattern: '^rcpt_.+' }
+        supersessionReason: { type: string, minLength: 1, maxLength: 1000 }
         signature: { type: string }
+      allOf:
+        - if:
+            properties:
+              version: { const: '1.2' }
+          then:
+            required: [supersedesReceiptId, supersessionReason]
     ErrorResponse:
       type: object
       additionalProperties: false
