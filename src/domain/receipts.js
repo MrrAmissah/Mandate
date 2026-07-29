@@ -48,10 +48,28 @@ export function issueReceipt({ input, decision, mandate, signer, now = new Date(
   return { ...payload, signature: signer.signPayload(payload) };
 }
 
-export function verifyReceipt(receipt, signer) {
+function verificationParts(receipt) {
   assertObject(receipt, 'receipt');
   const { signature, ...payload } = receipt;
-  if (typeof signature !== 'string' || signature.length === 0) return false;
-  if (payload.keyId !== signer.keyId || payload.algorithm !== signer.algorithm) return false;
-  return signer.verifyPayload(payload, signature);
+  if (typeof signature !== 'string' || signature.length === 0) return null;
+  if (typeof payload.keyId !== 'string' || typeof payload.algorithm !== 'string') return null;
+  return { payload, signature };
+}
+
+export function verifyReceipt(receipt, signer) {
+  const parts = verificationParts(receipt);
+  if (!parts) return false;
+  if (parts.payload.keyId !== signer.keyId || parts.payload.algorithm !== signer.algorithm) return false;
+  return signer.verifyPayload(parts.payload, parts.signature);
+}
+
+export async function verifyReceiptWithRegistry(receipt, signingKeys) {
+  const parts = verificationParts(receipt);
+  if (!parts || typeof signingKeys?.verifyPayload !== 'function') return false;
+  return Boolean(await signingKeys.verifyPayload({
+    keyId: parts.payload.keyId,
+    algorithm: parts.payload.algorithm,
+    payload: parts.payload,
+    signature: parts.signature
+  }));
 }
