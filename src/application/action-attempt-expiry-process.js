@@ -226,17 +226,19 @@ export class ActionAttemptExpiryProcess {
       if (result.limitReached) this.metrics.limitReachedTotal += 1;
 
       const backlog = await this.worker.backlog();
+      const completedAt = dateValue(this.clock(), 'process clock');
       this.metrics.backlogReserved = backlog.reservedCount;
       this.metrics.backlogDue = backlog.dueCount;
       this.metrics.oldestDueAt = backlog.oldestDueAt;
       this.metrics.oldestOverdueSeconds = backlog.oldestOverdueSeconds;
       this.metrics.backlogObservedAt = backlog.observedAt;
       this.metrics.consecutiveFailures = 0;
-      this.metrics.lastSuccessAt = observedNow.toISOString();
+      this.metrics.lastSuccessAt = completedAt.toISOString();
       this.metrics.lastErrorCode = null;
       const event = {
         event: 'action_attempt_expiry.cycle',
-        at: observedNow.toISOString(),
+        at: completedAt.toISOString(),
+        startedAt: observedNow.toISOString(),
         expired: expiredInCycle,
         limitReached: result.limitReached,
         backlog,
