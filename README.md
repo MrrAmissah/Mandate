@@ -32,6 +32,7 @@ Implemented now:
 - receipt v1.1 issuance only from completed attempts;
 - exactly one receipt per attempt and decision;
 - Ed25519 signing with persistent rotation, retirement, revocation, discovery, and historical verification;
+- a zero-dependency offline receipt verifier with TypeScript declarations and public conformance fixtures;
 - tenant and `test`/`live` isolation;
 - high-entropy API credentials with hash-only durable records;
 - payload-bound idempotency with exact committed HTTP replay;
@@ -74,6 +75,24 @@ The expiry process does not use the API key and never applies migrations itself.
 | `/metrics` | Cached Prometheus counters and backlog gauges |
 
 These are operational endpoints, not part of the public Mandate API contract. Binding them beyond loopback requires deployment network controls.
+
+## Verify a receipt offline
+
+The package under `packages/receipt-verifier` verifies a receipt against an already obtained discovery key set without calling the API:
+
+```js
+import { verifyMandateReceipt } from '@mandate-api/receipt-verifier';
+
+const result = verifyMandateReceipt(receipt, discoveryResponse);
+
+if (!result.valid) {
+  console.error(result.reason);
+}
+```
+
+The package uses the same canonical JSON implementation as server issuance and verification. It accepts active and retired Ed25519 keys, rejects revoked or malformed keys, and returns stable machine-readable failure reasons.
+
+The committed conformance fixture contains only a public key and signed receipt. No private test key is stored in the repository.
 
 ## Core flow
 
@@ -177,6 +196,7 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.6.0 contract.
 - A raw authorization decision cannot issue a receipt through the public runtime.
 - One completed attempt and decision produce at most one receipt.
 - Receipt signatures cover every receipt field except the signature itself.
+- Server and offline verification share one canonical JSON implementation.
 - Active and retired keys verify historical receipts; revoked keys do not.
 - Raw generated API credentials are displayed once and are not stored durably.
 - Authorization decisions, receipts, audit events, and outbox attempts are immutable in PostgreSQL.
@@ -185,4 +205,4 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.6.0 contract.
 
 ## Not production-ready yet
 
-PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential autonomous actions. Platform-specific service manifests, restricted deployment roles, network policy, alert thresholds, supervisor restart policy, backup/restore, dead-letter operations, idempotency retention cleanup, receipt supersession, external delivery handlers, and deployment runbooks remain open.
+PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential autonomous actions. Platform-specific service manifests, restricted deployment roles, network policy, alert thresholds, supervisor restart policy, backup/restore, dead-letter operations, idempotency retention cleanup, receipt supersession, external delivery handlers, verifier publication automation, and deployment runbooks remain open.
