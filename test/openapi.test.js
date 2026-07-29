@@ -53,9 +53,14 @@ test('stable receipt requests bind issuance to an attempt and corrections to a p
   assert.ok(supersedeRequest, 'missing SupersedeReceiptRequest schema');
   assert.match(supersedeRequest, /required: \[reason\]/);
   assert.match(supersedeRequest, /maxLength: 1000/);
-  assert.match(yaml, /version: \{ type: string, enum: \['1\.1', '1\.2'\] \}/);
-  assert.match(yaml, /supersedesReceiptId:/);
-  assert.match(yaml, /supersessionReason:/);
+
+  const receiptSchema = yaml.match(/    Receipt:([\s\S]*?)\n    ErrorResponse:/)?.[1];
+  assert.ok(receiptSchema, 'missing Receipt schema');
+  assert.match(receiptSchema, /version: \{ type: string, enum: \['1\.1', '1\.2'\] \}/);
+  assert.match(receiptSchema, /then:\n            required: \[supersedesReceiptId, supersessionReason\]/);
+  assert.match(receiptSchema, /else:\n            not:\n              anyOf:/);
+  assert.match(receiptSchema, /- required: \[supersedesReceiptId\]/);
+  assert.match(receiptSchema, /- required: \[supersessionReason\]/);
 });
 
 test('receipt writes document inactive signing-key availability failures', async () => {
