@@ -30,6 +30,7 @@ Implemented now:
 - a tenant-aware PostgreSQL migration with immutable decisions, receipts, and audit events;
 - connection-pool runtime composition with one client per transaction;
 - stored credential authentication with revocation-race protection;
+- explicit JSONB serialization for arrays and structured payloads;
 - real PostgreSQL restart, isolation, concurrency, denial-persistence, and immutability tests.
 
 Memory mode remains available for local experiments. Live environments require PostgreSQL, explicit scopes, a non-default API key, and persistent receipt-signing keys.
