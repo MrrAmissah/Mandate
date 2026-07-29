@@ -8,6 +8,10 @@ const MIGRATIONS = Object.freeze([
   {
     version: '002_outbox_attempts',
     file: new URL('../../migrations/002_outbox_attempts.up.sql', import.meta.url)
+  },
+  {
+    version: '003_idempotency_http_metadata',
+    file: new URL('../../migrations/003_idempotency_http_metadata.up.sql', import.meta.url)
   }
 ]);
 

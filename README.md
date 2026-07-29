@@ -11,9 +11,9 @@ It answers two questions ordinary application authorization does not answer well
 1. What may this specific agent do for this specific task, resource, and time window?
 2. What verifiable evidence records the authority, decision, and execution outcome?
 
-## Current milestone: transactional outbox execution
+## Current milestone: exact idempotency replay
 
-Phase 2C adds safe asynchronous execution over the PostgreSQL outbox while keeping external handlers deliberately unregistered.
+Phase 2D makes committed mutation retries deterministic across process and PostgreSQL restarts.
 
 Implemented now:
 
@@ -31,10 +31,13 @@ Implemented now:
 - connection-pool runtime composition with one client per transaction;
 - stored credential authentication with revocation-race protection;
 - explicit JSONB serialization for arrays and structured payloads;
-- ordered migrations protected by one PostgreSQL advisory lock;
+- ordered migrations protected by one 64-bit PostgreSQL advisory lock;
 - exact-handler outbox claims using `FOR UPDATE SKIP LOCKED`;
 - committed leases, stale-lease recovery, late-worker rejection, retry, and dead-letter transitions;
-- real PostgreSQL restart, isolation, concurrency, receipt, approval, and outbox failure-path tests.
+- canonical JSON response bytes;
+- persisted original success status and stable application headers for supported idempotent mutations;
+- retry-specific request IDs with byte-identical replayed bodies;
+- real PostgreSQL restart, isolation, concurrency, receipt, approval, outbox, and idempotency replay tests.
 
 Memory mode remains available for local experiments. Live environments require PostgreSQL, explicit scopes, a non-default API key, and persistent receipt-signing keys.
 
@@ -115,6 +118,7 @@ See [`openapi.yaml`](./openapi.yaml) for the current contract.
 
 - [Product blueprint](./docs/PRODUCT_BLUEPRINT.md)
 - [API conventions](./docs/API_CONVENTIONS.md)
+- [Idempotency and HTTP replay](./docs/IDEMPOTENCY.md)
 - [Target architecture](./docs/ARCHITECTURE.md)
 - [Security model](./docs/SECURITY_MODEL.md)
 - [Persistence and transaction contract](./docs/PERSISTENCE.md)
@@ -134,7 +138,8 @@ See [`openapi.yaml`](./openapi.yaml) for the current contract.
 - Raw generated API credentials are displayed once and are not part of the durable credential record.
 - Authorization decisions, receipts, audit events, and outbox attempts are immutable in PostgreSQL.
 - An outbox worker may complete only the exact unexpired lease it owns.
+- Unknown idempotency operation scopes are rejected instead of receiving guessed HTTP metadata.
 
 ## Not production-ready yet
 
-PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential live agent actions. Persistent signing-key rotation, exact status/header idempotency replay, worker-process composition, external delivery handlers, operational migration role separation, metrics, backup/restore, dead-letter operations, clock-skew policy, and deployment runbooks remain open.
+PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential live agent actions. Persistent signing-key rotation, worker-process composition, external delivery handlers, operational migration role separation, metrics, backup/restore, dead-letter operations, clock-skew policy, idempotency retention cleanup, and deployment runbooks remain open.

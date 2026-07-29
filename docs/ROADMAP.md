@@ -44,6 +44,8 @@ Status: in progress.
 
 ### Phase 2A — persistence contract
 
+Status: merged.
+
 Delivered:
 
 - tenant and test/live ownership at the API and store boundary;
@@ -75,13 +77,14 @@ Delivered:
 
 ### Phase 2C — transactional outbox execution
 
-Status: in progress.
+Status: merged.
 
-Delivered in the execution foundation:
+Delivered:
 
-- ordered migrations protected by one PostgreSQL advisory lock;
+- ordered migrations protected by one 64-bit PostgreSQL advisory lock;
 - append-only outbox attempt evidence;
 - exact-handler claims with `FOR UPDATE SKIP LOCKED`;
+- environment-scoped and optionally tenant-scoped workers;
 - committed leases before handler I/O;
 - stale-lease recovery and old-worker rejection;
 - bounded exponential retry and dead-letter transitions;
@@ -89,19 +92,34 @@ Delivered in the execution foundation:
 - multi-worker PostgreSQL concurrency and failure-path tests;
 - no automatically registered handler or worker process.
 
+### Phase 2D — exact idempotency replay
+
+Status: in progress.
+
+Delivered in the replay hardening branch:
+
+- canonical JSON response bytes for deterministic serialization;
+- exact successful status mapping for every supported mutation scope;
+- stable persisted application headers;
+- PostgreSQL rejection of unknown idempotency scopes;
+- retry-specific `X-Request-Id` behavior;
+- memory and restart-safe PostgreSQL byte-replay tests;
+- migration 003 with backfill of existing metadata.
+
 Remaining before Phase 2 closes:
 
-- exact response-status/header idempotency replay;
 - persistent signing-key lifecycle;
 - deployment migration role separation and production runbook;
 - worker process composition, metrics, alerting, and operator dead-letter replay;
-- database-time and production clock-skew policy.
+- database-time and production clock-skew policy;
+- idempotency retention cleanup and configurable policy.
 
 Exit gate:
 
 - restart-safe behavior;
 - cross-tenant isolation tests;
 - concurrency tests prove one-time consumption;
+- exact committed HTTP replay is proven after restart;
 - outbox leases and late-worker behavior are proven against PostgreSQL;
 - migration and rollback procedures documented.
 

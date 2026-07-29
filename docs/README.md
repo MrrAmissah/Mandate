@@ -4,6 +4,7 @@
 |---|---|
 | [Product blueprint](./PRODUCT_BLUEPRINT.md) | Product boundary, actors, objects, state machines, and success criteria |
 | [API conventions](./API_CONVENTIONS.md) | Stable HTTP, versioning, idempotency, errors, pagination, and webhook behavior |
+| [Idempotency replay](./IDEMPOTENCY.md) | Canonical bytes, persisted HTTP metadata, retry request IDs, conflicts, and retention |
 | [Target architecture](./ARCHITECTURE.md) | Components, persistence, signing, audit, deployment, and failure behavior |
 | [Security model](./SECURITY_MODEL.md) | Threats, controls, cryptography, retention, and test gates |
 | [Persistence contract](./PERSISTENCE.md) | Tenant ownership, PostgreSQL schema, transactions, idempotency, audit, credentials, and outbox |
