@@ -198,8 +198,8 @@ export async function inspectActionAttemptExpiryBacklog(store, scope, { now = ne
        SELECT clock_timestamp() AS observed_at
      )
      SELECT
-       COUNT(*)::integer AS reserved_count,
-       COUNT(*) FILTER (WHERE attempt.expires_at <= observed.observed_at)::integer AS due_count,
+       COUNT(attempt.id)::integer AS reserved_count,
+       COUNT(attempt.id) FILTER (WHERE attempt.expires_at <= observed.observed_at)::integer AS due_count,
        MIN(attempt.expires_at) FILTER (WHERE attempt.expires_at <= observed.observed_at) AS oldest_due_at,
        COALESCE(
          FLOOR(EXTRACT(EPOCH FROM observed.observed_at -
