@@ -170,3 +170,64 @@ export async function listActionAttempts(store, ownership) {
   );
   return result.rows.map(attemptFromRow);
 }
+
+export async function expireNextActionAttempt(transaction, scope, { requestId, now = new Date() }) {
+  if (!isPostgres(transaction)) {
+    const tenantId = scope.tenantId ?? transaction.defaultOwnership?.tenantId;
+    if (!tenantId) throw new TypeError('Memory expiry requires a tenantId.');
+    const ownership = { tenantId, environment: scope.environment };
+    const candidate = (await transaction.list('actionAttempts', ownership))
+      .filter((attempt) => attempt.status === 'RESERVED' && Date.parse(attempt.expiresAt) <= now.getTime())
+      .sort((left, right) => Date.parse(left.expiresAt) - Date.parse(right.expiresAt) || left.id.localeCompare(right.id))[0];
+    if (!candidate) return null;
+    const expired = await updateActionAttempt(transaction, ownership, {
+      ...candidate,
+      status: 'EXPIRED',
+      executionStatus: null,
+      inputHash: null,
+      outputHash: null,
+      tool: null,
+      provider: null,
+      model: null,
+      completedAt: null,
+      completionRequestId: null,
+      terminatedAt: now.toISOString(),
+      terminationReason: 'RESERVATION_EXPIRED',
+      terminationRequestId: requestId,
+      version: candidate.version + 1
+    });
+    return { ownership, attempt: expired };
+  }
+
+  const result = await queryable(transaction).query(
+    `WITH candidate AS (
+       SELECT tenant_id, environment, id
+       FROM mandate.action_attempts
+       WHERE status = 'RESERVED'
+         AND expires_at <= clock_timestamp()
+         AND environment = $1
+         AND ($2::text IS NULL OR tenant_id = $2)
+       ORDER BY expires_at, id
+       FOR UPDATE SKIP LOCKED
+       LIMIT 1
+     )
+     UPDATE mandate.action_attempts AS attempt
+     SET status = 'EXPIRED',
+         terminated_at = clock_timestamp(),
+         termination_reason = 'RESERVATION_EXPIRED',
+         termination_request_id = $3,
+         version = attempt.version + 1
+     FROM candidate
+     WHERE attempt.tenant_id = candidate.tenant_id
+       AND attempt.environment = candidate.environment
+       AND attempt.id = candidate.id
+     RETURNING attempt.*`,
+    [scope.environment, scope.tenantId ?? null, requestId]
+  );
+  if (result.rowCount === 0) return null;
+  const row = result.rows[0];
+  return {
+    ownership: { tenantId: row.tenant_id, environment: row.environment },
+    attempt: attemptFromRow(row)
+  };
+}
