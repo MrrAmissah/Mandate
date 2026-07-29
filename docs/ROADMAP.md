@@ -167,9 +167,9 @@ Remaining deployment work:
 
 ### Phase 3C.1 — offline verification and conformance
 
-Status: implementation branch.
+Status: merged.
 
-Delivered in the branch:
+Delivered:
 
 - zero-dependency Node.js ESM verifier package with TypeScript declarations;
 - exact active/retired Ed25519 verification semantics;
@@ -178,20 +178,44 @@ Delivered in the branch:
 - public-only signed receipt fixture with no private key;
 - tamper corpus covering action, output, attempt identity, issue time, and signature mutation;
 - parity tests against an independent server-style crypto verifier;
-- package syntax included in the repository check gate.
+- dry-run package-content and package-syntax gates.
 
-Remaining before Phase 3C.1 closes:
+Remaining publication work:
+
+- package release automation;
+- provenance attestation and release signing;
+- published-version compatibility policy.
+
+### Phase 3C.2 — strict key-set caching
+
+Status: implementation branch.
+
+Delivered in the branch:
+
+- permanently scope-bound cache instances;
+- caller-injected discovery loader with no embedded HTTP;
+- five-minute default lifetime with bounded override;
+- freshness measured after loading completes;
+- single-flight concurrent refresh;
+- strict expiry with no stale-key fallback;
+- one unknown-key refresh when the first verification used cached data;
+- invalid-receipt and unsupported-algorithm preflight without loader traffic;
+- invalidation protection against stale in-flight refresh completion;
+- frozen cloned key material;
+- safe `KEY_SET_UNAVAILABLE` results and error type;
+- TypeScript declarations, package artifact coverage, and deterministic cache tests.
+
+Remaining before Phase 3C.2 closes:
 
 - exact-head CI and review merge gate;
-- package publication automation and provenance attestation;
-- documented key-set cache helper or SDK integration.
+- SDK-level endpoint loader example;
+- package publication together with Phase 3C.1.
 
-### Phase 3C.2 — receipt corrections and compact forms
+### Phase 3C.3 — receipt corrections and compact forms
 
 Scope:
 
 - receipt correction/supersession model;
-- downloadable key-set caching rules and refresh helper;
 - optional compact/JWS representation after compatibility review.
 
 Exit gate:

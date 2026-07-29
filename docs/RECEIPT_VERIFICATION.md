@@ -56,10 +56,47 @@ Stable result reasons are:
 | `UNSUPPORTED_ALGORITHM` | The receipt does not declare `Ed25519`. |
 | `KEY_NOT_FOUND` | No exact `keyId` and algorithm pair exists in the supplied key set. |
 | `KEY_NOT_VERIFIABLE` | The exact key exists but is not `ACTIVE` or `RETIRED`. |
+| `KEY_SET_UNAVAILABLE` | A scope-bound cache could not obtain a current key set. |
 | `INVALID_KEY` | Key material is malformed, ambiguous, or not Ed25519. |
 | `INVALID_SIGNATURE` | The signature is malformed or does not match the payload. |
 
 The package ships TypeScript declarations but executes as Node.js ESM on Node 22 or later.
+
+## Scope-bound key-set cache
+
+The package also exposes `createMandateKeySetCache`. The cache accepts an injected loader rather than embedding HTTP:
+
+```js
+import { createMandateKeySetCache } from '@mandate-api/receipt-verifier';
+
+const cache = createMandateKeySetCache({
+  scopeId: 'tenant-123:live',
+  maxAgeMs: 300_000,
+  async load() {
+    const response = await fetch('https://mandate.example/.well-known/mandate-keys');
+    if (!response.ok) throw new Error('discovery failed');
+    return response.json();
+  }
+});
+
+const result = await cache.verify(receipt);
+```
+
+The application defines and enforces the meaning of `scopeId`. One cache instance must never be shared between tenants or between `test` and `live` environments.
+
+Cache invariants:
+
+1. concurrent ordinary refreshes and unknown-key refreshes share one loader operation and result;
+2. the cache lifetime begins after loading completes;
+3. expired key data is never used when a refresh fails;
+4. malformed receipts and unsupported algorithms fail without calling the loader;
+5. unknown-key discovery is attempted at most once per cached generation, even when callers submit many different random key IDs;
+6. a missing or failed unknown-key refresh suppresses repeated discovery traffic until the cache advances or is invalidated;
+7. invalidation detaches a pending loader immediately, permits a new generation to start, and prevents the older completion from repopulating the cache;
+8. loader errors return `KEY_SET_UNAVAILABLE` and do not expose transport details;
+9. cached records retain only public discovery fields and are frozen before use.
+
+The default lifetime is five minutes, matching the current discovery `max-age`. Applications may set a stricter value but should not exceed their security policy or the server's advertised cache lifetime.
 
 ## Canonicalization parity
 
@@ -78,7 +115,7 @@ The tamper corpus changes independently signed fields and proves that both the o
 
 Activating a new key atomically retires the previous active key. Existing receipts continue to verify through the retired public key. A key ID cannot be reused for different key material, and a revoked key cannot be reactivated.
 
-Offline callers are responsible for obtaining the correct tenant/environment key set and refreshing it according to the discovery cache policy. The package does not infer scope from a receipt and does not fetch keys automatically.
+Offline callers are responsible for obtaining the correct tenant/environment key set and refreshing it according to the discovery cache policy. The verifier does not infer scope from a receipt or select a discovery endpoint.
 
 See [Signing key operations](SIGNING_KEYS.md) for the runtime rotation and revocation procedure.
 

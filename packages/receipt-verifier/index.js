@@ -1,7 +1,9 @@
 import { createPublicKey, verify } from 'node:crypto';
 import { canonicalize } from './canonical-json.js';
+import { createStrictKeySetCache } from './key-set-cache.js';
 
 export { canonicalize } from './canonical-json.js';
+export { MandateKeySetUnavailableError } from './key-set-cache.js';
 
 export const RECEIPT_VERIFICATION_REASONS = Object.freeze({
   VALID: 'VALID',
@@ -9,6 +11,7 @@ export const RECEIPT_VERIFICATION_REASONS = Object.freeze({
   UNSUPPORTED_ALGORITHM: 'UNSUPPORTED_ALGORITHM',
   KEY_NOT_FOUND: 'KEY_NOT_FOUND',
   KEY_NOT_VERIFIABLE: 'KEY_NOT_VERIFIABLE',
+  KEY_SET_UNAVAILABLE: 'KEY_SET_UNAVAILABLE',
   INVALID_KEY: 'INVALID_KEY',
   INVALID_SIGNATURE: 'INVALID_SIGNATURE'
 });
@@ -24,6 +27,16 @@ function receiptParts(receipt) {
   if (typeof payload.keyId !== 'string' || payload.keyId.length === 0) return null;
   if (typeof payload.algorithm !== 'string' || payload.algorithm.length === 0) return null;
   return { payload, signature };
+}
+
+function receiptIdentity(receipt) {
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) {
+    return { keyId: null, algorithm: null };
+  }
+  return {
+    keyId: typeof receipt.keyId === 'string' ? receipt.keyId : null,
+    algorithm: typeof receipt.algorithm === 'string' ? receipt.algorithm : null
+  };
 }
 
 function keysFrom(keySet) {
@@ -91,4 +104,16 @@ export function verifyMandateReceipt(receipt, keySet) {
   } catch {
     return result(false, RECEIPT_VERIFICATION_REASONS.INVALID_SIGNATURE, keyId, algorithm);
   }
+}
+
+export function createMandateKeySetCache(options) {
+  return createStrictKeySetCache({
+    ...(options ?? {}),
+    verifyReceipt: verifyMandateReceipt,
+    keyNotFoundReason: RECEIPT_VERIFICATION_REASONS.KEY_NOT_FOUND,
+    unavailableResult(receipt) {
+      const { keyId, algorithm } = receiptIdentity(receipt);
+      return result(false, RECEIPT_VERIFICATION_REASONS.KEY_SET_UNAVAILABLE, keyId, algorithm);
+    }
+  });
 }
