@@ -6,6 +6,8 @@ const baselineUpPath = new URL('../migrations/001_durable_core.up.sql', import.m
 const baselineDownPath = new URL('../migrations/001_durable_core.down.sql', import.meta.url);
 const outboxUpPath = new URL('../migrations/002_outbox_attempts.up.sql', import.meta.url);
 const outboxDownPath = new URL('../migrations/002_outbox_attempts.down.sql', import.meta.url);
+const idempotencyUpPath = new URL('../migrations/003_idempotency_http_metadata.up.sql', import.meta.url);
+const idempotencyDownPath = new URL('../migrations/003_idempotency_http_metadata.down.sql', import.meta.url);
 const runnerPath = new URL('../src/store/postgres-migrations.js', import.meta.url);
 
 async function baselineMigration() {
@@ -71,11 +73,27 @@ test('outbox attempt migration is transactional, append-only, and lease-evidence
   assert.match(sql, /002_outbox_attempts/);
 });
 
-test('migration runner applies ordered migrations under one advisory lock', async () => {
+test('idempotency metadata migration maps known scopes and rejects unknown scopes', async () => {
+  const sql = await readFile(idempotencyUpPath, 'utf8');
+  assert.match(sql, /^BEGIN;/);
+  assert.match(sql, /COMMIT;\s*$/);
+  assert.match(sql, /assign_idempotency_http_metadata/);
+  assert.match(sql, /create-mandate.*create-approval.*issue-receipt/s);
+  assert.match(sql, /revoke-mandate:%/);
+  assert.match(sql, /decide-approval:%/);
+  assert.match(sql, /unknown idempotency scope/);
+  assert.match(sql, /content-type.*application\/json; charset=utf-8/s);
+  assert.match(sql, /003_idempotency_http_metadata/);
+});
+
+test('migration runner applies all migrations in order under one advisory lock', async () => {
   const source = await readFile(runnerPath, 'utf8');
-  assert.ok(source.indexOf("version: '001_durable_core'") < source.indexOf("version: '002_outbox_attempts'"));
-  assert.match(source, /pg_advisory_lock/);
-  assert.match(source, /pg_advisory_unlock/);
+  const baselineIndex = source.indexOf("version: '001_durable_core'");
+  const outboxIndex = source.indexOf("version: '002_outbox_attempts'");
+  const idempotencyIndex = source.indexOf("version: '003_idempotency_http_metadata'");
+  assert.ok(baselineIndex < outboxIndex && outboxIndex < idempotencyIndex);
+  assert.match(source, /pg_advisory_lock\(hashtextextended/);
+  assert.match(source, /pg_advisory_unlock\(hashtextextended/);
   assert.match(source, /mandate:migrations/);
 });
 
@@ -87,4 +105,10 @@ test('development down migrations remove only their owned objects', async () => 
   assert.match(outbox, /DELETE FROM mandate\.schema_migrations WHERE version = '002_outbox_attempts'/);
   assert.match(outbox, /DROP TABLE IF EXISTS mandate\.outbox_attempts/);
   assert.doesNotMatch(outbox, /DROP SCHEMA/);
+
+  const idempotency = await readFile(idempotencyDownPath, 'utf8');
+  assert.match(idempotency, /DROP TRIGGER IF EXISTS idempotency_http_metadata/);
+  assert.match(idempotency, /DROP FUNCTION IF EXISTS mandate\.assign_idempotency_http_metadata/);
+  assert.match(idempotency, /DELETE FROM mandate\.schema_migrations WHERE version = '003_idempotency_http_metadata'/);
+  assert.doesNotMatch(idempotency, /DROP TABLE|DROP SCHEMA/);
 });
