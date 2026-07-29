@@ -43,7 +43,7 @@ export function decideApproval(approval, input, now = new Date()) {
     status: decision,
     decidedAt: now.toISOString(),
     decidedBy: requiredString(input.decidedBy, 'decidedBy'),
-    decisionReason: requiredString(input.reason, 'reason')
+    decisionReason: input.reason ? requiredString(input.reason, 'reason') : null
   };
 }
 
