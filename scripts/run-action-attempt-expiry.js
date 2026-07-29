@@ -18,10 +18,23 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 
 async function main() {
   const runtime = await createActionAttemptExpiryRuntime();
+  let healthStarted = false;
   try {
+    const address = await runtime.health.start();
+    healthStarted = true;
+    console.log(JSON.stringify({
+      event: 'action_attempt_expiry.health_started',
+      at: new Date().toISOString(),
+      host: address.host,
+      port: address.port
+    }));
     await runtime.process.run({ signal: controller.signal });
   } finally {
-    await runtime.close();
+    try {
+      if (healthStarted) await runtime.health.close();
+    } finally {
+      await runtime.close();
+    }
   }
 }
 
