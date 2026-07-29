@@ -1,9 +1,6 @@
 import { createPublicKey, verify } from 'node:crypto';
 import { canonicalize } from './canonical-json.js';
-import {
-  createStrictKeySetCache,
-  MandateKeySetUnavailableError
-} from './key-set-cache.js';
+import { createStrictKeySetCache } from './key-set-cache.js';
 
 export { canonicalize } from './canonical-json.js';
 export { MandateKeySetUnavailableError } from './key-set-cache.js';
@@ -120,5 +117,3 @@ export function createMandateKeySetCache(options) {
     }
   });
 }
-
-void MandateKeySetUnavailableError;
