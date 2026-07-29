@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { canonicalize } from '../crypto/canonical-json.js';
+import { hashJson } from '../domain/receipts.js';
 import { DomainError } from '../domain/errors.js';
 
 export async function readJson(request) {
@@ -16,12 +19,24 @@ export async function readJson(request) {
   }
 }
 
+export function requestFingerprint({ method, pathname, body }) {
+  return hashJson({ method, pathname, body: JSON.parse(canonicalize(body)) });
+}
+
+export function resolveRequestId(headerValue) {
+  if (typeof headerValue === 'string' && /^[A-Za-z0-9._:-]{8,128}$/.test(headerValue)) {
+    return headerValue;
+  }
+  return `req_${randomUUID()}`;
+}
+
 export function sendJson(response, status, body, extraHeaders = {}) {
   const payload = JSON.stringify(body);
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(payload),
     'x-content-type-options': 'nosniff',
+    'cache-control': 'no-store',
     ...extraHeaders
   });
   response.end(payload);

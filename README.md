@@ -1,21 +1,19 @@
 <p align="center">
-
   <img src="./assets/mandate-logo.png" alt="Mandate-API logo" width="160" />
-
 </p>
 
 # Mandate-API
 
-**Delegated authorization, approval gates, and signed action receipts for AI agents.**
+**Mandate-API is a provider-independent trust layer for AI agents: delegated authorization, approval gates, and signed action receipts.**
 
-Mandate answers two questions that ordinary application authorization does not answer well:
+Mandate-API answers two questions that ordinary application authorization does not answer well:
 
 1. What may this specific agent do for this specific task, resource, and time window?
 2. What verifiable evidence proves which authority allowed the action and what the agent executed?
 
-## Current milestone: domain kernel
+## Current milestone: API foundation
 
-This first version deliberately focuses on the trust boundary rather than a dashboard or model integration.
+The merged domain kernel proves the trust boundary. The current foundation phase hardens API invariants and defines the complete v1 product, architecture, security model, and delivery roadmap before durable persistence is introduced.
 
 - Scoped mandates for an agent, principal, actions, resources, validity window, and use limit
 - Explicit deny rules that override broad allows
@@ -24,7 +22,10 @@ This first version deliberately focuses on the trust boundary rather than a dash
 - Deterministic ALLOW, DENY, or REQUIRE_APPROVAL decisions
 - Ed25519-signed action receipts
 - Public verification-key endpoint
-- Idempotency support for mandate, approval, and receipt creation
+- Payload-bound idempotency for state-changing operations
+- Single-use approval consumption
+- Request IDs and consistent error correlation
+- Canonical JSON hashing for receipts and request fingerprints
 - Zero runtime dependencies
 - Automated domain, cryptographic, and HTTP tests
 
@@ -95,7 +96,16 @@ Mandate issues signed action receipt
 | `GET` | `/v1/receipts/:id` | Retrieve a receipt |
 | `POST` | `/v1/receipts/verify` | Verify a receipt signature |
 
-See [`openapi.yaml`](./openapi.yaml) for the contract draft.
+See [`openapi.yaml`](./openapi.yaml) for the implemented contract and [`docs/`](./docs/) for the target v1 platform design.
+
+## Documentation
+
+- [Product blueprint](./docs/PRODUCT_BLUEPRINT.md)
+- [API conventions](./docs/API_CONVENTIONS.md)
+- [Target architecture](./docs/ARCHITECTURE.md)
+- [Security model](./docs/SECURITY_MODEL.md)
+- [Delivery roadmap](./docs/ROADMAP.md)
+- [Project assets](./assets/)
 
 ## Security decisions already made
 
@@ -110,12 +120,6 @@ See [`openapi.yaml`](./openapi.yaml) for the contract draft.
 
 The in-memory store is intentional for Milestone 0. It must be replaced before deployment with durable PostgreSQL storage and transactional use-count enforcement. Authentication is currently a single service API key and must become tenant-aware credentials.
 
-## Next milestones
+## Next milestone
 
-1. PostgreSQL persistence and append-only audit events
-2. Tenant/API-key identities with hashed credentials and rotation
-3. Atomic authorization/use accounting and replay prevention
-4. Managed signing keys with rotation and historical verification
-5. Approval delivery adapters and durable workflow resumption
-6. SDKs and middleware for MCP, A2A, GitHub, Gmail, and browser tools
-7. Policy simulation, trace ingestion, and tool-call firewall rules
+The next implementation phase is the durable multi-tenant core: PostgreSQL persistence, test/live environments, scoped and rotatable credentials, atomic counters and approval consumption, append-only audit events, and a transactional outbox. The complete sequence and exit gates are maintained in the [delivery roadmap](./docs/ROADMAP.md).

@@ -2,9 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createReceiptSigner } from '../src/crypto/receipt-signer.js';
 import { createMandate } from '../src/domain/mandates.js';
-import { issueReceipt, verifyReceipt } from '../src/domain/receipts.js';
+import { hashJson, issueReceipt, verifyReceipt } from '../src/domain/receipts.js';
 
 const now = new Date('2026-07-29T06:00:00.000Z');
+
+test('canonical JSON hashes are independent of object key order', () => {
+  assert.equal(hashJson({ a: 1, b: { c: 2 } }), hashJson({ b: { c: 2 }, a: 1 }));
+});
 
 test('receipt signatures verify and fail after tampering', () => {
   const signer = createReceiptSigner({ keyId: 'test-key' });
@@ -22,7 +26,8 @@ test('receipt signatures verify and fail after tampering', () => {
     action: 'pull_request.create_draft',
     resource: 'github:MrrAmissah/demo-api',
     outcome: 'ALLOW',
-    approvalId: null
+    approvalId: null,
+    evaluatedAt: now.toISOString()
   };
   const hash = `sha256:${'a'.repeat(64)}`;
   const receipt = issueReceipt({
@@ -39,6 +44,9 @@ test('receipt signatures verify and fail after tampering', () => {
     }
   });
 
+  assert.equal(receipt.version, '1.0');
+  assert.equal(receipt.authorizedAt, now.toISOString());
   assert.equal(verifyReceipt(receipt, signer), true);
   assert.equal(verifyReceipt({ ...receipt, resource: 'github:other/repo' }, signer), false);
+  assert.equal(verifyReceipt({ ...receipt, keyId: 'other-key' }, signer), false);
 });

@@ -1,3 +1,5 @@
+import { DomainError } from '../domain/errors.js';
+
 export class MemoryStore {
   mandates = new Map();
   approvals = new Map();
@@ -15,14 +17,25 @@ export class MemoryStore {
     return entity ? structuredClone(entity) : null;
   }
 
-  idempotent(scope, key, create) {
+  idempotent(scope, key, fingerprint, create) {
     if (!key) return create();
     const idempotencyKey = `${scope}:${key}`;
-    if (this.idempotency.has(idempotencyKey)) {
-      return structuredClone(this.idempotency.get(idempotencyKey));
+    const existing = this.idempotency.get(idempotencyKey);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) {
+        throw new DomainError(
+          'IDEMPOTENCY_CONFLICT',
+          'This idempotency key was already used with a different request payload.',
+          409
+        );
+      }
+      return structuredClone(existing.value);
     }
     const value = create();
-    this.idempotency.set(idempotencyKey, structuredClone(value));
-    return value;
+    this.idempotency.set(idempotencyKey, {
+      fingerprint,
+      value: structuredClone(value)
+    });
+    return structuredClone(value);
   }
 }
