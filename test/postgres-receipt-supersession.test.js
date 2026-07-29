@@ -222,6 +222,30 @@ test('PostgreSQL receipt supersession has one winner, preserves history, and sup
       (error) => error.code === '23514' && error.constraint === 'receipts_supersession_shape'
     );
 
+    const revokedSigner = createReceiptSigner({ keyId: 'key_receipt_supersession_revoked' });
+    await registry.registerActive({
+      keyId: revokedSigner.keyId,
+      publicKeyPem: revokedSigner.publicKeyPem,
+      activatedAt: new Date('2026-07-29T18:06:00.000Z')
+    });
+    await registry.revoke(
+      revokedSigner.keyId,
+      'Prove inactive successor signers fail closed.',
+      new Date('2026-07-29T18:06:30.000Z')
+    );
+    await assert.rejects(
+      store.transaction((transaction) => supersedeReceipt({
+        transaction,
+        ownership,
+        receiptId: second.id,
+        input: { reason: 'Must not sign with a revoked configured key.' },
+        signer: revokedSigner,
+        signingKeys: registry,
+        now: new Date('2026-07-29T18:07:00.000Z')
+      })),
+      (error) => error.code === 'SIGNING_KEY_NOT_ACTIVE' && error.status === 503
+    );
+
     const rows = await pool.query(
       `SELECT id, payload, signature, supersedes_receipt_id
        FROM mandate.receipts
@@ -236,6 +260,22 @@ test('PostgreSQL receipt supersession has one winner, preserves history, and sup
     const persistedRoot = rows.rows.find((row) => row.id === root.id);
     assert.deepEqual({ ...persistedRoot.payload, signature: persistedRoot.signature }, root);
 
+    await pool.query(
+      `INSERT INTO mandate.idempotency_records
+        (tenant_id, environment, scope, idempotency_key, request_fingerprint,
+         response_status, response_headers, response_body, created_at, expires_at)
+       VALUES ($1,$2,$3,$4,$5,201,'{}'::jsonb,$6,$7,$8)`,
+      [ownership.tenantId, ownership.environment, `supersede-receipt:${root.id}`,
+        'supersession-downgrade-replay', `sha256:${'d'.repeat(64)}`,
+        JSON.stringify(first), '2026-07-29T18:08:00.000Z', '2026-07-30T18:08:00.000Z']
+    );
+    const replayBeforeDown = await pool.query(
+      `SELECT 1 FROM mandate.idempotency_records
+       WHERE tenant_id = $1 AND environment = $2 AND scope LIKE 'supersede-receipt:%'`,
+      [ownership.tenantId, ownership.environment]
+    );
+    assert.equal(replayBeforeDown.rowCount, 1);
+
     const downSql = await readFile(downMigrationUrl, 'utf8');
     await pool.query(downSql);
     assert.equal(await supersessionColumnsExist(pool), false);
@@ -243,6 +283,12 @@ test('PostgreSQL receipt supersession has one winner, preserves history, and sup
       `SELECT 1 FROM mandate.schema_migrations WHERE version = '007_receipt_supersession'`
     );
     assert.equal(migrationAfterDown.rowCount, 0);
+    const replayAfterDown = await pool.query(
+      `SELECT 1 FROM mandate.idempotency_records
+       WHERE tenant_id = $1 AND environment = $2 AND scope LIKE 'supersede-receipt:%'`,
+      [ownership.tenantId, ownership.environment]
+    );
+    assert.equal(replayAfterDown.rowCount, 0);
     const remainingReceipts = await pool.query(
       `SELECT payload, signature FROM mandate.receipts
        WHERE tenant_id = $1 AND environment = $2 AND action_attempt_id = $3`,
