@@ -58,6 +58,18 @@ test('stable receipt requests bind issuance to an attempt and corrections to a p
   assert.match(yaml, /supersessionReason:/);
 });
 
+test('receipt writes document inactive signing-key availability failures', async () => {
+  const yaml = await contract();
+  const receiptWriteSection = yaml.match(/\/v1\/receipts:([\s\S]*?)\n    get:/)?.[1];
+  const supersessionSection = yaml.match(/\/v1\/receipts\/\{id\}\/supersede:([\s\S]*?)\n  \/v1\/receipts\/verify:/)?.[1];
+  assert.ok(receiptWriteSection, 'missing root receipt write operation');
+  assert.ok(supersessionSection, 'missing receipt supersession operation');
+  assert.match(receiptWriteSection, /'503': \{ \$ref: '#\/components\/responses\/ServiceUnavailable' \}/);
+  assert.match(supersessionSection, /'503': \{ \$ref: '#\/components\/responses\/ServiceUnavailable' \}/);
+  assert.match(yaml, /ServiceUnavailable:/);
+  assert.match(yaml, /SIGNING_KEY_NOT_ACTIVE/);
+});
+
 test('OpenAPI decision, mandate, and execution fields match runtime names', async () => {
   const yaml = await contract();
   assert.match(yaml, /revocationReason:/);
