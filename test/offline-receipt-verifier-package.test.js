@@ -13,6 +13,7 @@ const allowedFiles = new Set([
   'canonical-json.js',
   'index.d.ts',
   'index.js',
+  'key-set-cache.js',
   'package.json'
 ]);
 
