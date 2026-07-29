@@ -1,4 +1,10 @@
-# Mandate
+<p align="center">
+
+  <img src="./assets/mandate-logo.PNG" alt="Mandate-API logo" width="160" />
+
+</p>
+
+# Mandate-API
 
 **Delegated authorization, approval gates, and signed action receipts for AI agents.**
 
