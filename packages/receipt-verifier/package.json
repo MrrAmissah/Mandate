@@ -1,7 +1,7 @@
 {
   "name": "@mandate-api/receipt-verifier",
-  "version": "0.1.0",
-  "description": "Offline Ed25519 verification for Mandate-API action receipts.",
+  "version": "0.2.0",
+  "description": "Offline Ed25519 verification and scoped key-set caching for Mandate-API action receipts.",
   "type": "module",
   "main": "./index.js",
   "types": "./index.d.ts",
@@ -19,7 +19,8 @@
     "index.js",
     "index.d.ts",
     "canonical-json.js",
-    "canonical-json.d.ts"
+    "canonical-json.d.ts",
+    "key-set-cache.js"
   ],
   "engines": {
     "node": ">=22"
