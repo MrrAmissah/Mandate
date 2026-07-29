@@ -34,7 +34,7 @@ Attempt-bound root receipts use schema version `1.1`. Append-only correction rec
 
 The verifier treats every receipt as an independent signed statement. It verifies v1.1 and v1.2 without special transport or server access, and rejects any change to the predecessor reference, correction reason, or execution fields.
 
-It deliberately does **not** fetch or reconstruct a correction chain. Applications validating a complete chain must additionally require:
+It deliberately does **not** fetch or reconstruct a correction chain, choose a latest receipt, or treat a valid successor as invalidating its predecessor. Applications validating a complete chain must additionally require:
 
 - every v1.2 predecessor ID to reference the immediately preceding receipt;
 - identical decision, mandate, action-attempt, action, resource, hashes, execution metadata, and execution timestamp across the chain;
