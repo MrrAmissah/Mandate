@@ -40,9 +40,10 @@ postgresTest('PostgreSQL expiry workers materialize one due reservation exactly 
          allowed_actions, denied_actions, approval_required_actions, constraints, valid_from,
          valid_until, max_uses, uses, version, created_at)
        VALUES ($1,$2,$3,'ACTIVE','principal_expiry','agent_expiry','Expire reservations',
-         $4,$5,$6,$6,clock_timestamp() - interval '1 hour',clock_timestamp() + interval '1 day',10,2,0,clock_timestamp())`,
+         $4,$5,$6,$6,$7,clock_timestamp() - interval '1 hour',
+         clock_timestamp() + interval '1 day',10,2,0,clock_timestamp())`,
       [tenantId, environment, mandateId, JSON.stringify(['github:repo']),
-        JSON.stringify(['repository.write']), JSON.stringify([])]
+        JSON.stringify(['repository.write']), JSON.stringify([]), JSON.stringify({})]
     );
     for (const decision of [decisionId, futureDecisionId]) {
       await pool.query(
