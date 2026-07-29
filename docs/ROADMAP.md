@@ -58,9 +58,9 @@ Delivered:
 
 ### Phase 2B — PostgreSQL runtime
 
-Status: in progress.
+Status: merged.
 
-Delivered in the runtime foundation:
+Delivered:
 
 - exact `pg` dependency and connection-pool composition;
 - one checked-out client per transaction;
@@ -68,22 +68,41 @@ Delivered in the runtime foundation:
 - tenant-scoped PostgreSQL repositories;
 - stored-credential authentication with atomic last-used/revocation checking;
 - serializable authorization transactions with bounded retry;
+- explicit JSONB serialization;
 - restart-safe state and idempotency tests;
-- real cross-tenant, concurrency, denial-persistence, and immutability tests;
+- real cross-tenant, concurrency, denial-persistence, approval, receipt, and immutability tests;
 - live-mode posture gates for storage, scopes, secrets, and signing keys.
+
+### Phase 2C — transactional outbox execution
+
+Status: in progress.
+
+Delivered in the execution foundation:
+
+- ordered migrations protected by one PostgreSQL advisory lock;
+- append-only outbox attempt evidence;
+- exact-handler claims with `FOR UPDATE SKIP LOCKED`;
+- committed leases before handler I/O;
+- stale-lease recovery and old-worker rejection;
+- bounded exponential retry and dead-letter transitions;
+- safe error-code persistence without raw handler exceptions;
+- multi-worker PostgreSQL concurrency and failure-path tests;
+- no automatically registered handler or worker process.
 
 Remaining before Phase 2 closes:
 
 - exact response-status/header idempotency replay;
-- outbox claim, lease, retry, and dead-letter worker;
 - persistent signing-key lifecycle;
-- deployment migration lock and production runbook;
+- deployment migration role separation and production runbook;
+- worker process composition, metrics, alerting, and operator dead-letter replay;
+- database-time and production clock-skew policy.
 
 Exit gate:
 
 - restart-safe behavior;
 - cross-tenant isolation tests;
 - concurrency tests prove one-time consumption;
+- outbox leases and late-worker behavior are proven against PostgreSQL;
 - migration and rollback procedures documented.
 
 ## Phase 3 — execution and receipt lifecycle
