@@ -1,24 +1,22 @@
-# Action attempts and decision reservations
+# Action attempts and execution receipts
 
 An authorization decision answers whether an agent action was allowed at one point in time. It is not itself an endlessly reusable execution token.
 
-Mandate-API therefore requires a caller to reserve an `ALLOW` decision before the protected tool executes.
+Mandate-API requires a caller to reserve an `ALLOW` decision, complete or cancel that reservation, and issue a receipt only from a completed attempt.
 
-## Resource
+## State machine
 
-An action attempt has an opaque `att_` ID and records:
+```text
+RESERVED ──complete──> COMPLETED ──issue receipt──> signed Receipt v1.1
+    │
+    └──cancel───────> CANCELLED
+```
 
-- the exact authorization decision;
-- the underlying mandate;
-- agent, action, and resource copied from the immutable decision;
-- the API credential that reserved execution;
-- reservation and expiry timestamps;
-- the originating request ID;
-- the attempt status and version.
+An expired reservation fails completion and cancellation with `ACTION_ATTEMPT_EXPIRED`. A database-time expiry processor will later materialize the `EXPIRED` status; until then the original expiry timestamp remains authoritative.
 
-Initial status is `RESERVED`. Future phases will add controlled transitions to `COMPLETED`, `CANCELLED`, or `EXPIRED` and bind receipt issuance to terminal attempt completion.
+Terminal attempts cannot transition again.
 
-## Reserve an attempt
+## Reserve
 
 ```http
 POST /v1/action-attempts
@@ -34,27 +32,66 @@ Content-Type: application/json
 }
 ```
 
-`expiresInSeconds` defaults to 300 and must be between 30 and 900.
+`expiresInSeconds` defaults to 300 and must be between 30 and 900. The credential requires `action_attempts:write`.
 
-The credential requires `action_attempts:write`.
+Reservation succeeds only when the tenant-visible decision is `ALLOW`, its mandate is active and unexpired, and the decision has neither an attempt nor a receipt. The attempt, audit event, outbox message, and idempotency response commit together.
 
-A reservation succeeds only when:
+The database locks the decision and uniquely constrains `(tenant, environment, decisionId)`, so concurrent callers produce exactly one attempt.
 
-1. the decision belongs to the authenticated tenant and environment;
-2. the decision outcome is `ALLOW`;
-3. the underlying mandate still exists, remains active, and has not expired;
-4. the decision has no existing action attempt; and
-5. the decision has no execution receipt.
+## Complete
 
-A successful reservation returns `201` and atomically writes the attempt, audit event, outbox message, and idempotency record.
+```http
+POST /v1/action-attempts/{att_id}/complete
+```
 
-## Exactly-once reservation
+```json
+{
+  "executionStatus": "SUCCEEDED",
+  "inputHash": "sha256:<64 lowercase hex characters>",
+  "outputHash": "sha256:<64 lowercase hex characters>",
+  "tool": "github.create_commit",
+  "provider": "github",
+  "model": null
+}
+```
 
-The database places a unique constraint on `(tenant, environment, decisionId)`. The reservation transaction also locks the decision row before checking existing attempts.
+`executionStatus` is `SUCCEEDED`, `FAILED`, or `PARTIAL`. Completion stores the exact hashes, tool identity, optional provider/model, completion timestamp, request ID, and new version.
 
-Two callers racing to reserve the same decision therefore produce exactly one successful action attempt. The other request returns `409 ACTION_ATTEMPT_ALREADY_RESERVED`. Replaying the same request with the same idempotency key returns the original attempt.
+Completion is allowed only while the attempt is `RESERVED` and before `expiresAt`. Replaying the same idempotency key returns the original completed attempt. A different request cannot overwrite terminal evidence.
 
-A different idempotency key does not create a second attempt.
+## Cancel
+
+```http
+POST /v1/action-attempts/{att_id}/cancel
+```
+
+```json
+{
+  "reason": "Caller abandoned the operation"
+}
+```
+
+Cancellation is allowed only for an unexpired `RESERVED` attempt. It stores the reason, termination timestamp, and request ID. A cancelled attempt cannot complete or produce a receipt.
+
+## Issue the receipt
+
+```http
+POST /v1/receipts
+```
+
+```json
+{
+  "actionAttemptId": "att_..."
+}
+```
+
+Receipt issuance requires `receipts:write` and a `COMPLETED` attempt. The server loads the immutable decision and mandate, copies the stored completion evidence, signs the canonical payload, and writes exactly one receipt for both the attempt and decision.
+
+Attempt-bound receipts use schema version `1.1` and include `actionAttemptId`. Their `executedAt` is the attempt's `completedAt`, not the later signature time.
+
+A mandate revoked after completion does not prevent issuing evidence of the already completed action. Revocation blocks new reservations; it does not erase history.
+
+Concurrent receipt issuers produce one receipt. Reusing another idempotency key returns `RECEIPT_ALREADY_EXISTS` rather than signing a second record.
 
 ## Read attempts
 
@@ -63,28 +100,25 @@ GET /v1/action-attempts
 GET /v1/action-attempts/{att_id}
 ```
 
-These routes require `action_attempts:read`. Collection reads use the standard `limit` and `startingAfter` pagination conventions.
-
-Cross-tenant access is indistinguishable from a missing resource.
-
-## Security meaning
-
-`RESERVED` means only that the caller acquired the one execution slot represented by an authorization decision. It does **not** mean:
-
-- the tool started;
-- the tool completed;
-- the output was accepted;
-- a receipt exists; or
-- the action succeeded.
-
-The reservation expires to limit how long an authorization can remain outstanding. Phase 3B will add completion/cancellation transitions and require a completed attempt before a signed receipt can be issued.
+These routes require `action_attempts:read` and use the standard cursor pagination conventions. Cross-tenant access is indistinguishable from a missing resource.
 
 ## Events
 
-Reservation emits the append-only event:
+The append-only event catalogue now includes:
 
 ```text
 action_attempt.reserved
+action_attempt.completed
+action_attempt.cancelled
+receipt.issued
 ```
 
-The corresponding audit and outbox records include the attempt ID, decision ID, mandate ID, request ID, and reservation expiry.
+Each transition writes its state, audit event, outbox message, and idempotency response in one transaction.
+
+## Remaining lifecycle work
+
+- database-time expiry materialization;
+- a composed expiry worker;
+- operator recovery for dead-letter events;
+- receipt supersession/correction without rewriting signed history;
+- offline verification package.
