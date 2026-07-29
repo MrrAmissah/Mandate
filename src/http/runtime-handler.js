@@ -231,6 +231,7 @@ export function createRuntimeHandler(runtime) {
               ownership,
               input: body,
               signer: runtime.signer,
+              signingKeys: runtime.signingKeys,
               now: new Date()
             });
             await recordSecurityEvent({
