@@ -1,6 +1,6 @@
 {
   "name": "mandate-api",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Delegated authorization, approval gates, and signed action receipts for AI agents.",
   "type": "module",
@@ -11,7 +11,8 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "test": "node --test",
-    "check": "node --check src/server.js && node --test"
+    "check": "npm run check:syntax && node --test",
+    "check:syntax": "node scripts/check-syntax.js"
   },
   "license": "Apache-2.0"
 }

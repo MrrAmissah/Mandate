@@ -4,30 +4,33 @@
 
 # Mandate-API
 
-**Mandate-API is a provider-independent trust layer for AI agents: delegated authorization, approval gates, and signed action receipts.**
+**Mandate-API is a provider-independent trust layer for AI agents: delegated authorization, approval gates, and cryptographically signed action receipts.**
 
-Mandate-API answers two questions that ordinary application authorization does not answer well:
+It answers two questions ordinary application authorization does not answer well:
 
 1. What may this specific agent do for this specific task, resource, and time window?
-2. What verifiable evidence proves which authority allowed the action and what the agent executed?
+2. What verifiable evidence records the authority, decision, and execution outcome?
 
-## Current milestone: API foundation
+## Current milestone: durable-core foundation
 
-The merged domain kernel proves the trust boundary. The current foundation phase hardens API invariants and defines the complete v1 product, architecture, security model, and delivery roadmap before durable persistence is introduced.
+Phase 2A establishes the transaction and persistence contract without falsely claiming that the runtime is already production-durable.
 
-- Scoped mandates for an agent, principal, actions, resources, validity window, and use limit
-- Explicit deny rules that override broad allows
-- Human approval escalation for selected actions
-- Revocation and expiry checks
-- Deterministic ALLOW, DENY, or REQUIRE_APPROVAL decisions
-- Ed25519-signed action receipts
-- Public verification-key endpoint
-- Payload-bound idempotency for state-changing operations
-- Single-use approval consumption
-- Request IDs and consistent error correlation
-- Canonical JSON hashing for receipts and request fingerprints
-- Zero runtime dependencies
-- Automated domain, cryptographic, and HTTP tests
+Implemented now:
+
+- scoped mandates with expiry, revocation, resource boundaries, deny precedence, and use limits;
+- deterministic `ALLOW`, `DENY`, and `REQUIRE_APPROVAL` decisions;
+- exact, single-use human approvals;
+- Ed25519-signed action receipts and verification;
+- tenant and `test`/`live` environment isolation at the API/store boundary;
+- route-level API credential scopes;
+- high-entropy API credential generation with hash-only durable records;
+- payload-bound idempotency;
+- atomic domain, audit-event, and outbox writes in the reference transaction store;
+- cursor-paginated mandate, approval, decision, and receipt collections;
+- a tenant-aware PostgreSQL migration with immutable decisions, receipts, and audit events;
+- concurrency tests proving one winner for the final mandate use and one-time approval consumption.
+
+The default server still uses the in-memory reference store. PostgreSQL driver wiring and real database integration tests are the Phase 2B gate.
 
 ## Run locally
 
@@ -43,17 +46,17 @@ The API starts on `http://localhost:8787`.
 ## Core flow
 
 ```text
-Principal creates mandate
+Principal defines authority
           ↓
-Agent proposes action
+Agent proposes an action
           ↓
-Policy engine evaluates scope
+Mandate-API authenticates the tenant and evaluates policy
           ↓
 ALLOW / DENY / REQUIRE_APPROVAL
           ↓
 Tool executes only after ALLOW
           ↓
-Mandate issues signed action receipt
+Mandate-API issues a signed action receipt
 ```
 
 ## Example mandate
@@ -85,18 +88,20 @@ Mandate issues signed action receipt
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/health` | Health check |
-| `GET` | `/.well-known/mandate-keys` | Public receipt verification key |
-| `POST` | `/v1/mandates` | Create a mandate |
-| `GET` | `/v1/mandates/:id` | Read a mandate |
+| `GET` | `/.well-known/mandate-keys` | Public receipt verification keys |
+| `POST`, `GET` | `/v1/mandates` | Create or list mandates |
+| `GET` | `/v1/mandates/:id` | Retrieve a mandate |
 | `POST` | `/v1/mandates/:id/revoke` | Revoke a mandate |
-| `POST` | `/v1/approvals` | Request human approval |
+| `POST`, `GET` | `/v1/approvals` | Request or list approvals |
+| `GET` | `/v1/approvals/:id` | Retrieve an approval |
 | `POST` | `/v1/approvals/:id/decide` | Approve or reject |
 | `POST` | `/v1/authorize` | Evaluate an agent action |
-| `POST` | `/v1/receipts` | Issue a signed execution receipt |
+| `GET` | `/v1/decisions`, `/v1/decisions/:id` | List or retrieve immutable decisions |
+| `POST`, `GET` | `/v1/receipts` | Issue or list signed receipts |
 | `GET` | `/v1/receipts/:id` | Retrieve a receipt |
 | `POST` | `/v1/receipts/verify` | Verify a receipt signature |
 
-See [`openapi.yaml`](./openapi.yaml) for the implemented contract and [`docs/`](./docs/) for the target v1 platform design.
+See [`openapi.yaml`](./openapi.yaml) for the current contract.
 
 ## Documentation
 
@@ -104,22 +109,24 @@ See [`openapi.yaml`](./openapi.yaml) for the implemented contract and [`docs/`](
 - [API conventions](./docs/API_CONVENTIONS.md)
 - [Target architecture](./docs/ARCHITECTURE.md)
 - [Security model](./docs/SECURITY_MODEL.md)
+- [Persistence and transaction contract](./docs/PERSISTENCE.md)
 - [Delivery roadmap](./docs/ROADMAP.md)
+- [Database migrations](./migrations/)
 - [Project assets](./assets/)
 
-## Security decisions already made
+## Security invariants
 
-- Deny rules take precedence over allow rules.
-- Receipt issuance requires a stored ALLOW decision.
-- A receipt cannot be issued after the mandate has been revoked.
-- Approval matching binds mandate, agent, action, and resource.
+- Explicit deny rules override every allow rule.
+- Cross-tenant access returns the same result as a missing object.
+- An allowed decision, mandate-use increment, approval consumption, audit event, and outbox row belong to one transaction.
+- The final mandate use and an approved approval can each be consumed only once under concurrency.
+- Receipt issuance requires a stored `ALLOW` decision and an active underlying mandate.
 - Receipt signatures cover every receipt field except the signature itself.
-- The development key is ephemeral; production must use persistent managed keys.
+- Raw generated API credentials are displayed once and are not part of the durable credential record.
+- Authorization decisions, receipts, and audit events are immutable in the PostgreSQL schema.
 
 ## Not production-ready yet
 
-The in-memory store is intentional for Milestone 0. It must be replaced before deployment with durable PostgreSQL storage and transactional use-count enforcement. Authentication is currently a single service API key and must become tenant-aware credentials.
+The schema and transaction contract are implemented, but the current server is still backed by process memory and an ephemeral signing key unless configured otherwise. It is not restart-safe, horizontally scalable, or suitable for consequential live agent actions.
 
-## Next milestone
-
-The next implementation phase is the durable multi-tenant core: PostgreSQL persistence, test/live environments, scoped and rotatable credentials, atomic counters and approval consumption, append-only audit events, and a transactional outbox. The complete sequence and exit gates are maintained in the [delivery roadmap](./docs/ROADMAP.md).
+Phase 2B must wire PostgreSQL, execute migrations in CI, add restart and multi-process concurrency tests, and make hashed stored credentials the default runtime authentication path before the durable-core milestone can close.

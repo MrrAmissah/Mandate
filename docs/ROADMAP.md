@@ -18,9 +18,9 @@ Delivered:
 
 ## Phase 1 — contract and invariant hardening
 
-Status: in progress.
+Status: merged.
 
-Scope:
+Delivered:
 
 - payload-bound idempotency;
 - single-use approval consumption;
@@ -40,17 +40,34 @@ Exit gate:
 
 ## Phase 2 — durable multi-tenant core
 
-Scope:
+Status: in progress.
 
-- PostgreSQL schema and migrations;
-- tenants and test/live environments;
-- hashed, scoped, rotatable API credentials;
-- tenant-scoped repository layer;
-- durable idempotency records;
-- immutable audit events;
-- transactional outbox;
-- atomic mandate-use and approval-consumption logic;
-- pagination and list endpoints.
+### Phase 2A — persistence contract
+
+Delivered:
+
+- tenant and test/live ownership at the API and store boundary;
+- scoped API authentication primitives;
+- hash-only API credential records with rotation/revocation lifecycle;
+- transactionally atomic reference store with rollback;
+- one-winner concurrency tests for mandate uses and approvals;
+- append-only audit-event and transactional-outbox writes;
+- cursor-paginated collection endpoints;
+- PostgreSQL schema and reversible development migration;
+- immutable decision, receipt, and audit tables.
+
+### Phase 2B — PostgreSQL runtime
+
+Remaining scope:
+
+- PostgreSQL driver and connection-pool wiring;
+- migration execution in CI and deployment tooling;
+- tenant-scoped PostgreSQL repositories;
+- stored-credential authentication as the runtime default;
+- durable idempotency response replay;
+- serializable authorization transactions and row locking;
+- outbox claim, lease, retry, and dead-letter worker;
+- restart, cross-process concurrency, and rollback integration tests;
 
 Exit gate:
 

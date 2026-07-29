@@ -9,6 +9,7 @@ function decisionBase(request, mandate, now) {
     agentId: request.agentId,
     action: request.action,
     resource: request.resource,
+    context: structuredClone(request.context ?? {}),
     evaluatedAt: now.toISOString()
   };
 }
