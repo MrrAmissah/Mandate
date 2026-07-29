@@ -14,17 +14,24 @@ export function issueReceipt({ input, decision, mandate, signer, now = new Date(
   if (decision.outcome !== 'ALLOW') {
     throw new DomainError('DECISION_NOT_ALLOWED', 'A receipt can only be issued for an ALLOW decision.', 409);
   }
-  if (!mandate || mandate.id !== decision.mandateId || mandate.status !== 'ACTIVE') {
+  if (!mandate || mandate.id !== decision.mandateId) {
+    throw new DomainError('MANDATE_NOT_FOUND', 'The underlying mandate does not exist.', 404);
+  }
+  const actionAttemptId = input.actionAttemptId
+    ? requiredString(input.actionAttemptId, 'actionAttemptId')
+    : null;
+  if (!actionAttemptId && mandate.status !== 'ACTIVE') {
     throw new DomainError('MANDATE_NOT_ACTIVE', 'The underlying mandate is no longer active.', 409);
   }
 
   const payload = {
     id: `rcpt_${randomUUID()}`,
-    version: '1.0',
+    version: actionAttemptId ? '1.1' : '1.0',
     keyId: signer.keyId,
     algorithm: signer.algorithm,
     decisionId: decision.id,
     mandateId: decision.mandateId,
+    actionAttemptId,
     principalId: mandate.principalId,
     agentId: decision.agentId,
     action: decision.action,
@@ -37,7 +44,7 @@ export function issueReceipt({ input, decision, mandate, signer, now = new Date(
     model: input.model ? requiredString(input.model, 'model') : null,
     approvalId: decision.approvalId,
     authorizedAt: decision.evaluatedAt ?? null,
-    executedAt: now.toISOString(),
+    executedAt: input.executedAt ? requiredString(input.executedAt, 'executedAt') : now.toISOString(),
     issuedAt: now.toISOString()
   };
 

@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
-  title: Mandate-API Action Attempts
-  version: 0.5.0-phase3a
-  description: Phase 3A contract for single-use authorization-decision reservations.
+  title: Mandate-API Execution Lifecycle
+  version: 0.6.0-phase3b
+  description: Contract for single-use decision reservations, attempt completion/cancellation, and attempt-bound receipts.
 servers:
   - url: http://localhost:8787
 security:
@@ -20,21 +20,14 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/ReserveActionAttemptRequest'
+            schema: { $ref: '#/components/schemas/ReserveActionAttemptRequest' }
       responses:
-        '201':
-          $ref: '#/components/responses/ActionAttemptResponse'
-        '400':
-          $ref: '#/components/responses/ErrorResponse'
-        '401':
-          $ref: '#/components/responses/ErrorResponse'
-        '403':
-          $ref: '#/components/responses/ErrorResponse'
-        '404':
-          $ref: '#/components/responses/ErrorResponse'
-        '409':
-          $ref: '#/components/responses/ErrorResponse'
+        '201': { $ref: '#/components/responses/ActionAttemptResponse' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+        '403': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
     get:
       operationId: listActionAttempts
       summary: List tenant-visible action attempts
@@ -45,39 +38,92 @@ paths:
         - $ref: '#/components/parameters/StartingAfter'
       responses:
         '200':
-          description: Tenant-scoped action-attempt page
+          description: Action-attempt page
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ActionAttemptListResponse'
-        '400':
-          $ref: '#/components/responses/ErrorResponse'
-        '401':
-          $ref: '#/components/responses/ErrorResponse'
-        '403':
-          $ref: '#/components/responses/ErrorResponse'
+              schema: { $ref: '#/components/schemas/ActionAttemptListResponse' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+        '403': { $ref: '#/components/responses/ErrorResponse' }
   /v1/action-attempts/{id}:
     get:
       operationId: getActionAttempt
-      summary: Retrieve a tenant-visible action attempt
+      summary: Retrieve an action attempt
       x-required-scope: action_attempts:read
       parameters:
         - $ref: '#/components/parameters/RequestId'
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            pattern: '^att_.+'
+        - $ref: '#/components/parameters/ActionAttemptId'
       responses:
-        '200':
-          $ref: '#/components/responses/ActionAttemptResponse'
-        '401':
-          $ref: '#/components/responses/ErrorResponse'
-        '403':
-          $ref: '#/components/responses/ErrorResponse'
-        '404':
-          $ref: '#/components/responses/ErrorResponse'
+        '200': { $ref: '#/components/responses/ActionAttemptResponse' }
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+        '403': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+  /v1/action-attempts/{id}/complete:
+    post:
+      operationId: completeActionAttempt
+      summary: Store terminal execution evidence
+      x-required-scope: action_attempts:write
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ActionAttemptId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CompleteActionAttemptRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/ActionAttemptResponse' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+        '403': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+  /v1/action-attempts/{id}/cancel:
+    post:
+      operationId: cancelActionAttempt
+      summary: Cancel an unexpired reservation
+      x-required-scope: action_attempts:write
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ActionAttemptId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancelActionAttemptRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/ActionAttemptResponse' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+        '403': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+  /v1/receipts:
+    post:
+      operationId: issueAttemptReceipt
+      summary: Sign the evidence stored by a completed action attempt
+      x-required-scope: receipts:write
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IssueAttemptReceiptRequest' }
+      responses:
+        '201':
+          description: Signed action receipt
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttemptReceipt' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+        '403': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
 components:
   securitySchemes:
     ApiKey:
@@ -89,63 +135,69 @@ components:
       name: X-Request-Id
       in: header
       required: false
-      schema:
-        type: string
-        maxLength: 128
+      schema: { type: string, maxLength: 128 }
     IdempotencyKey:
       name: Idempotency-Key
       in: header
       required: false
-      schema:
-        type: string
-        maxLength: 255
+      schema: { type: string, maxLength: 255 }
+    ActionAttemptId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^att_.+' }
     Limit:
       name: limit
       in: query
       required: false
-      schema:
-        type: integer
-        minimum: 1
-        maximum: 100
-        default: 20
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
     StartingAfter:
       name: startingAfter
       in: query
       required: false
-      schema:
-        type: string
+      schema: { type: string }
   responses:
     ActionAttemptResponse:
-      description: Reserved action attempt
-      headers:
-        X-Request-Id:
-          schema:
-            type: string
+      description: Action attempt
       content:
         application/json:
-          schema:
-            $ref: '#/components/schemas/ActionAttempt'
+          schema: { $ref: '#/components/schemas/ActionAttempt' }
     ErrorResponse:
       description: Request failed
       content:
         application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
   schemas:
     ReserveActionAttemptRequest:
       type: object
       additionalProperties: false
-      required:
-        - decisionId
+      required: [decisionId]
       properties:
-        decisionId:
-          type: string
-          pattern: '^dec_.+'
-        expiresInSeconds:
-          type: integer
-          minimum: 30
-          maximum: 900
-          default: 300
+        decisionId: { type: string, pattern: '^dec_.+' }
+        expiresInSeconds: { type: integer, minimum: 30, maximum: 900, default: 300 }
+    CompleteActionAttemptRequest:
+      type: object
+      additionalProperties: false
+      required: [executionStatus, inputHash, outputHash, tool]
+      properties:
+        executionStatus: { type: string, enum: [SUCCEEDED, FAILED, PARTIAL] }
+        inputHash: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        outputHash: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        tool: { type: string, minLength: 1 }
+        provider: { type: [string, 'null'] }
+        model: { type: [string, 'null'] }
+    CancelActionAttemptRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1 }
+    IssueAttemptReceiptRequest:
+      type: object
+      additionalProperties: false
+      required: [actionAttemptId]
+      properties:
+        actionAttemptId: { type: string, pattern: '^att_.+' }
     ActionAttempt:
       type: object
       additionalProperties: false
@@ -161,40 +213,88 @@ components:
         - reservedAt
         - expiresAt
         - requestId
+        - executionStatus
+        - inputHash
+        - outputHash
+        - tool
+        - provider
+        - model
+        - completedAt
+        - completionRequestId
+        - terminatedAt
+        - terminationReason
+        - terminationRequestId
         - version
       properties:
-        id:
-          type: string
-          pattern: '^att_.+'
-        decisionId:
-          type: string
-          pattern: '^dec_.+'
-        mandateId:
-          type: string
-          pattern: '^mnd_.+'
-        agentId:
-          type: string
-        action:
-          type: string
-        resource:
-          type: string
-        status:
-          type: string
-          enum: [RESERVED, COMPLETED, CANCELLED, EXPIRED]
-        reservedByCredentialId:
-          type: string
-          pattern: '^key_.+'
-        reservedAt:
-          type: string
-          format: date-time
-        expiresAt:
-          type: string
-          format: date-time
-        requestId:
-          type: string
-        version:
-          type: integer
-          minimum: 0
+        id: { type: string, pattern: '^att_.+' }
+        decisionId: { type: string, pattern: '^dec_.+' }
+        mandateId: { type: string, pattern: '^mnd_.+' }
+        agentId: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        status: { type: string, enum: [RESERVED, COMPLETED, CANCELLED, EXPIRED] }
+        reservedByCredentialId: { type: string, pattern: '^key_.+' }
+        reservedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        requestId: { type: string }
+        executionStatus: { type: [string, 'null'], enum: [SUCCEEDED, FAILED, PARTIAL, null] }
+        inputHash: { type: [string, 'null'] }
+        outputHash: { type: [string, 'null'] }
+        tool: { type: [string, 'null'] }
+        provider: { type: [string, 'null'] }
+        model: { type: [string, 'null'] }
+        completedAt: { type: [string, 'null'], format: date-time }
+        completionRequestId: { type: [string, 'null'] }
+        terminatedAt: { type: [string, 'null'], format: date-time }
+        terminationReason: { type: [string, 'null'] }
+        terminationRequestId: { type: [string, 'null'] }
+        version: { type: integer, minimum: 0 }
+    AttemptReceipt:
+      type: object
+      additionalProperties: true
+      required:
+        - id
+        - version
+        - keyId
+        - algorithm
+        - decisionId
+        - mandateId
+        - actionAttemptId
+        - principalId
+        - agentId
+        - action
+        - resource
+        - executionStatus
+        - inputHash
+        - outputHash
+        - tool
+        - authorizedAt
+        - executedAt
+        - issuedAt
+        - signature
+      properties:
+        id: { type: string, pattern: '^rcpt_.+' }
+        version: { type: string, const: '1.1' }
+        keyId: { type: string }
+        algorithm: { type: string, const: Ed25519 }
+        decisionId: { type: string, pattern: '^dec_.+' }
+        mandateId: { type: string, pattern: '^mnd_.+' }
+        actionAttemptId: { type: string, pattern: '^att_.+' }
+        principalId: { type: string }
+        agentId: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        executionStatus: { type: string, enum: [SUCCEEDED, FAILED, PARTIAL] }
+        inputHash: { type: string }
+        outputHash: { type: string }
+        tool: { type: string }
+        provider: { type: [string, 'null'] }
+        model: { type: [string, 'null'] }
+        approvalId: { type: [string, 'null'] }
+        authorizedAt: { type: [string, 'null'], format: date-time }
+        executedAt: { type: string, format: date-time }
+        issuedAt: { type: string, format: date-time }
+        signature: { type: string }
     ActionAttemptListResponse:
       type: object
       additionalProperties: false
@@ -202,12 +302,9 @@ components:
       properties:
         data:
           type: array
-          items:
-            $ref: '#/components/schemas/ActionAttempt'
-        hasMore:
-          type: boolean
-        nextCursor:
-          type: [string, 'null']
+          items: { $ref: '#/components/schemas/ActionAttempt' }
+        hasMore: { type: boolean }
+        nextCursor: { type: [string, 'null'] }
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -218,12 +315,7 @@ components:
           additionalProperties: false
           required: [code, message, details, requestId]
           properties:
-            code:
-              type: string
-            message:
-              type: string
-            details:
-              type: [object, 'null']
-              additionalProperties: true
-            requestId:
-              type: string
+            code: { type: string }
+            message: { type: string }
+            details: { type: [object, 'null'], additionalProperties: true }
+            requestId: { type: string }

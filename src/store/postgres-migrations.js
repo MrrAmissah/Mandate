@@ -5,7 +5,8 @@ const MIGRATIONS = Object.freeze([
   { version: '002_outbox_attempts', file: new URL('../../migrations/002_outbox_attempts.up.sql', import.meta.url) },
   { version: '003_idempotency_http_metadata', file: new URL('../../migrations/003_idempotency_http_metadata.up.sql', import.meta.url) },
   { version: '004_signing_key_lifecycle', file: new URL('../../migrations/004_signing_key_lifecycle.up.sql', import.meta.url) },
-  { version: '005_action_attempt_reservations', file: new URL('../../migrations/005_action_attempt_reservations.up.sql', import.meta.url) }
+  { version: '005_action_attempt_reservations', file: new URL('../../migrations/005_action_attempt_reservations.up.sql', import.meta.url) },
+  { version: '006_attempt_completion_receipts', file: new URL('../../migrations/006_attempt_completion_receipts.up.sql', import.meta.url) }
 ]);
 
 const MIGRATION_LOCK = 'mandate:migrations';
