@@ -3,24 +3,7 @@ import { DomainError } from '../domain/errors.js';
 
 const ENVIRONMENTS = new Set(['test', 'live']);
 
-export function hashApiKey(secret) {
-  if (typeof secret !== 'string' || secret.length < 16) {
-    throw new DomainError('INVALID_API_KEY', 'API keys must be at least 16 characters long.');
-  }
-  return createHash('sha256').update(secret, 'utf8').digest('hex');
-}
-
-export function verifyApiKey(secret, expectedHash) {
-  try {
-    const actual = Buffer.from(hashApiKey(secret), 'hex');
-    const expected = Buffer.from(expectedHash ?? '', 'hex');
-    return actual.length === expected.length && timingSafeEqual(actual, expected);
-  } catch {
-    return false;
-  }
-}
-
-export function createApiCredential(input, now = new Date()) {
+function validateCredentialInput(input, now) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new DomainError('INVALID_REQUEST', 'Credential input must be an object.');
   }
@@ -41,11 +24,35 @@ export function createApiCredential(input, now = new Date()) {
   if (expiresAt && (!Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.parse(now))) {
     throw new DomainError('INVALID_WINDOW', 'expiresAt must be a future ISO-8601 timestamp.');
   }
+  return expiresAt;
+}
 
-  const raw = randomBytes(32).toString('base64url');
-  const secret = `mnd_${input.environment}_${raw}`;
-  const credential = {
-    id: `key_${randomUUID()}`,
+export function hashApiKey(secret) {
+  if (typeof secret !== 'string' || secret.length < 16) {
+    throw new DomainError('INVALID_API_KEY', 'API keys must be at least 16 characters long.');
+  }
+  return createHash('sha256').update(secret, 'utf8').digest('hex');
+}
+
+export function verifyApiKey(secret, expectedHash) {
+  try {
+    const actual = Buffer.from(hashApiKey(secret), 'hex');
+    const expected = Buffer.from(expectedHash ?? '', 'hex');
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  } catch {
+    return false;
+  }
+}
+
+export function createApiCredentialRecord(input, secret, now = new Date()) {
+  const expiresAt = validateCredentialInput(input, now);
+  const id = input.id ?? `key_${randomUUID()}`;
+  if (!/^key_[A-Za-z0-9_-]+$/.test(id)) {
+    throw new DomainError('INVALID_REQUEST', 'id must be an opaque key_ identifier.');
+  }
+
+  return {
+    id,
     tenantId: input.tenantId,
     environment: input.environment,
     name: input.name.trim(),
@@ -60,8 +67,16 @@ export function createApiCredential(input, now = new Date()) {
     revocationReason: null,
     lastUsedAt: null
   };
+}
 
-  return { credential, secret };
+export function createApiCredential(input, now = new Date()) {
+  validateCredentialInput(input, now);
+  const raw = randomBytes(32).toString('base64url');
+  const secret = `mnd_${input.environment}_${raw}`;
+  return {
+    credential: createApiCredentialRecord(input, secret, now),
+    secret
+  };
 }
 
 export function revokeApiCredential(credential, reason, now = new Date()) {

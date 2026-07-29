@@ -8,7 +8,7 @@ async function contract() {
   return readFile(contractUrl, 'utf8');
 }
 
-test('OpenAPI contract tracks the Phase 2A version and collection routes', async () => {
+test('PostgreSQL runtime work preserves the current API contract version and collection routes', async () => {
   const yaml = await contract();
   assert.match(yaml, /version: 0\.3\.0/);
   for (const route of [

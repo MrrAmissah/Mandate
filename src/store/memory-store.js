@@ -119,6 +119,24 @@ class MemoryView {
     return null;
   }
 
+  markCredentialUsed(credential, now = new Date()) {
+    const scope = normalizeOwnership({
+      tenantId: credential.tenantId,
+      environment: credential.environment
+    }, this.defaultOwnership);
+    const key = entityKey(scope, credential.id);
+    const stored = this.state.apiCredentials.get(key);
+    if (!stored || stored.status !== 'ACTIVE') return false;
+    if (stored.expiresAt && Date.parse(now) >= Date.parse(stored.expiresAt)) return false;
+    this.state.apiCredentials.set(key, {
+      ...stored,
+      lastUsedAt: !stored.lastUsedAt || Date.parse(now) > Date.parse(stored.lastUsedAt)
+        ? now.toISOString()
+        : stored.lastUsedAt
+    });
+    return true;
+  }
+
   async idempotent(ownershipOrScope, scopeOrKey, keyOrFingerprint, fingerprintOrCreate, maybeCreate) {
     let ownership;
     let scope;

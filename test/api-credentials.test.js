@@ -74,3 +74,35 @@ test('stored credential authentication resolves tenant, environment, and scopes'
     scopes: ['authorizations:write']
   });
 });
+
+test('stored authentication records last use and fails a revocation race', async () => {
+  const store = new MemoryStore({ tenantId: 'ten_example', environment: 'test' });
+  const { credential, secret } = createApiCredential({
+    tenantId: 'ten_example',
+    environment: 'test',
+    name: 'Race-safe credential',
+    scopes: ['mandates:read']
+  }, now);
+  const ownership = { tenantId: 'ten_example', environment: 'test' };
+  store.save('apiCredentials', ownership, credential);
+
+  const authenticator = createStoredApiKeyAuthenticator({
+    store,
+    hashApiKey,
+    verifyApiKey,
+    assertCredentialUsable,
+    now: () => now
+  });
+  await authenticator.authenticate(secret);
+  assert.equal(store.get('apiCredentials', ownership, credential.id).lastUsedAt, now.toISOString());
+
+  const originalMark = store.markCredentialUsed.bind(store);
+  store.markCredentialUsed = async (value, observedAt) => {
+    store.save('apiCredentials', ownership, revokeApiCredential(value, 'Concurrent revocation', observedAt));
+    return originalMark(value, observedAt);
+  };
+  await assert.rejects(
+    authenticator.authenticate(secret),
+    (error) => error.code === 'UNAUTHORIZED' && error.status === 401
+  );
+});

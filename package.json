@@ -1,6 +1,6 @@
 {
   "name": "mandate-api",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Delegated authorization, approval gates, and signed action receipts for AI agents.",
   "type": "module",
@@ -12,7 +12,12 @@
     "start": "node src/server.js",
     "test": "node --test",
     "check": "npm run check:syntax && node --test",
-    "check:syntax": "node scripts/check-syntax.js"
+    "check:syntax": "node scripts/check-syntax.js",
+    "migrate": "node scripts/migrate.js",
+    "test:postgres": "node --test test/postgres-*.test.js"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "dependencies": {
+    "pg": "8.22.0"
+  }
 }

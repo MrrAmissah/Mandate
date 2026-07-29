@@ -11,9 +11,9 @@ It answers two questions ordinary application authorization does not answer well
 1. What may this specific agent do for this specific task, resource, and time window?
 2. What verifiable evidence records the authority, decision, and execution outcome?
 
-## Current milestone: durable-core foundation
+## Current milestone: PostgreSQL runtime
 
-Phase 2A establishes the transaction and persistence contract without falsely claiming that the runtime is already production-durable.
+Phase 2B activates PostgreSQL persistence while retaining memory mode only as a local reference implementation.
 
 Implemented now:
 
@@ -28,9 +28,12 @@ Implemented now:
 - atomic domain, audit-event, and outbox writes in the reference transaction store;
 - cursor-paginated mandate, approval, decision, and receipt collections;
 - a tenant-aware PostgreSQL migration with immutable decisions, receipts, and audit events;
-- concurrency tests proving one winner for the final mandate use and one-time approval consumption.
+- connection-pool runtime composition with one client per transaction;
+- stored credential authentication with revocation-race protection;
+- explicit JSONB serialization for arrays and structured payloads;
+- real PostgreSQL restart, isolation, concurrency, denial-persistence, and immutability tests.
 
-The default server still uses the in-memory reference store. PostgreSQL driver wiring and real database integration tests are the Phase 2B gate.
+Memory mode remains available for local experiments. Live environments require PostgreSQL, explicit scopes, a non-default API key, and persistent receipt-signing keys.
 
 ## Run locally
 
@@ -127,6 +130,4 @@ See [`openapi.yaml`](./openapi.yaml) for the current contract.
 
 ## Not production-ready yet
 
-The schema and transaction contract are implemented, but the current server is still backed by process memory and an ephemeral signing key unless configured otherwise. It is not restart-safe, horizontally scalable, or suitable for consequential live agent actions.
-
-Phase 2B must wire PostgreSQL, execute migrations in CI, add restart and multi-process concurrency tests, and make hashed stored credentials the default runtime authentication path before the durable-core milestone can close.
+PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential live agent actions. Persistent signing-key rotation, exact status/header idempotency replay, outbox delivery workers, operational migration locking, metrics, backup/restore, and deployment runbooks remain open.

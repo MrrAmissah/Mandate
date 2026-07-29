@@ -58,16 +58,26 @@ Delivered:
 
 ### Phase 2B — PostgreSQL runtime
 
-Remaining scope:
+Status: in progress.
 
-- PostgreSQL driver and connection-pool wiring;
-- migration execution in CI and deployment tooling;
+Delivered in the runtime foundation:
+
+- exact `pg` dependency and connection-pool composition;
+- one checked-out client per transaction;
+- migration command and PostgreSQL CI service;
 - tenant-scoped PostgreSQL repositories;
-- stored-credential authentication as the runtime default;
-- durable idempotency response replay;
-- serializable authorization transactions and row locking;
+- stored-credential authentication with atomic last-used/revocation checking;
+- serializable authorization transactions with bounded retry;
+- restart-safe state and idempotency tests;
+- real cross-tenant, concurrency, denial-persistence, and immutability tests;
+- live-mode posture gates for storage, scopes, secrets, and signing keys.
+
+Remaining before Phase 2 closes:
+
+- exact response-status/header idempotency replay;
 - outbox claim, lease, retry, and dead-letter worker;
-- restart, cross-process concurrency, and rollback integration tests;
+- persistent signing-key lifecycle;
+- deployment migration lock and production runbook;
 
 Exit gate:
 
