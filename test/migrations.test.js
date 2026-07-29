@@ -2,15 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const upPath = new URL('../migrations/001_durable_core.up.sql', import.meta.url);
-const downPath = new URL('../migrations/001_durable_core.down.sql', import.meta.url);
+const baselineUpPath = new URL('../migrations/001_durable_core.up.sql', import.meta.url);
+const baselineDownPath = new URL('../migrations/001_durable_core.down.sql', import.meta.url);
+const outboxUpPath = new URL('../migrations/002_outbox_attempts.up.sql', import.meta.url);
+const outboxDownPath = new URL('../migrations/002_outbox_attempts.down.sql', import.meta.url);
+const runnerPath = new URL('../src/store/postgres-migrations.js', import.meta.url);
 
-async function migration() {
-  return readFile(upPath, 'utf8');
+async function baselineMigration() {
+  return readFile(baselineUpPath, 'utf8');
 }
 
 test('durable core migration is transactional and tenant-aware', async () => {
-  const sql = await migration();
+  const sql = await baselineMigration();
   assert.match(sql, /^BEGIN;/);
   assert.match(sql, /COMMIT;\s*$/);
 
@@ -32,7 +35,7 @@ test('durable core migration is transactional and tenant-aware', async () => {
 });
 
 test('decisions, receipts, and audit events are database-immutable', async () => {
-  const sql = await migration();
+  const sql = await baselineMigration();
   assert.match(sql, /authorization_decisions_immutable/);
   assert.match(sql, /receipts_immutable/);
   assert.match(sql, /audit_events_immutable/);
@@ -40,7 +43,7 @@ test('decisions, receipts, and audit events are database-immutable', async () =>
 });
 
 test('schema enforces idempotency, one receipt per decision, and outbox leases', async () => {
-  const sql = await migration();
+  const sql = await baselineMigration();
   assert.match(sql, /PRIMARY KEY \(tenant_id, environment, scope, idempotency_key\)/);
   assert.match(sql, /UNIQUE \(tenant_id, environment, decision_id\)/);
   assert.match(sql, /outbox_due_idx/);
@@ -48,7 +51,7 @@ test('schema enforces idempotency, one receipt per decision, and outbox leases',
 });
 
 test('missing-mandate denials remain persistable while receipts require real mandates', async () => {
-  const sql = await migration();
+  const sql = await baselineMigration();
   const decisions = sql.match(new RegExp('CREATE TABLE mandate\\.authorization_decisions \\(([\\s\\S]*?)\\n\\);'))[1];
   assert.doesNotMatch(decisions, /FOREIGN KEY \(tenant_id, environment, mandate_id\)/);
 
@@ -56,7 +59,32 @@ test('missing-mandate denials remain persistable while receipts require real man
   assert.match(receipts, /FOREIGN KEY \(tenant_id, environment, mandate_id\)/);
 });
 
-test('development down migration removes only the dedicated schema', async () => {
-  const sql = await readFile(downPath, 'utf8');
-  assert.equal(sql.trim(), 'BEGIN;\nDROP SCHEMA IF EXISTS mandate CASCADE;\nCOMMIT;');
+test('outbox attempt migration is transactional, append-only, and lease-evidence aware', async () => {
+  const sql = await readFile(outboxUpPath, 'utf8');
+  assert.match(sql, /^BEGIN;/);
+  assert.match(sql, /COMMIT;\s*$/);
+  assert.match(sql, /CREATE TABLE mandate\.outbox_attempts/);
+  assert.match(sql, /LEASE_EXPIRED/);
+  assert.match(sql, /LEASE_LOST/);
+  assert.match(sql, /outbox_attempts_immutable/);
+  assert.match(sql, /reject_immutable_change/);
+  assert.match(sql, /002_outbox_attempts/);
+});
+
+test('migration runner applies ordered migrations under one advisory lock', async () => {
+  const source = await readFile(runnerPath, 'utf8');
+  assert.ok(source.indexOf("version: '001_durable_core'") < source.indexOf("version: '002_outbox_attempts'"));
+  assert.match(source, /pg_advisory_lock/);
+  assert.match(source, /pg_advisory_unlock/);
+  assert.match(source, /mandate:migrations/);
+});
+
+test('development down migrations remove only their owned objects', async () => {
+  const baseline = await readFile(baselineDownPath, 'utf8');
+  assert.equal(baseline.trim(), 'BEGIN;\nDROP SCHEMA IF EXISTS mandate CASCADE;\nCOMMIT;');
+
+  const outbox = await readFile(outboxDownPath, 'utf8');
+  assert.match(outbox, /DELETE FROM mandate\.schema_migrations WHERE version = '002_outbox_attempts'/);
+  assert.match(outbox, /DROP TABLE IF EXISTS mandate\.outbox_attempts/);
+  assert.doesNotMatch(outbox, /DROP SCHEMA/);
 });
