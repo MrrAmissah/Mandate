@@ -1,5 +1,10 @@
 import { recordSecurityEvent } from '../application/security-events.js';
 import { reserveActionAttempt } from '../application/action-attempt-service.js';
+import {
+  cancelAttempt,
+  completeAttempt,
+  issueAttemptReceipt
+} from '../application/attempt-lifecycle-service.js';
 import { API_SCOPES, ownershipFrom, requireScope } from '../auth/authentication.js';
 import { verifyReceiptWithRegistry } from '../domain/receipts.js';
 import { DomainError } from '../domain/errors.js';
@@ -26,9 +31,21 @@ function publicVerificationKey(key) {
   };
 }
 
-function isActionAttemptRoute(method, pathname) {
-  return (pathname === '/v1/action-attempts' && ['GET', 'POST'].includes(method))
-    || (method === 'GET' && Boolean(routeMatch(pathname, '/v1/action-attempts/:id')));
+function actionAttemptRoute(method, pathname) {
+  if (pathname === '/v1/action-attempts' && ['GET', 'POST'].includes(method)) return true;
+  if (method === 'GET' && routeMatch(pathname, '/v1/action-attempts/:id')) return true;
+  if (method === 'POST' && routeMatch(pathname, '/v1/action-attempts/:id/complete')) return true;
+  return method === 'POST' && Boolean(routeMatch(pathname, '/v1/action-attempts/:id/cancel'));
+}
+
+async function idempotentMutation({ runtime, ownership, scope, key, fingerprint, execute }) {
+  return runtime.store.transaction((transaction) => transaction.idempotent(
+    ownership,
+    scope,
+    key,
+    fingerprint,
+    () => execute(transaction)
+  ));
 }
 
 export function createRuntimeHandler(runtime) {
@@ -41,8 +58,11 @@ export function createRuntimeHandler(runtime) {
     const method = request.method ?? 'GET';
     const isDiscovery = method === 'GET' && url.pathname === '/.well-known/mandate-keys';
     const isVerification = method === 'POST' && url.pathname === '/v1/receipts/verify';
-    const handlesActionAttempt = isActionAttemptRoute(method, url.pathname);
-    if (!isDiscovery && !isVerification && !handlesActionAttempt) return application(request, response);
+    const isReceiptIssuance = method === 'POST' && url.pathname === '/v1/receipts';
+    const handlesActionAttempt = actionAttemptRoute(method, url.pathname);
+    if (!isDiscovery && !isVerification && !isReceiptIssuance && !handlesActionAttempt) {
+      return application(request, response);
+    }
 
     const requestId = resolveRequestId(request.headers['x-request-id']);
     const respond = (status, body, extraHeaders = {}) => sendJson(response, status, body, {
@@ -77,12 +97,13 @@ export function createRuntimeHandler(runtime) {
       if (method === 'POST' && url.pathname === '/v1/action-attempts') {
         requireScope(authentication, API_SCOPES.ACTION_ATTEMPTS_WRITE);
         const body = await readJson(request);
-        const attempt = await runtime.store.transaction(async (transaction) => transaction.idempotent(
+        const attempt = await idempotentMutation({
+          runtime,
           ownership,
-          'reserve-action-attempt',
-          request.headers['idempotency-key'],
-          requestFingerprint({ method, pathname: url.pathname, body }),
-          async () => {
+          scope: 'reserve-action-attempt',
+          key: request.headers['idempotency-key'],
+          fingerprint: requestFingerprint({ method, pathname: url.pathname, body }),
+          execute: async (transaction) => {
             const reserved = await reserveActionAttempt({
               transaction,
               ownership,
@@ -107,8 +128,123 @@ export function createRuntimeHandler(runtime) {
             });
             return reserved;
           }
-        ));
+        });
         return respond(201, attempt);
+      }
+
+      let params = routeMatch(url.pathname, '/v1/action-attempts/:id/complete');
+      if (method === 'POST' && params) {
+        requireScope(authentication, API_SCOPES.ACTION_ATTEMPTS_WRITE);
+        const body = await readJson(request);
+        const attempt = await idempotentMutation({
+          runtime,
+          ownership,
+          scope: `complete-action-attempt:${params.id}`,
+          key: request.headers['idempotency-key'],
+          fingerprint: requestFingerprint({ method, pathname: url.pathname, body }),
+          execute: async (transaction) => {
+            const completed = await completeAttempt({
+              transaction,
+              ownership,
+              attemptId: params.id,
+              input: body,
+              requestId,
+              now: new Date()
+            });
+            await recordSecurityEvent({
+              transaction,
+              ownership,
+              authentication,
+              requestId,
+              type: 'action_attempt.completed',
+              objectType: 'action_attempt',
+              objectId: completed.id,
+              data: {
+                decisionId: completed.decisionId,
+                executionStatus: completed.executionStatus,
+                completedAt: completed.completedAt
+              }
+            });
+            return completed;
+          }
+        });
+        return respond(200, attempt);
+      }
+
+      params = routeMatch(url.pathname, '/v1/action-attempts/:id/cancel');
+      if (method === 'POST' && params) {
+        requireScope(authentication, API_SCOPES.ACTION_ATTEMPTS_WRITE);
+        const body = await readJson(request);
+        const attempt = await idempotentMutation({
+          runtime,
+          ownership,
+          scope: `cancel-action-attempt:${params.id}`,
+          key: request.headers['idempotency-key'],
+          fingerprint: requestFingerprint({ method, pathname: url.pathname, body }),
+          execute: async (transaction) => {
+            const cancelled = await cancelAttempt({
+              transaction,
+              ownership,
+              attemptId: params.id,
+              input: body,
+              requestId,
+              now: new Date()
+            });
+            await recordSecurityEvent({
+              transaction,
+              ownership,
+              authentication,
+              requestId,
+              type: 'action_attempt.cancelled',
+              objectType: 'action_attempt',
+              objectId: cancelled.id,
+              data: {
+                decisionId: cancelled.decisionId,
+                reason: cancelled.terminationReason,
+                terminatedAt: cancelled.terminatedAt
+              }
+            });
+            return cancelled;
+          }
+        });
+        return respond(200, attempt);
+      }
+
+      if (isReceiptIssuance) {
+        requireScope(authentication, API_SCOPES.RECEIPTS_WRITE);
+        const body = await readJson(request);
+        const receipt = await idempotentMutation({
+          runtime,
+          ownership,
+          scope: 'issue-receipt',
+          key: request.headers['idempotency-key'],
+          fingerprint: requestFingerprint({ method, pathname: url.pathname, body }),
+          execute: async (transaction) => {
+            const issued = await issueAttemptReceipt({
+              transaction,
+              ownership,
+              input: body,
+              signer: runtime.signer,
+              now: new Date()
+            });
+            await recordSecurityEvent({
+              transaction,
+              ownership,
+              authentication,
+              requestId,
+              type: 'receipt.issued',
+              objectType: 'receipt',
+              objectId: issued.id,
+              data: {
+                decisionId: issued.decisionId,
+                actionAttemptId: issued.actionAttemptId,
+                executionStatus: issued.executionStatus
+              }
+            });
+            return issued;
+          }
+        });
+        return respond(201, receipt);
       }
 
       if (method === 'GET' && url.pathname === '/v1/action-attempts') {
@@ -119,7 +255,7 @@ export function createRuntimeHandler(runtime) {
         ));
       }
 
-      const params = routeMatch(url.pathname, '/v1/action-attempts/:id');
+      params = routeMatch(url.pathname, '/v1/action-attempts/:id');
       if (method === 'GET' && params) {
         requireScope(authentication, API_SCOPES.ACTION_ATTEMPTS_READ);
         const attempt = await getActionAttempt(runtime.store, ownership, params.id);
