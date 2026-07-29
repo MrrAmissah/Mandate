@@ -6,28 +6,13 @@ The roadmap is ordered by trust dependency. A later phase must not be treated as
 
 Status: merged.
 
-Delivered:
-
-- mandate creation and revocation;
-- explicit deny precedence;
-- approval-gated actions;
-- `ALLOW`, `DENY`, and `REQUIRE_APPROVAL` outcomes;
-- signed receipts and verification;
-- basic HTTP API and tests.
+Delivered mandate creation/revocation, explicit deny precedence, approval-gated actions, deterministic authorization outcomes, signed receipts, and the first HTTP API.
 
 ## Phase 1 — contract and invariant hardening
 
 Status: merged.
 
-Delivered:
-
-- payload-bound idempotency;
-- single-use approval consumption;
-- canonical JSON hashing;
-- request IDs and consistent error correlation;
-- expanded API contract;
-- product, architecture, API, and security blueprints;
-- `Mandate-API` naming and documentation structure.
+Delivered payload-bound idempotency, single-use approval consumption, canonical JSON, request correlation, the expanded API contract, and the durable product/architecture/security blueprints.
 
 ## Phase 2 — durable multi-tenant core
 
@@ -37,7 +22,7 @@ Status: core runtime merged; operational hardening remains.
 
 Status: merged.
 
-Delivered tenant/test-live ownership, scoped credential primitives, atomic reference transactions, one-winner authorization tests, audit/outbox writes, pagination, and the durable PostgreSQL schema.
+Delivered tenant and test/live ownership, scoped credential primitives, atomic reference transactions, one-winner authorization tests, audit/outbox writes, pagination, and the durable PostgreSQL schema.
 
 ### Phase 2B — PostgreSQL runtime
 
@@ -67,7 +52,7 @@ Remaining operational hardening:
 
 - deployment migration-role separation and production runbook;
 - worker-process composition, metrics, alerting, and operator dead-letter replay;
-- database-time and production clock-skew policy;
+- production clock-skew policy;
 - idempotency retention cleanup and configurable policy;
 - backup/restore and recovery drills.
 
@@ -98,35 +83,53 @@ Exit gate met:
 
 ### Phase 3B — attempt completion and receipt binding
 
-Status: implementation branch under review.
+Status: merged.
 
-Delivered in the branch:
+Delivered:
 
 - controlled `RESERVED → COMPLETED | CANCELLED` transitions;
 - terminal input/output hashes and tool/provider/model metadata;
-- expiry checks on completion and cancellation;
 - immutable completion and termination timestamps/request IDs;
+- terminal control restricted to the reserving credential;
 - public receipt creation only from a `COMPLETED` attempt;
 - receipt schema v1.1 with signed `actionAttemptId`;
 - `executedAt` bound to attempt completion rather than signature time;
 - one receipt per attempt and decision;
 - receipt recovery after later mandate revocation;
+- stable OpenAPI v0.6.0 for the complete execution lifecycle;
 - memory and real-PostgreSQL concurrent receipt tests;
 - migration 006 with terminal-shape and ownership constraints.
 
-Remaining before Phase 3B closes:
-
-- exact-head CI and review merge gate;
-- database-time expiry materialization;
-- composed expiry worker and operator observability;
-- clock-skew policy for externally reported completion timestamps.
-
-Exit gate:
+Exit gate met:
 
 - a public receipt cannot exist without a completed attempt;
 - terminal attempt evidence cannot be overwritten;
 - signing retries do not duplicate execution or receipts;
 - cancelled or expired attempts cannot produce receipts.
+
+### Phase 3B.1 — database-time reservation expiry
+
+Status: implementation branch.
+
+Delivered in the branch:
+
+- `ActionAttemptExpiryWorker` library boundary;
+- PostgreSQL `clock_timestamp()` as the live expiry authority;
+- due-row claims with `FOR UPDATE SKIP LOCKED`;
+- atomic `RESERVED → EXPIRED` transition;
+- system-actor audit events and transactional outbox messages;
+- optional tenant partitioning within a test/live environment;
+- bounded single-poll and drain APIs;
+- deterministic memory tests;
+- real PostgreSQL multi-worker one-winner proof;
+- future and already-terminal attempts remain untouched.
+
+Remaining before expiry work closes:
+
+- exact-head CI and review merge gate;
+- composed worker executable and deployment manifest;
+- polling cadence, shutdown, health, metrics, and alerts;
+- operator runbook for an overdue backlog.
 
 ### Phase 3C — verification products and corrections
 

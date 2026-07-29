@@ -4,6 +4,8 @@ export async function recordSecurityEvent({
   transaction,
   ownership,
   authentication,
+  actorType = authentication ? 'API_CREDENTIAL' : 'SYSTEM',
+  actorId = authentication?.credentialId,
   requestId,
   type,
   objectType,
@@ -11,14 +13,17 @@ export async function recordSecurityEvent({
   data = {},
   now = new Date()
 }) {
+  if (typeof actorId !== 'string' || actorId.length === 0) {
+    throw new TypeError('A security-event actorId is required.');
+  }
   const createdAt = now.toISOString();
   const auditEvent = await transaction.appendAudit(ownership, {
     id: `aud_${randomUUID()}`,
     type,
     objectType,
     objectId,
-    actorType: 'API_CREDENTIAL',
-    actorId: authentication.credentialId,
+    actorType,
+    actorId,
     requestId,
     data,
     createdAt
