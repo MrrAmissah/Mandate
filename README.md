@@ -12,9 +12,9 @@ It answers three questions ordinary application authorization does not answer we
 2. Which caller acquired and completed the one execution opportunity represented by an authorization decision?
 3. What verifiable evidence records the authority, execution, and outcome?
 
-## Current milestone: attempt-bound receipts
+## Current milestone: durable execution lifecycle
 
-Phase 3B binds signed execution evidence to a completed, single-use action attempt.
+The current platform binds authorization decisions to one execution attempt, terminal evidence, and one signed receipt. PostgreSQL time also expires unused reservations through a separately composed worker process.
 
 Implemented now:
 
@@ -23,7 +23,9 @@ Implemented now:
 - exact, single-use human approvals;
 - one action-attempt reservation per allowed decision;
 - bounded reservation windows and dedicated attempt scopes;
-- controlled attempt completion and cancellation;
+- controlled attempt completion and cancellation by the reserving credential;
+- database-time materialization of overdue reservations as `EXPIRED`;
+- a dedicated, signal-aware expiry-worker process with migration-readiness checks and structured counters;
 - immutable input/output hashes and tool metadata for completed attempts;
 - receipt v1.1 issuance only from completed attempts;
 - exactly one receipt per attempt and decision;
@@ -36,11 +38,9 @@ Implemented now:
 - tenant-aware PostgreSQL persistence;
 - serializable transactions and one-winner concurrency tests;
 - leased outbox claims, retries, stale-lease recovery, and dead-letter transitions;
-- real PostgreSQL restart, isolation, attempt, receipt, approval, outbox, key-rotation, and replay tests.
+- real PostgreSQL restart, isolation, attempt, expiry, receipt, approval, outbox, key-rotation, and replay tests.
 
-Memory mode remains available for local experiments. Live environments require PostgreSQL, explicit scopes, a non-default API key, an explicit persistent key ID, and persistent receipt-signing keys.
-
-The outbox dispatcher remains a library boundary. The API does not automatically register webhook, email, Slack, or connector handlers.
+Memory mode remains available for local API experiments. Live API environments require PostgreSQL, explicit scopes, a non-default API key, an explicit persistent key ID, and persistent receipt-signing keys.
 
 ## Run locally
 
@@ -52,6 +52,18 @@ npm start
 ```
 
 The API starts on `http://localhost:8787`.
+
+After applying migrations, run the expiry process separately:
+
+```bash
+npm run migrate
+MANDATE_STORE=postgres \
+MANDATE_ENVIRONMENT=test \
+MANDATE_EXPIRY_WORKER_ID=expiry-worker-local-01 \
+npm run worker:attempt-expiry
+```
+
+The expiry process does not use the API key and never applies migrations itself.
 
 ## Core flow
 
@@ -73,7 +85,7 @@ Caller completes the attempt with hashes and tool metadata
 Mandate-API signs an attempt-bound receipt
 ```
 
-A `RESERVED` attempt is not proof that execution started or succeeded. Only a `COMPLETED` attempt can issue a receipt.
+Unused reservations are materialized as `EXPIRED` by the PostgreSQL-backed expiry process. A `RESERVED` attempt is not proof that execution started or succeeded; only a `COMPLETED` attempt can issue a receipt.
 
 ## Example mandate
 
@@ -121,13 +133,14 @@ A `RESERVED` attempt is not proof that execution started or succeeded. Only a `C
 | `GET` | `/v1/receipts/:id` | Retrieve a receipt |
 | `POST` | `/v1/receipts/verify` | Verify using active or retired registered keys |
 
-See [`openapi.yaml`](./openapi.yaml) for the stable core contract and [`openapi/action-attempts.yaml`](./openapi/action-attempts.yaml) for the consolidated Phase 3 execution contract.
+See [`openapi.yaml`](./openapi.yaml) for the stable v0.6.0 contract.
 
 ## Documentation
 
 - [Product blueprint](./docs/PRODUCT_BLUEPRINT.md)
 - [API conventions](./docs/API_CONVENTIONS.md)
 - [Action attempts and receipts](./docs/ACTION_ATTEMPTS.md)
+- [Action-attempt expiry process](./docs/ACTION_ATTEMPT_EXPIRY.md)
 - [Receipt verification](./docs/RECEIPT_VERIFICATION.md)
 - [Signing-key operations](./docs/SIGNING_KEYS.md)
 - [Idempotency and HTTP replay](./docs/IDEMPOTENCY.md)
@@ -146,6 +159,8 @@ See [`openapi.yaml`](./openapi.yaml) for the stable core contract and [`openapi/
 - An allowed decision, mandate-use increment, approval consumption, audit event, and outbox row belong to one transaction.
 - The final mandate use and an approved approval can each be consumed only once under concurrency.
 - One allowed decision can be reserved by at most one action attempt.
+- Only the reserving credential may complete or cancel an attempt.
+- PostgreSQL time, not an application-host clock, determines live reservation expiry.
 - Terminal attempt evidence cannot be overwritten.
 - Cancelled, reserved, and expired attempts cannot issue receipts.
 - A raw authorization decision cannot issue a receipt through the public runtime.
@@ -154,9 +169,9 @@ See [`openapi.yaml`](./openapi.yaml) for the stable core contract and [`openapi/
 - Active and retired keys verify historical receipts; revoked keys do not.
 - Raw generated API credentials are displayed once and are not stored durably.
 - Authorization decisions, receipts, audit events, and outbox attempts are immutable in PostgreSQL.
-- An outbox worker may complete only the exact unexpired lease it owns.
+- Workers may mutate only the exact rows claimed within their transactions.
 - Unknown idempotency operation scopes are rejected instead of receiving guessed HTTP metadata.
 
 ## Not production-ready yet
 
-PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential autonomous actions. Database-time expiry materialization, a composed expiry worker, external delivery handlers, operational migration-role separation, metrics, backup/restore, dead-letter operations, idempotency retention cleanup, receipt supersession, and deployment runbooks remain open.
+PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential autonomous actions. Platform-specific service manifests, restricted deployment roles, external liveness/readiness supervision, metrics export, alerts, backup/restore, dead-letter operations, idempotency retention cleanup, receipt supersession, external delivery handlers, and deployment runbooks remain open.
