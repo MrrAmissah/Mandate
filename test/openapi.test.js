@@ -8,9 +8,9 @@ async function contract() {
   return readFile(contractUrl, 'utf8');
 }
 
-test('OpenAPI contract tracks the Phase 2A version and collection routes', async () => {
+test('OpenAPI contract tracks the Phase 2B version and collection routes', async () => {
   const yaml = await contract();
-  assert.match(yaml, /version: 0\.3\.0/);
+  assert.match(yaml, /version: 0\.4\.0/);
   for (const route of [
     '/v1/mandates:',
     '/v1/approvals:',
