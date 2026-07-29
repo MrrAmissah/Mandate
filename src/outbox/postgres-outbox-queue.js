@@ -32,6 +32,26 @@ function owner(value) {
   return value;
 }
 
+function workerScope(value) {
+  if (!value || !['test', 'live'].includes(value.environment)) {
+    throw new TypeError('An outbox worker must declare a test/live environment scope.');
+  }
+  if (value.tenantId !== undefined && !/^ten_[A-Za-z0-9_-]+$/.test(value.tenantId)) {
+    throw new TypeError('scope.tenantId must be an opaque ten_ identifier when provided.');
+  }
+  return {
+    environment: value.environment,
+    tenantId: value.tenantId ?? null
+  };
+}
+
+function errorCode(value) {
+  if (typeof value !== 'string' || !/^[A-Z0-9_]{1,64}$/.test(value)) {
+    throw new TypeError('errorCode must contain 1 to 64 uppercase letters, digits, or underscores.');
+  }
+  return value;
+}
+
 function messageFromRow(row) {
   if (!row) return null;
   return {
@@ -76,7 +96,7 @@ async function appendAttempt(client, {
   attemptNumber,
   workerId,
   outcome,
-  errorCode = null,
+  errorCode: attemptErrorCode = null,
   startedAt,
   completedAt
 }) {
@@ -88,7 +108,7 @@ async function appendAttempt(client, {
      ON CONFLICT (tenant_id, environment, outbox_message_id, attempt_number, outcome)
      DO NOTHING`,
     [tenantId, environment, `oba_${randomUUID()}`, messageId, attemptNumber, workerId,
-      outcome, errorCode, startedAt, completedAt]
+      outcome, attemptErrorCode, startedAt, completedAt]
   );
 }
 
@@ -100,12 +120,14 @@ export class PostgresOutboxQueue {
 
   async claim({
     workerId,
+    scope,
     eventTypes,
     now = new Date(),
     leaseMs = 30_000,
     maxAttempts = 5
   }) {
     requiredText(workerId, 'workerId');
+    const partition = workerScope(scope);
     positiveInteger(leaseMs, 'leaseMs');
     positiveInteger(maxAttempts, 'maxAttempts');
     if (!Array.isArray(eventTypes) || eventTypes.length === 0) return null;
@@ -120,9 +142,11 @@ export class PostgresOutboxQueue {
         `SELECT *
          FROM mandate.outbox_messages
          WHERE event_type = ANY($1::text[])
+           AND environment = $2
+           AND ($3::text IS NULL OR tenant_id = $3)
            AND (
-             (status = 'PENDING' AND available_at <= $2)
-             OR (status = 'PROCESSING' AND lock_expires_at <= $2)
+             (status = 'PENDING' AND available_at <= $4)
+             OR (status = 'PROCESSING' AND lock_expires_at <= $4)
            )
          ORDER BY
            CASE WHEN status = 'PROCESSING' THEN 0 ELSE 1 END,
@@ -131,7 +155,7 @@ export class PostgresOutboxQueue {
            id
          FOR UPDATE SKIP LOCKED
          LIMIT 1`,
-        [types, claimedAt]
+        [types, partition.environment, partition.tenantId, claimedAt]
       );
       const row = candidate.rows[0];
       if (!row) {
@@ -209,17 +233,17 @@ export class PostgresOutboxQueue {
 
   async fail(message, {
     workerId,
-    errorCode,
+    errorCode: failureCode,
     retryAt,
     maxAttempts,
     now = new Date()
   }) {
-    requiredText(errorCode, 'errorCode', 64);
+    errorCode(failureCode);
     positiveInteger(maxAttempts, 'maxAttempts');
     return this.#complete(message, {
       workerId,
       now,
-      errorCode,
+      errorCode: failureCode,
       maxAttempts,
       retryAt: instant(retryAt, 'retryAt'),
       success: false
@@ -229,7 +253,7 @@ export class PostgresOutboxQueue {
   async #complete(message, {
     workerId,
     now,
-    errorCode,
+    errorCode: completionErrorCode,
     maxAttempts,
     retryAt,
     success
@@ -305,7 +329,7 @@ export class PostgresOutboxQueue {
           deadLetter ? 'DEAD_LETTER' : 'PENDING',
           deadLetter ? row.available_at : retryAt,
           deadLetter ? completedAt : null,
-          errorCode]
+          completionErrorCode]
       );
       await appendAttempt(client, {
         tenantId: ownership.tenantId,
@@ -314,7 +338,7 @@ export class PostgresOutboxQueue {
         attemptNumber: message.attemptCount,
         workerId,
         outcome: deadLetter ? 'DEAD_LETTER' : 'FAILED',
-        errorCode,
+        errorCode: completionErrorCode,
         startedAt,
         completedAt
       });
