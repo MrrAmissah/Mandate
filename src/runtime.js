@@ -1,6 +1,7 @@
 import { createApiCredentialRecord, assertCredentialUsable, hashApiKey, verifyApiKey } from './auth/api-credentials.js';
 import { createStaticApiKeyAuthenticator, createStoredApiKeyAuthenticator } from './auth/authentication.js';
 import { createReceiptSigner } from './crypto/receipt-signer.js';
+import { createStaticSigningKeyRegistry, PostgresSigningKeyRegistry } from './crypto/signing-key-registry.js';
 import { MemoryStore } from './store/memory-store.js';
 import { ensurePostgresBootstrap } from './store/postgres-bootstrap.js';
 import { createPostgresPool, PostgresStore } from './store/postgres-store.js';
@@ -24,22 +25,15 @@ function scopesFrom(value) {
   return [...new Set(scopes)];
 }
 
-function assertRuntimePosture({ mode, environment, apiKey, scopes, privateKeyPem, publicKeyPem }) {
-  if (!['memory', 'postgres'].includes(mode)) {
-    throw new Error('MANDATE_STORE must be memory or postgres.');
-  }
-  if (!['test', 'live'].includes(environment)) {
-    throw new Error('MANDATE_ENVIRONMENT must be test or live.');
-  }
+function assertRuntimePosture({ mode, environment, apiKey, scopes, privateKeyPem, publicKeyPem, keyId }) {
+  if (!['memory', 'postgres'].includes(mode)) throw new Error('MANDATE_STORE must be memory or postgres.');
+  if (!['test', 'live'].includes(environment)) throw new Error('MANDATE_ENVIRONMENT must be test or live.');
   if (environment !== 'live') return;
   if (mode !== 'postgres') throw new Error('Live environments require MANDATE_STORE=postgres.');
-  if (!apiKey || apiKey === 'local-development-only') {
-    throw new Error('MANDATE_API_KEY must be configured before starting a live environment.');
-  }
+  if (!apiKey || apiKey === 'local-development-only') throw new Error('MANDATE_API_KEY must be configured before starting a live environment.');
   if (scopes.includes('*')) throw new Error('Live credentials may not use the wildcard scope.');
-  if (!privateKeyPem || !publicKeyPem) {
-    throw new Error('Live environments require persistent receipt signing keys.');
-  }
+  if (!privateKeyPem || !publicKeyPem) throw new Error('Live environments require persistent receipt signing keys.');
+  if (!keyId || keyId === 'local-dev-ed25519') throw new Error('Live environments require an explicit persistent MANDATE_KEY_ID.');
 }
 
 export async function createRuntime({ env = process.env } = {}) {
@@ -52,28 +46,19 @@ export async function createRuntime({ env = process.env } = {}) {
   const credentialId = env.MANDATE_API_CREDENTIAL_ID ?? 'key_runtime';
   const privateKeyPem = env.MANDATE_PRIVATE_KEY_PEM;
   const publicKeyPem = env.MANDATE_PUBLIC_KEY_PEM;
+  const keyId = env.MANDATE_KEY_ID ?? 'key_local_dev_ed25519';
 
-  assertRuntimePosture({ mode, environment, apiKey, scopes, privateKeyPem, publicKeyPem });
-
-  const signer = createReceiptSigner({
-    privateKeyPem,
-    publicKeyPem,
-    keyId: env.MANDATE_KEY_ID ?? 'local-dev-ed25519'
-  });
+  assertRuntimePosture({ mode, environment, apiKey, scopes, privateKeyPem, publicKeyPem, keyId });
+  const signer = createReceiptSigner({ privateKeyPem, publicKeyPem, keyId });
+  const ownership = { tenantId, environment };
 
   if (mode === 'memory') {
-    const store = new MemoryStore({ tenantId, environment });
+    const store = new MemoryStore(ownership);
+    const signingKeys = createStaticSigningKeyRegistry(signer);
+    await signingKeys.registerActive(signer);
     return {
-      mode,
-      store,
-      signer,
-      authenticator: createStaticApiKeyAuthenticator({
-        apiKey,
-        tenantId,
-        environment,
-        credentialId,
-        scopes
-      }),
+      mode, store, signer, signingKeys,
+      authenticator: createStaticApiKeyAuthenticator({ apiKey, tenantId, environment, credentialId, scopes }),
       async close() {}
     };
   }
@@ -83,34 +68,29 @@ export async function createRuntime({ env = process.env } = {}) {
     max: positiveInteger(env.MANDATE_DATABASE_POOL_MAX, 10),
     ssl: booleanValue(env.MANDATE_DATABASE_SSL, false)
   });
-  const store = new PostgresStore(pool, {
-    maximumTransactionAttempts: positiveInteger(env.MANDATE_TRANSACTION_ATTEMPTS, 4)
-  });
+  const store = new PostgresStore(pool, { maximumTransactionAttempts: positiveInteger(env.MANDATE_TRANSACTION_ATTEMPTS, 4) });
+  const signingKeys = new PostgresSigningKeyRegistry(pool, ownership);
 
   try {
     const credential = createApiCredentialRecord({
-      id: credentialId,
-      tenantId,
-      environment,
-      name: env.MANDATE_API_CREDENTIAL_NAME ?? 'Runtime bootstrap credential',
-      scopes
+      id: credentialId, tenantId, environment,
+      name: env.MANDATE_API_CREDENTIAL_NAME ?? 'Runtime bootstrap credential', scopes
     }, apiKey);
     await ensurePostgresBootstrap(store, { tenantId, tenantName, environment, credential });
+    await signingKeys.registerActive({
+      keyId: signer.keyId,
+      algorithm: signer.algorithm,
+      publicKeyPem: signer.publicKeyPem,
+      activatedAt: new Date()
+    });
   } catch (error) {
     await store.close();
     throw error;
   }
 
   return {
-    mode,
-    store,
-    signer,
-    authenticator: createStoredApiKeyAuthenticator({
-      store,
-      hashApiKey,
-      verifyApiKey,
-      assertCredentialUsable
-    }),
+    mode, store, signer, signingKeys,
+    authenticator: createStoredApiKeyAuthenticator({ store, hashApiKey, verifyApiKey, assertCredentialUsable }),
     close: () => store.close()
   };
 }
