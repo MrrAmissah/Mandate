@@ -90,8 +90,10 @@ test('expiry process configuration requires a database, explicit live identity, 
   });
 });
 
-test('expiry process records successful cycle and database backlog counters', async () => {
+test('expiry process timestamps success after drain and backlog work complete', async () => {
   const logger = capturingLogger();
+  const startedAt = new Date('2026-07-29T12:00:00.000Z');
+  const completedAt = new Date('2026-07-29T12:00:10.000Z');
   const expiryProcess = new ActionAttemptExpiryProcess(processOptions({
     async drain({ limit }) {
       assert.equal(limit, 2);
@@ -103,10 +105,10 @@ test('expiry process records successful cycle and database backlog counters', as
     async backlog() { return backlog(); }
   }, {
     batchLimit: 2,
-    logger
+    logger,
+    clock: () => completedAt
   }));
-  const at = new Date('2026-07-29T12:00:00.000Z');
-  const result = await expiryProcess.runCycle(at);
+  const result = await expiryProcess.runCycle(startedAt);
   assert.equal(result.expired.length, 2);
   assert.equal(result.limitReached, true);
   assert.deepEqual(result.backlog, backlog());
@@ -116,8 +118,8 @@ test('expiry process records successful cycle and database backlog counters', as
     failures: 0,
     limitReachedTotal: 1,
     consecutiveFailures: 0,
-    lastCycleAt: at.toISOString(),
-    lastSuccessAt: at.toISOString(),
+    lastCycleAt: startedAt.toISOString(),
+    lastSuccessAt: completedAt.toISOString(),
     lastErrorCode: null,
     backlogReserved: 4,
     backlogDue: 2,
@@ -130,12 +132,17 @@ test('expiry process records successful cycle and database backlog counters', as
     stoppedAt: null
   });
   assert.equal(logger.entries[0].event, 'action_attempt_expiry.cycle');
-  assert.equal(logger.entries[0].expired, 2);
+  assert.equal(logger.entries[0].startedAt, startedAt.toISOString());
+  assert.equal(logger.entries[0].at, completedAt.toISOString());
+
+  expiryProcess.running = true;
+  assert.equal(expiryProcess.readiness(new Date('2026-07-29T12:00:10.100Z')).reason, 'READY');
 });
 
 test('expiry process exposes safe failure counters and preserves committed expiry counts', async () => {
   const logger = capturingLogger();
   let failBacklog = true;
+  const completedAt = new Date('2026-07-29T12:00:02.000Z');
   const expiryProcess = new ActionAttemptExpiryProcess(processOptions({
     async drain() {
       return { expired: [{ id: 'att_committed' }], limitReached: false };
@@ -148,7 +155,7 @@ test('expiry process exposes safe failure counters and preserves committed expir
       }
       return backlog({ dueCount: 0, oldestDueAt: null, oldestOverdueSeconds: 0 });
     }
-  }, { logger }));
+  }, { logger, clock: () => completedAt }));
 
   await assert.rejects(expiryProcess.runCycle(new Date('2026-07-29T12:00:00.000Z')), /secret database detail/);
   assert.equal(expiryProcess.snapshot().expiredTotal, 1);
@@ -161,7 +168,7 @@ test('expiry process exposes safe failure counters and preserves committed expir
   assert.equal(expiryProcess.snapshot().expiredTotal, 2);
   assert.equal(expiryProcess.snapshot().consecutiveFailures, 0);
   assert.equal(expiryProcess.snapshot().lastErrorCode, null);
-  assert.equal(expiryProcess.snapshot().lastSuccessAt, '2026-07-29T12:00:01.000Z');
+  assert.equal(expiryProcess.snapshot().lastSuccessAt, completedAt.toISOString());
 });
 
 test('expiry readiness becomes ready, stale, and shutting down without database probe traffic', async () => {
