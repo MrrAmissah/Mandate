@@ -3,6 +3,21 @@ import { canonicalize } from '../crypto/canonical-json.js';
 import { DomainError } from './errors.js';
 import { assertObject, requiredString, sha256String } from './validate.js';
 
+const EXECUTION_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'PARTIAL']);
+const SUPERSEDABLE_VERSIONS = new Set(['1.1', '1.2']);
+
+function executionStatus(value) {
+  const normalized = requiredString(value, 'executionStatus').toUpperCase();
+  if (!EXECUTION_STATUSES.has(normalized)) {
+    throw new DomainError('INVALID_REQUEST', 'executionStatus must be SUCCEEDED, FAILED, or PARTIAL.');
+  }
+  return normalized;
+}
+
+function optionalSignedString(value, name) {
+  return value === null || value === undefined ? null : requiredString(value, name);
+}
+
 export function hashJson(value) {
   const digest = createHash('sha256').update(canonicalize(value)).digest('hex');
   return `sha256:${digest}`;
@@ -36,7 +51,7 @@ export function issueReceipt({ input, decision, mandate, signer, now = new Date(
     agentId: decision.agentId,
     action: decision.action,
     resource: decision.resource,
-    executionStatus: requiredString(input.executionStatus, 'executionStatus').toUpperCase(),
+    executionStatus: executionStatus(input.executionStatus),
     inputHash: sha256String(input.inputHash, 'inputHash'),
     outputHash: sha256String(input.outputHash, 'outputHash'),
     tool: requiredString(input.tool, 'tool'),
@@ -48,9 +63,49 @@ export function issueReceipt({ input, decision, mandate, signer, now = new Date(
     issuedAt: now.toISOString()
   };
 
-  if (!['SUCCEEDED', 'FAILED', 'PARTIAL'].includes(payload.executionStatus)) {
-    throw new DomainError('INVALID_REQUEST', 'executionStatus must be SUCCEEDED, FAILED, or PARTIAL.');
+  return { ...payload, signature: signer.signPayload(payload) };
+}
+
+export function issueSupersedingReceipt({ receipt, reason, signer, now = new Date() }) {
+  assertObject(receipt, 'receipt');
+  if (!SUPERSEDABLE_VERSIONS.has(receipt.version) || !receipt.actionAttemptId) {
+    throw new DomainError(
+      'RECEIPT_NOT_SUPERSEDABLE',
+      'Only execution receipts with an action attempt can be superseded.',
+      409
+    );
   }
+
+  const supersessionReason = requiredString(reason, 'reason');
+  if (supersessionReason.length > 1000) {
+    throw new DomainError('INVALID_REQUEST', 'reason must not exceed 1000 characters.');
+  }
+
+  const payload = {
+    id: `rcpt_${randomUUID()}`,
+    version: '1.2',
+    keyId: signer.keyId,
+    algorithm: signer.algorithm,
+    decisionId: requiredString(receipt.decisionId, 'receipt.decisionId'),
+    mandateId: requiredString(receipt.mandateId, 'receipt.mandateId'),
+    actionAttemptId: requiredString(receipt.actionAttemptId, 'receipt.actionAttemptId'),
+    principalId: requiredString(receipt.principalId, 'receipt.principalId'),
+    agentId: requiredString(receipt.agentId, 'receipt.agentId'),
+    action: requiredString(receipt.action, 'receipt.action'),
+    resource: requiredString(receipt.resource, 'receipt.resource'),
+    executionStatus: executionStatus(receipt.executionStatus),
+    inputHash: sha256String(receipt.inputHash, 'receipt.inputHash'),
+    outputHash: sha256String(receipt.outputHash, 'receipt.outputHash'),
+    tool: requiredString(receipt.tool, 'receipt.tool'),
+    provider: optionalSignedString(receipt.provider, 'receipt.provider'),
+    model: optionalSignedString(receipt.model, 'receipt.model'),
+    approvalId: receipt.approvalId ?? null,
+    authorizedAt: receipt.authorizedAt ?? null,
+    executedAt: requiredString(receipt.executedAt, 'receipt.executedAt'),
+    issuedAt: now.toISOString(),
+    supersedesReceiptId: requiredString(receipt.id, 'receipt.id'),
+    supersessionReason
+  };
 
   return { ...payload, signature: signer.signPayload(payload) };
 }
