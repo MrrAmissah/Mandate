@@ -16,6 +16,14 @@ ALTER TABLE mandate.receipts
       AND supersession_reason IS NULL
       AND NOT (payload ? 'supersedesReceiptId')
       AND NOT (payload ? 'supersessionReason')
+      AND (payload ->> 'decisionId') IS NOT DISTINCT FROM decision_id
+      AND (payload ->> 'mandateId') IS NOT DISTINCT FROM mandate_id
+      AND (payload ->> 'actionAttemptId') IS NOT DISTINCT FROM action_attempt_id
+      AND (
+        (action_attempt_id IS NULL AND (payload ->> 'version') IS NOT DISTINCT FROM '1.0')
+        OR
+        (action_attempt_id IS NOT NULL AND (payload ->> 'version') IS NOT DISTINCT FROM '1.1')
+      )
     )
     OR (
       supersedes_receipt_id IS NOT NULL
@@ -27,6 +35,7 @@ ALTER TABLE mandate.receipts
       AND (payload ->> 'supersedesReceiptId') IS NOT DISTINCT FROM supersedes_receipt_id
       AND (payload ->> 'supersessionReason') IS NOT DISTINCT FROM supersession_reason
       AND (payload ->> 'decisionId') IS NOT DISTINCT FROM decision_id
+      AND (payload ->> 'mandateId') IS NOT DISTINCT FROM mandate_id
       AND (payload ->> 'actionAttemptId') IS NOT DISTINCT FROM action_attempt_id
     )
   ),
