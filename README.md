@@ -207,7 +207,7 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.7.0 contract.
 - One completed attempt and decision produce at most one immutable root receipt.
 - Each receipt may have at most one direct successor; a successor retains the same decision and action-attempt identity.
 - The predecessor must verify through an active or retired key before a successor is signed.
-- PostgreSQL supersession holds shared locks on the predecessor key and receipt until the successor commits.
+- PostgreSQL supersession takes an exclusive row lock on the predecessor receipt and a shared row lock on its verification key until the successor commits.
 - Receipt signatures cover every receipt field except the signature itself.
 - Server and offline verification share one canonical JSON implementation.
 - Active and retired keys verify historical receipts; revoked keys do not.
