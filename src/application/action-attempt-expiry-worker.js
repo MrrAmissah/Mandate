@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { recordSecurityEvent } from './security-events.js';
-import { expireNextActionAttempt } from '../store/action-attempts.js';
+import {
+  expireNextActionAttempt,
+  inspectActionAttemptExpiryBacklog
+} from '../store/action-attempts.js';
 
 function validateWorkerId(workerId) {
   if (typeof workerId !== 'string' || !/^[A-Za-z0-9:._-]{3,200}$/.test(workerId)) {
@@ -77,5 +80,9 @@ export class ActionAttemptExpiryWorker {
       expired.push(result.actionAttempt);
     }
     return Object.freeze({ expired, limitReached: expired.length === limit });
+  }
+
+  async backlog() {
+    return inspectActionAttemptExpiryBacklog(this.store, this.scope, { now: this.now() });
   }
 }
