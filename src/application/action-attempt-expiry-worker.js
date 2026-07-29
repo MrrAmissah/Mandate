@@ -3,7 +3,7 @@ import { recordSecurityEvent } from './security-events.js';
 import { expireNextActionAttempt } from '../store/action-attempts.js';
 
 function validateWorkerId(workerId) {
-  if (typeof workerId !== 'string' || !/^[A-Za-z0-9:_-]{3,200}$/.test(workerId)) {
+  if (typeof workerId !== 'string' || !/^[A-Za-z0-9:._-]{3,200}$/.test(workerId)) {
     throw new TypeError('workerId must contain 3-200 safe characters.');
   }
   return workerId;
