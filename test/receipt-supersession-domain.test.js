@@ -103,10 +103,11 @@ test('successors form a direct linear chain without copying predecessor correcti
   }
 });
 
-test('legacy receipts and unbounded reasons fail before signing', () => {
+test('legacy receipts and Unicode reason bounds fail or succeed consistently', () => {
   const signer = createReceiptSigner({ keyId: 'key_supersession_rejections' });
+  const root = rootReceipt(signer);
   const legacy = {
-    ...rootReceipt(signer),
+    ...root,
     version: '1.0',
     actionAttemptId: null
   };
@@ -115,8 +116,20 @@ test('legacy receipts and unbounded reasons fail before signing', () => {
     () => issueSupersedingReceipt({ receipt: legacy, reason: 'Not supported', signer }),
     (error) => error.code === 'RECEIPT_NOT_SUPERSEDABLE' && error.status === 409
   );
-  assert.throws(
-    () => issueSupersedingReceipt({ receipt: rootReceipt(signer), reason: 'x'.repeat(1001), signer }),
-    (error) => error.code === 'INVALID_REQUEST'
-  );
+
+  const validEmojiReason = '😀'.repeat(600);
+  const unicodeSuccessor = issueSupersedingReceipt({
+    receipt: root,
+    reason: validEmojiReason,
+    signer
+  });
+  assert.equal(unicodeSuccessor.supersessionReason, validEmojiReason);
+  assert.equal(verifyReceipt(unicodeSuccessor, signer), true);
+
+  for (const reason of ['x'.repeat(1001), '😀'.repeat(1001)]) {
+    assert.throws(
+      () => issueSupersedingReceipt({ receipt: root, reason, signer }),
+      (error) => error.code === 'INVALID_REQUEST'
+    );
+  }
 });
