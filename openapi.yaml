@@ -1,0 +1,103 @@
+openapi: 3.1.0
+info:
+  title: Mandate Agent Trust API
+  version: 0.1.0
+  description: Delegated authorization, human approval gates, and signed action receipts for AI agents.
+servers:
+  - url: http://localhost:8787
+security:
+  - ApiKey: []
+paths:
+  /health:
+    get:
+      security: []
+      responses:
+        '200': { description: Healthy }
+  /.well-known/mandate-keys:
+    get:
+      security: []
+      responses:
+        '200': { description: Public receipt verification keys }
+  /v1/mandates:
+    post:
+      summary: Create an active delegated mandate
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMandate'
+      responses:
+        '201': { description: Mandate created }
+  /v1/authorize:
+    post:
+      summary: Evaluate a proposed agent action
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthorizationRequest'
+      responses:
+        '200': { description: ALLOW, DENY, or REQUIRE_APPROVAL decision }
+  /v1/approvals:
+    post:
+      summary: Create a human approval request
+      responses:
+        '201': { description: Approval request created }
+  /v1/approvals/{id}/decide:
+    post:
+      summary: Approve or reject a pending request
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Approval decided }
+  /v1/receipts:
+    post:
+      summary: Issue a signed receipt for an allowed action
+      responses:
+        '201': { description: Signed action receipt }
+  /v1/receipts/verify:
+    post:
+      summary: Verify a signed action receipt
+      responses:
+        '200': { description: Verification result }
+components:
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+  schemas:
+    CreateMandate:
+      type: object
+      required: [principalId, agentId, purpose, resources, allowedActions]
+      properties:
+        principalId: { type: string }
+        agentId: { type: string }
+        purpose: { type: string }
+        resources: { type: array, items: { type: string } }
+        allowedActions: { type: array, items: { type: string } }
+        deniedActions: { type: array, items: { type: string } }
+        approvalRequiredActions: { type: array, items: { type: string } }
+        validFrom: { type: string, format: date-time }
+        validUntil: { type: string, format: date-time }
+        maxUses: { type: integer, minimum: 1 }
+        constraints: { type: object, additionalProperties: true }
+    AuthorizationRequest:
+      type: object
+      required: [mandateId, agentId, action, resource]
+      properties:
+        mandateId: { type: string }
+        agentId: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        approvalId: { type: string }
+        context: { type: object, additionalProperties: true }
