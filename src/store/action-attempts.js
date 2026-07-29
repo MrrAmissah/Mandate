@@ -171,6 +171,60 @@ export async function listActionAttempts(store, ownership) {
   return result.rows.map(attemptFromRow);
 }
 
+export async function inspectActionAttemptExpiryBacklog(store, scope, { now = new Date() } = {}) {
+  if (!isPostgres(store)) {
+    const tenantId = scope.tenantId ?? store.defaultOwnership?.tenantId;
+    if (!tenantId) throw new TypeError('Memory backlog inspection requires a tenantId.');
+    const ownership = { tenantId, environment: scope.environment };
+    const reserved = (await store.list('actionAttempts', ownership))
+      .filter((attempt) => attempt.status === 'RESERVED');
+    const due = reserved
+      .filter((attempt) => Date.parse(attempt.expiresAt) <= now.getTime())
+      .sort((left, right) => Date.parse(left.expiresAt) - Date.parse(right.expiresAt) || left.id.localeCompare(right.id));
+    const oldestDueAt = due[0]?.expiresAt ?? null;
+    return Object.freeze({
+      reservedCount: reserved.length,
+      dueCount: due.length,
+      oldestDueAt,
+      oldestOverdueSeconds: oldestDueAt
+        ? Math.max(0, Math.floor((now.getTime() - Date.parse(oldestDueAt)) / 1000))
+        : 0,
+      observedAt: now.toISOString()
+    });
+  }
+
+  const result = await queryable(store).query(
+    `WITH observed AS (
+       SELECT clock_timestamp() AS observed_at
+     )
+     SELECT
+       COUNT(attempt.id)::integer AS reserved_count,
+       COUNT(attempt.id) FILTER (WHERE attempt.expires_at <= observed.observed_at)::integer AS due_count,
+       MIN(attempt.expires_at) FILTER (WHERE attempt.expires_at <= observed.observed_at) AS oldest_due_at,
+       COALESCE(
+         FLOOR(EXTRACT(EPOCH FROM observed.observed_at -
+           MIN(attempt.expires_at) FILTER (WHERE attempt.expires_at <= observed.observed_at))),
+         0
+       )::integer AS oldest_overdue_seconds,
+       observed.observed_at
+     FROM observed
+     LEFT JOIN mandate.action_attempts AS attempt
+       ON attempt.status = 'RESERVED'
+      AND attempt.environment = $1
+      AND ($2::text IS NULL OR attempt.tenant_id = $2)
+     GROUP BY observed.observed_at`,
+    [scope.environment, scope.tenantId ?? null]
+  );
+  const row = result.rows[0];
+  return Object.freeze({
+    reservedCount: Number(row.reserved_count),
+    dueCount: Number(row.due_count),
+    oldestDueAt: timestamp(row.oldest_due_at),
+    oldestOverdueSeconds: Number(row.oldest_overdue_seconds),
+    observedAt: timestamp(row.observed_at)
+  });
+}
+
 export async function expireNextActionAttempt(transaction, scope, { requestId, now = new Date() }) {
   if (!isPostgres(transaction)) {
     const tenantId = scope.tenantId ?? transaction.defaultOwnership?.tenantId;

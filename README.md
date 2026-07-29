@@ -25,7 +25,9 @@ Implemented now:
 - bounded reservation windows and dedicated attempt scopes;
 - controlled attempt completion and cancellation by the reserving credential;
 - database-time materialization of overdue reservations as `EXPIRED`;
-- a dedicated, signal-aware expiry-worker process with migration-readiness checks and structured counters;
+- a dedicated, signal-aware expiry-worker process with migration-readiness checks;
+- cached database-time backlog counts and oldest-overdue age;
+- loopback-default liveness, readiness, and Prometheus metrics for the expiry process;
 - immutable input/output hashes and tool metadata for completed attempts;
 - receipt v1.1 issuance only from completed attempts;
 - exactly one receipt per attempt and decision;
@@ -38,7 +40,7 @@ Implemented now:
 - tenant-aware PostgreSQL persistence;
 - serializable transactions and one-winner concurrency tests;
 - leased outbox claims, retries, stale-lease recovery, and dead-letter transitions;
-- real PostgreSQL restart, isolation, attempt, expiry, receipt, approval, outbox, key-rotation, and replay tests.
+- real PostgreSQL restart, isolation, attempt, expiry, backlog, receipt, approval, outbox, key-rotation, and replay tests.
 
 Memory mode remains available for local API experiments. Live API environments require PostgreSQL, explicit scopes, a non-default API key, an explicit persistent key ID, and persistent receipt-signing keys.
 
@@ -63,7 +65,15 @@ MANDATE_EXPIRY_WORKER_ID=expiry-worker-local-01 \
 npm run worker:attempt-expiry
 ```
 
-The expiry process does not use the API key and never applies migrations itself.
+The expiry process does not use the API key and never applies migrations itself. Its operational listener defaults to `http://127.0.0.1:8788`:
+
+| Route | Purpose |
+|---|---|
+| `/health/live` | Dedicated process liveness |
+| `/health/ready` | Recent successful-cycle readiness |
+| `/metrics` | Cached Prometheus counters and backlog gauges |
+
+These are operational endpoints, not part of the public Mandate API contract. Binding them beyond loopback requires deployment network controls.
 
 ## Core flow
 
@@ -160,7 +170,8 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.6.0 contract.
 - The final mandate use and an approved approval can each be consumed only once under concurrency.
 - One allowed decision can be reserved by at most one action attempt.
 - Only the reserving credential may complete or cancel an attempt.
-- PostgreSQL time, not an application-host clock, determines live reservation expiry.
+- PostgreSQL time, not an application-host clock, determines live reservation expiry and backlog age.
+- Health probes read cached metrics and never create per-probe database traffic.
 - Terminal attempt evidence cannot be overwritten.
 - Cancelled, reserved, and expired attempts cannot issue receipts.
 - A raw authorization decision cannot issue a receipt through the public runtime.
@@ -174,4 +185,4 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.6.0 contract.
 
 ## Not production-ready yet
 
-PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential autonomous actions. Platform-specific service manifests, restricted deployment roles, external liveness/readiness supervision, metrics export, alerts, backup/restore, dead-letter operations, idempotency retention cleanup, receipt supersession, external delivery handlers, and deployment runbooks remain open.
+PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential autonomous actions. Platform-specific service manifests, restricted deployment roles, network policy, alert thresholds, supervisor restart policy, backup/restore, dead-letter operations, idempotency retention cleanup, receipt supersession, external delivery handlers, and deployment runbooks remain open.
