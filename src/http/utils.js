@@ -31,7 +31,7 @@ export function resolveRequestId(headerValue) {
 }
 
 export function sendJson(response, status, body, extraHeaders = {}) {
-  const payload = JSON.stringify(body);
+  const payload = canonicalize(body);
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(payload),
