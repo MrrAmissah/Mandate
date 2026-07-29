@@ -36,7 +36,7 @@ Content-Type: application/json
 
 Reservation succeeds only when the tenant-visible decision is `ALLOW`, its mandate is active and unexpired, and the decision has neither an attempt nor a receipt. The attempt, audit event, outbox message, and idempotency response commit together.
 
-The database locks the decision and uniquely constrains `(tenant, environment, decisionId)`, so concurrent callers produce exactly one attempt.
+The database locks the decision and uniquely constrains `(tenant, environment, decisionId)`, so concurrent callers produce exactly one attempt. The successful credential becomes `reservedByCredentialId` and owns terminal control of that attempt.
 
 ## Complete
 
@@ -57,7 +57,7 @@ POST /v1/action-attempts/{att_id}/complete
 
 `executionStatus` is `SUCCEEDED`, `FAILED`, or `PARTIAL`. Completion stores the exact hashes, tool identity, optional provider/model, completion timestamp, request ID, and new version.
 
-Completion is allowed only while the attempt is `RESERVED` and before `expiresAt`. Replaying the same idempotency key returns the original completed attempt. A different request cannot overwrite terminal evidence.
+Completion is allowed only while the attempt is `RESERVED`, before `expiresAt`, and when the authenticated credential matches `reservedByCredentialId`. Replaying the same idempotency key returns the original completed attempt. A different request cannot overwrite terminal evidence.
 
 ## Cancel
 
@@ -71,7 +71,9 @@ POST /v1/action-attempts/{att_id}/cancel
 }
 ```
 
-Cancellation is allowed only for an unexpired `RESERVED` attempt. It stores the reason, termination timestamp, and request ID. A cancelled attempt cannot complete or produce a receipt.
+Cancellation is allowed only for an unexpired `RESERVED` attempt and only by the credential that reserved it. It stores the reason, termination timestamp, and request ID. A cancelled attempt cannot complete or produce a receipt.
+
+A different credential in the same tenant receives `403 ACTION_ATTEMPT_OWNER_MISMATCH`; broad tenant scopes do not grant control over another credential's reservation.
 
 ## Issue the receipt
 
