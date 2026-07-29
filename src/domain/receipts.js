@@ -18,6 +18,32 @@ function optionalSignedString(value, name) {
   return value === null || value === undefined ? null : requiredString(value, name);
 }
 
+export async function requireActiveReceiptSigner({
+  signer,
+  signingKeys,
+  queryable,
+  lock = false
+}) {
+  const active = Boolean(
+    signer
+    && typeof signingKeys?.verifyActiveSigner === 'function'
+    && await signingKeys.verifyActiveSigner({
+      keyId: signer.keyId,
+      algorithm: signer.algorithm,
+      publicKeyPem: signer.publicKeyPem,
+      queryable,
+      lock
+    })
+  );
+  if (!active) {
+    throw new DomainError(
+      'SIGNING_KEY_NOT_ACTIVE',
+      'The configured receipt signing key is not active for this tenant and environment.',
+      503
+    );
+  }
+}
+
 export function hashJson(value) {
   const digest = createHash('sha256').update(canonicalize(value)).digest('hex');
   return `sha256:${digest}`;
@@ -77,7 +103,7 @@ export function issueSupersedingReceipt({ receipt, reason, signer, now = new Dat
   }
 
   const supersessionReason = requiredString(reason, 'reason');
-  if (supersessionReason.length > 1000) {
+  if ([...supersessionReason].length > 1000) {
     throw new DomainError('INVALID_REQUEST', 'reason must not exceed 1000 characters.');
   }
 
