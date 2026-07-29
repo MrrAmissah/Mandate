@@ -51,14 +51,13 @@ Delivered tenant/environment-scoped Ed25519 public keys, active/retired/revoked 
 Remaining operational hardening:
 
 - deployment migration-role separation and production runbook;
-- worker-process composition, metrics, alerting, and operator dead-letter replay;
-- production clock-skew policy;
+- outbox worker-process composition, metrics, alerting, and operator dead-letter replay;
 - idempotency retention cleanup and configurable policy;
 - backup/restore and recovery drills.
 
 ## Phase 3 — execution and receipt lifecycle
 
-Status: in progress.
+Status: core lifecycle merged; worker operations in progress.
 
 ### Phase 3A — single-use decision reservation
 
@@ -109,9 +108,9 @@ Exit gate met:
 
 ### Phase 3B.1 — database-time reservation expiry
 
-Status: implementation branch.
+Status: merged.
 
-Delivered in the branch:
+Delivered:
 
 - `ActionAttemptExpiryWorker` library boundary;
 - PostgreSQL `clock_timestamp()` as the live expiry authority;
@@ -124,12 +123,32 @@ Delivered in the branch:
 - real PostgreSQL multi-worker one-winner proof;
 - future and already-terminal attempts remain untouched.
 
-Remaining before expiry work closes:
+### Phase 3B.2 — expiry process composition
+
+Status: implementation branch.
+
+Delivered in the branch:
+
+- dedicated `npm run worker:attempt-expiry` executable;
+- no dependency on API credentials or API-process startup;
+- explicit database and test/live environment posture;
+- explicit live worker identity;
+- migration-006 readiness check without migration authority;
+- signal-aware shutdown and PostgreSQL-pool closure;
+- bounded poll interval and cycle batch size;
+- structured success/failure logs with safe error codes;
+- in-process cycle, expiry, and failure counters;
+- recovery after a failed cycle;
+- readiness and process-behavior tests.
+
+Remaining before process composition closes:
 
 - exact-head CI and review merge gate;
-- composed worker executable and deployment manifest;
-- polling cadence, shutdown, health, metrics, and alerts;
-- operator runbook for an overdue backlog.
+- platform-specific deployment manifest;
+- restricted runtime database role;
+- external liveness/readiness supervision;
+- metrics export or log-based extraction;
+- alert thresholds and overdue-backlog runbook.
 
 ### Phase 3C — verification products and corrections
 

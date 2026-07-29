@@ -1,28 +1,54 @@
-# Action-attempt expiry worker
+# Action-attempt expiry process
 
-Action-attempt reservations are deliberately short-lived. A caller cannot complete or cancel a reservation after its `expiresAt` timestamp, and the expiry worker materializes that fact as the terminal `EXPIRED` state.
+Action-attempt reservations are deliberately short-lived. A caller cannot complete or cancel a reservation after its `expiresAt` timestamp, and the expiry process materializes that fact as the terminal `EXPIRED` state.
 
-## Trust boundary
+## Process boundary
 
-The worker is a library component. The API process does not start it automatically. A deployment may run one or more dedicated worker processes with an explicit environment and optional tenant scope.
+The expiry worker runs as a dedicated process, separate from the HTTP API:
 
-```js
-const worker = new ActionAttemptExpiryWorker({
-  store,
-  workerId: 'expiry-worker-live-01',
-  scope: { environment: 'live' }
-});
-
-await worker.pollOnce();
+```bash
+npm run worker:attempt-expiry
 ```
 
-A tenant-scoped worker may additionally set `tenantId`.
+The API does not start the worker automatically. The worker does not authenticate with `MANDATE_API_KEY`, create API credentials, or expose HTTP routes.
+
+The process uses the same PostgreSQL schema but has a narrower operational responsibility:
+
+1. check that migration `006_attempt_completion_receipts` is already applied;
+2. claim due `RESERVED` attempts;
+3. change them to `EXPIRED`;
+4. write system audit and outbox evidence in the same transaction;
+5. continue polling until it receives `SIGINT` or `SIGTERM`.
+
+It never applies migrations. Deployment must run `npm run migrate` with a separate migration role before starting the API or worker.
+
+## Required configuration
+
+```env
+DATABASE_URL=postgresql://...
+MANDATE_ENVIRONMENT=test
+MANDATE_EXPIRY_WORKER_ID=expiry-worker-test-01
+MANDATE_EXPIRY_POLL_INTERVAL_MS=1000
+MANDATE_EXPIRY_BATCH_LIMIT=100
+MANDATE_DATABASE_POOL_MAX=5
+MANDATE_DATABASE_SSL=false
+```
+
+`DATABASE_URL` and an explicit `test` or `live` environment are required. Live mode also requires an explicit `MANDATE_EXPIRY_WORKER_ID`. Test mode may derive a local identity from hostname and process ID.
+
+`MANDATE_TENANT_ID` is optional. When omitted, one worker may process every tenant within the selected environment. When set, work is restricted to that tenant.
+
+Bounds:
+
+- poll interval: 100–60,000 milliseconds;
+- batch limit: 1–1,000 attempts per cycle;
+- database pool: 1–100 connections.
 
 ## Database-time authority
 
-PostgreSQL workers determine due reservations with `clock_timestamp()`. Application host clocks do not decide whether a live reservation has expired.
+PostgreSQL determines due reservations with `clock_timestamp()`. Application-host clocks do not decide whether a live reservation has expired.
 
-The worker selects one due row using:
+Each claim selects one due row using:
 
 ```sql
 FOR UPDATE SKIP LOCKED
@@ -41,59 +67,71 @@ The terminal record includes:
 - a system-generated termination request ID;
 - an incremented optimistic version.
 
-## Multi-worker behavior
-
-Several workers may poll the same environment safely. Row locks and `SKIP LOCKED` ensure one worker owns a due reservation, while another worker either claims a different reservation or returns `IDLE`.
-
-A worker cannot expire:
-
-- a future reservation;
-- a completed attempt;
-- a cancelled attempt; or
-- an already expired attempt.
+Several processes may poll the same environment safely. One process owns a locked reservation; another claims a different row or returns idle. Future, completed, cancelled, and already-expired attempts are never selected.
 
 ## Audit and outbox evidence
 
-The state transition, audit event, and outbox message commit in the same transaction.
-
-The audit actor is:
+The state transition, audit event, and outbox message commit in one transaction.
 
 ```text
 actorType: SYSTEM
-actorId: <workerId>
+actorId: <MANDATE_EXPIRY_WORKER_ID>
+eventType: action_attempt.expired
 ```
 
-The emitted event is:
+The evidence includes the attempt, decision, mandate, reserving credential, original expiry timestamp, and terminal timestamp.
+
+## Polling behavior
+
+The lower-level worker exposes:
+
+```js
+await worker.pollOnce();
+await worker.drain({ limit: 100 });
+```
+
+`pollOnce()` expires at most one reservation and returns either `EXPIRED` or `IDLE`. `drain()` processes up to its bound and returns `limitReached`; this means the configured bound was reached, not that additional backlog was conclusively observed.
+
+The process wrapper repeatedly calls `drain()`, waits for the configured interval, and responds to an abort signal. A cycle failure is recorded safely and the loop continues on the next bounded interval.
+
+## Structured operational counters
+
+Every cycle emits a JSON log entry with:
+
+- `cycles`;
+- `expiredTotal`;
+- `failures`;
+- `consecutiveFailures`;
+- `lastCycleAt`;
+- `lastSuccessAt`;
+- `lastErrorCode`;
+- cycle `expired` count;
+- `limitReached`.
+
+Lifecycle events are:
 
 ```text
-action_attempt.expired
+action_attempt_expiry.started
+action_attempt_expiry.cycle
+action_attempt_expiry.cycle_failed
+action_attempt_expiry.shutdown_requested
+action_attempt_expiry.stopped
 ```
 
-It records the attempt, decision, mandate, reserving credential, original expiry timestamp, and terminal timestamp.
+Failure logs persist only a safe error code, never raw database messages or connection details.
 
-## Polling APIs
+## Graceful shutdown
 
-`pollOnce()` expires at most one reservation and returns:
+The executable listens for `SIGINT` and `SIGTERM`, aborts the polling loop, waits for the active cycle to finish, logs the final metrics snapshot, and closes the PostgreSQL pool.
 
-```js
-{ status: 'EXPIRED', ownership, actionAttempt }
-```
+## Remaining deployment work
 
-or:
+The process boundary is composed and tested, but a production deployment still requires:
 
-```js
-{ status: 'IDLE' }
-```
-
-`drain({ limit })` repeatedly polls up to the configured bound and returns the expired attempts. The accepted limit is 1–1000.
-
-## Operational boundary
-
-Still required before production:
-
-- a composed worker executable and deployment manifest;
-- polling cadence and shutdown behavior;
-- metrics for due backlog, expiry throughput, failures, and oldest overdue reservation;
-- alert thresholds and runbooks;
-- database availability and retry policy at the process boundary;
-- health/readiness reporting.
+- a platform-specific service manifest;
+- a restricted runtime database role;
+- external liveness/readiness supervision;
+- metrics export or log-based metric extraction;
+- alert thresholds for consecutive failures, oldest overdue reservation, and repeated batch saturation;
+- backup/restore procedures;
+- an operator runbook for overdue backlog and database outages.
