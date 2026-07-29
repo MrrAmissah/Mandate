@@ -235,3 +235,27 @@ test('tampered and legacy predecessors fail closed without creating successors',
     await server.close();
   }
 });
+
+test('an inactive configured signer returns a safe 503 without committing a successor', async () => {
+  const { runtime, store, root } = fixture();
+  runtime.signingKeys = {
+    ...runtime.signingKeys,
+    async verifyActiveSigner() { return false; }
+  };
+  const server = await startServer(runtime);
+  try {
+    const response = await post(
+      server.baseUrl,
+      `/v1/receipts/${root.id}/supersede`,
+      { reason: 'This must fail before signing.' },
+      'supersede-inactive-signer'
+    );
+    assert.equal(response.status, 503);
+    assert.equal(response.body.error.code, 'SIGNING_KEY_NOT_ACTIVE');
+    assert.equal(store.list('receipts', ownership).length, 1);
+    assert.equal(store.list('auditEvents', ownership)
+      .filter((event) => event.type === 'receipt.superseded').length, 0);
+  } finally {
+    await server.close();
+  }
+});
