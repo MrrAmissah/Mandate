@@ -125,10 +125,11 @@ export function verifyReceipt(receipt, signer) {
   return signer.verifyPayload(parts.payload, parts.signature);
 }
 
-export async function verifyReceiptWithRegistry(receipt, signingKeys) {
+export async function verifyReceiptWithRegistry(receipt, signingKeys, verificationContext = {}) {
   const parts = verificationParts(receipt);
   if (!parts || typeof signingKeys?.verifyPayload !== 'function') return false;
   return Boolean(await signingKeys.verifyPayload({
+    ...verificationContext,
     keyId: parts.payload.keyId,
     algorithm: parts.payload.algorithm,
     payload: parts.payload,
