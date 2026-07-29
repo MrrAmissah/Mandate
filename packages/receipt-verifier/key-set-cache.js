@@ -99,6 +99,9 @@ export function createStrictKeySetCache({
     },
 
     async verify(receipt) {
+      const preflight = verifyReceipt(receipt, { keys: [] });
+      if (preflight.reason !== keyNotFoundReason) return preflight;
+
       let obtained;
       try {
         obtained = await obtain(false);
