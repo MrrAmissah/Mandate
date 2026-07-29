@@ -22,7 +22,10 @@ export async function supersedeReceipt({
   if (!predecessor) {
     throw new DomainError('RECEIPT_NOT_FOUND', 'The receipt does not exist.', 404);
   }
-  if (!await verifyReceiptWithRegistry(predecessor, signingKeys)) {
+  if (!await verifyReceiptWithRegistry(predecessor, signingKeys, {
+    queryable: transaction?.queryable,
+    lock: Boolean(transaction?.queryable)
+  })) {
     throw new DomainError(
       'RECEIPT_NOT_VERIFIABLE',
       'The predecessor receipt cannot be verified with a trusted key.',
