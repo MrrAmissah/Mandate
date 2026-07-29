@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { OutboxDispatcher, retryDelayMs, safeOutboxErrorCode } from '../src/outbox/dispatcher.js';
 
+const scope = { tenantId: 'ten_example', environment: 'test' };
 const message = {
   tenantId: 'ten_example',
   environment: 'test',
@@ -14,6 +15,13 @@ const message = {
   lockedAt: '2026-07-29T08:00:00.000Z'
 };
 
+test('dispatcher requires an explicit environment scope', () => {
+  assert.throws(
+    () => new OutboxDispatcher({ queue: { claim() {} }, workerId: 'worker_unscoped' }),
+    /environment scope/
+  );
+});
+
 test('dispatcher with no handlers never claims an event', async () => {
   let claims = 0;
   const dispatcher = new OutboxDispatcher({
@@ -22,18 +30,20 @@ test('dispatcher with no handlers never claims an event', async () => {
         claims += 1;
       }
     },
-    workerId: 'worker_empty'
+    workerId: 'worker_empty',
+    scope
   });
 
   assert.deepEqual(await dispatcher.pollOnce(), { kind: 'IDLE', reason: 'NO_HANDLERS' });
   assert.equal(claims, 0);
 });
 
-test('dispatcher processes only exact registered event types', async () => {
+test('dispatcher processes only exact registered event types inside its scope', async () => {
   const calls = [];
   const queue = {
     async claim(input) {
       assert.deepEqual(input.eventTypes, ['mandate.created']);
+      assert.deepEqual(input.scope, scope);
       return { kind: 'CLAIMED', message };
     },
     async succeed(value, input) {
@@ -44,6 +54,7 @@ test('dispatcher processes only exact registered event types', async () => {
   const dispatcher = new OutboxDispatcher({
     queue,
     workerId: 'worker_success',
+    scope,
     handlers: {
       'mandate.created': async (payload, claimed) => {
         assert.deepEqual(payload, message.payload);
@@ -74,6 +85,7 @@ test('dispatcher schedules a sanitized bounded retry after handler failure', asy
   const dispatcher = new OutboxDispatcher({
     queue,
     workerId: 'worker_retry',
+    scope,
     handlers: {
       'mandate.created': async () => {
         const error = new Error('secret provider body');
