@@ -1,0 +1,309 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { createReceiptSigner } from '../src/crypto/receipt-signer.js';
+import { PostgresSigningKeyRegistry } from '../src/crypto/signing-key-registry.js';
+import {
+  issueReceipt,
+  issueSupersedingReceipt,
+  verifyReceiptWithRegistry
+} from '../src/domain/receipts.js';
+import { supersedeReceipt } from '../src/application/receipt-supersession-service.js';
+import { saveReceiptForAttempt } from '../src/store/action-attempts.js';
+import { applyMigrations } from '../src/store/postgres-migrations.js';
+import { createPostgresPool, PostgresStore } from '../src/store/postgres-store.js';
+
+const connectionString = process.env.DATABASE_URL;
+const downMigrationUrl = new URL('../migrations/007_receipt_supersession.down.sql', import.meta.url);
+const ownership = { tenantId: 'ten_receipt_supersession_pg', environment: 'test' };
+const mandateId = 'mnd_receipt_supersession_pg';
+const decisionId = 'dec_receipt_supersession_pg';
+const attemptId = 'att_receipt_supersession_pg';
+const credentialId = 'key_receipt_supersession_pg';
+
+function mandate() {
+  return {
+    id: mandateId,
+    principalId: 'principal_receipt_supersession_pg',
+    agentId: 'agent_receipt_supersession_pg',
+    purpose: 'Prove append-only receipt supersession',
+    resources: ['github:MrrAmissah/Mandate'],
+    allowedActions: ['repository.write'],
+    deniedActions: [],
+    approvalRequiredActions: [],
+    constraints: {},
+    validFrom: '2026-07-29T00:00:00.000Z',
+    validUntil: '2030-01-01T00:00:00.000Z',
+    maxUses: 10,
+    uses: 1,
+    status: 'ACTIVE',
+    createdAt: '2026-07-29T00:00:00.000Z',
+    revokedAt: null,
+    revocationReason: null
+  };
+}
+
+function decision() {
+  return {
+    id: decisionId,
+    mandateId,
+    agentId: 'agent_receipt_supersession_pg',
+    action: 'repository.write',
+    resource: 'github:MrrAmissah/Mandate',
+    context: {},
+    outcome: 'ALLOW',
+    reasonCode: 'ACTION_ALLOWED',
+    reason: 'The action is allowed.',
+    approvalId: null,
+    evaluatedAt: '2026-07-29T18:00:00.000Z',
+    requestId: 'req_receipt_supersession_pg'
+  };
+}
+
+async function bootstrap(store) {
+  await store.ensureBootstrap({
+    ...ownership,
+    tenantName: 'Receipt supersession PostgreSQL test',
+    credential: {
+      id: credentialId,
+      name: 'Receipt supersession test credential',
+      secretHash: '9'.repeat(64),
+      prefix: 'pg_test_supersede',
+      lastFour: '1234',
+      scopes: ['receipts:read', 'receipts:write'],
+      createdAt: '2026-07-29T17:00:00.000Z',
+      expiresAt: null
+    }
+  });
+}
+
+async function seedExecution(store, pool, oldSigner) {
+  await store.save('mandates', ownership, mandate());
+  await store.save('decisions', ownership, decision());
+  await pool.query(
+    `INSERT INTO mandate.action_attempts
+      (tenant_id, environment, id, decision_id, mandate_id, agent_id, action, resource, status,
+       reserved_by_credential_id, reserved_at, expires_at, request_id, version,
+       execution_status, input_hash, output_hash, tool, provider, model, completed_at,
+       completion_request_id, terminated_at, termination_reason, termination_request_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'COMPLETED',$9,$10,$11,$12,1,
+       'SUCCEEDED',$13,$14,$15,$16,NULL,$17,$18,NULL,NULL,NULL)`,
+    [ownership.tenantId, ownership.environment, attemptId, decisionId, mandateId,
+      'agent_receipt_supersession_pg', 'repository.write', 'github:MrrAmissah/Mandate',
+      credentialId, '2026-07-29T18:00:30.000Z', '2026-07-29T18:05:30.000Z',
+      'req_reserve_receipt_supersession_pg', `sha256:${'a'.repeat(64)}`,
+      `sha256:${'b'.repeat(64)}`, 'github.create_commit', 'github',
+      '2026-07-29T18:01:00.000Z', 'req_complete_receipt_supersession_pg']
+  );
+
+  const root = issueReceipt({
+    input: {
+      actionAttemptId: attemptId,
+      executionStatus: 'SUCCEEDED',
+      inputHash: `sha256:${'a'.repeat(64)}`,
+      outputHash: `sha256:${'b'.repeat(64)}`,
+      tool: 'github.create_commit',
+      provider: 'github',
+      executedAt: '2026-07-29T18:01:00.000Z'
+    },
+    decision: decision(),
+    mandate: mandate(),
+    signer: oldSigner,
+    now: new Date('2026-07-29T18:02:00.000Z')
+  });
+  await saveReceiptForAttempt(store, ownership, root);
+  return root;
+}
+
+async function supersessionColumnsExist(pool) {
+  const result = await pool.query(
+    `SELECT COUNT(*)::integer AS count
+     FROM information_schema.columns
+     WHERE table_schema = 'mandate'
+       AND table_name = 'receipts'
+       AND column_name IN ('supersedes_receipt_id', 'supersession_reason')`
+  );
+  return Number(result.rows[0].count) === 2;
+}
+
+test('PostgreSQL receipt supersession has one winner, preserves history, and supports a linear chain', {
+  skip: !connectionString
+}, async () => {
+  const pool = await createPostgresPool({ connectionString });
+  try {
+    await applyMigrations(pool, { logger: { log() {} } });
+    const store = new PostgresStore(pool);
+    await bootstrap(store);
+
+    const oldSigner = createReceiptSigner({ keyId: 'key_receipt_supersession_old' });
+    const currentSigner = createReceiptSigner({ keyId: 'key_receipt_supersession_current' });
+    const registry = new PostgresSigningKeyRegistry(pool, ownership, { retryDelay: async () => {} });
+    await registry.registerActive({
+      keyId: oldSigner.keyId,
+      publicKeyPem: oldSigner.publicKeyPem,
+      activatedAt: new Date('2026-07-29T17:00:00.000Z')
+    });
+    const root = await seedExecution(store, pool, oldSigner);
+    await registry.registerActive({
+      keyId: currentSigner.keyId,
+      publicKeyPem: currentSigner.publicKeyPem,
+      activatedAt: new Date('2026-07-29T18:03:00.000Z')
+    });
+
+    assert.equal(await verifyReceiptWithRegistry(root, registry), true);
+
+    const attempts = await Promise.allSettled([
+      store.transaction((transaction) => supersedeReceipt({
+        transaction,
+        ownership,
+        receiptId: root.id,
+        input: { reason: 'First concurrent correction' },
+        signer: currentSigner,
+        signingKeys: registry,
+        now: new Date('2026-07-29T18:04:00.000Z')
+      })),
+      store.transaction((transaction) => supersedeReceipt({
+        transaction,
+        ownership,
+        receiptId: root.id,
+        input: { reason: 'Second concurrent correction' },
+        signer: currentSigner,
+        signingKeys: registry,
+        now: new Date('2026-07-29T18:04:01.000Z')
+      }))
+    ]);
+
+    const winners = attempts.filter((result) => result.status === 'fulfilled');
+    const losers = attempts.filter((result) => result.status === 'rejected');
+    assert.equal(winners.length, 1);
+    assert.equal(losers.length, 1);
+    assert.equal(losers[0].reason.code, 'RECEIPT_ALREADY_SUPERSEDED');
+
+    const first = winners[0].value;
+    assert.equal(first.supersedesReceiptId, root.id);
+    assert.equal(first.keyId, currentSigner.keyId);
+    assert.equal(first.actionAttemptId, root.actionAttemptId);
+    assert.equal(first.inputHash, root.inputHash);
+    assert.equal(first.outputHash, root.outputHash);
+    assert.equal(first.executedAt, root.executedAt);
+    assert.equal(await verifyReceiptWithRegistry(first, registry), true);
+
+    const second = await store.transaction((transaction) => supersedeReceipt({
+      transaction,
+      ownership,
+      receiptId: first.id,
+      input: { reason: 'Advance the correction chain' },
+      signer: currentSigner,
+      signingKeys: registry,
+      now: new Date('2026-07-29T18:05:00.000Z')
+    }));
+    assert.equal(second.supersedesReceiptId, first.id);
+    assert.equal(second.actionAttemptId, root.actionAttemptId);
+    assert.equal(await verifyReceiptWithRegistry(second, registry), true);
+
+    const misaligned = issueSupersedingReceipt({
+      receipt: first,
+      reason: 'The signed predecessor differs from the indexed predecessor.',
+      signer: currentSigner,
+      now: new Date('2026-07-29T18:05:30.000Z')
+    });
+    const { signature: misalignedSignature, ...misalignedPayload } = misaligned;
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO mandate.receipts
+          (tenant_id, environment, id, decision_id, mandate_id, action_attempt_id, key_id,
+           algorithm, payload, signature, issued_at, supersedes_receipt_id, supersession_reason)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [ownership.tenantId, ownership.environment, misaligned.id, misaligned.decisionId,
+          misaligned.mandateId, misaligned.actionAttemptId, misaligned.keyId,
+          misaligned.algorithm, JSON.stringify(misalignedPayload), misalignedSignature,
+          misaligned.issuedAt, second.id, misaligned.supersessionReason]
+      ),
+      (error) => error.code === '23514' && error.constraint === 'receipts_supersession_shape'
+    );
+
+    const revokedSigner = createReceiptSigner({ keyId: 'key_receipt_supersession_revoked' });
+    await registry.registerActive({
+      keyId: revokedSigner.keyId,
+      publicKeyPem: revokedSigner.publicKeyPem,
+      activatedAt: new Date('2026-07-29T18:06:00.000Z')
+    });
+    await registry.revoke(
+      revokedSigner.keyId,
+      'Prove inactive successor signers fail closed.',
+      new Date('2026-07-29T18:06:30.000Z')
+    );
+    await assert.rejects(
+      store.transaction((transaction) => supersedeReceipt({
+        transaction,
+        ownership,
+        receiptId: second.id,
+        input: { reason: 'Must not sign with a revoked configured key.' },
+        signer: revokedSigner,
+        signingKeys: registry,
+        now: new Date('2026-07-29T18:07:00.000Z')
+      })),
+      (error) => error.code === 'SIGNING_KEY_NOT_ACTIVE' && error.status === 503
+    );
+
+    const rows = await pool.query(
+      `SELECT id, payload, signature, supersedes_receipt_id
+       FROM mandate.receipts
+       WHERE tenant_id = $1 AND environment = $2 AND action_attempt_id = $3
+       ORDER BY issued_at, id`,
+      [ownership.tenantId, ownership.environment, attemptId]
+    );
+    assert.equal(rows.rowCount, 3);
+    assert.equal(rows.rows.filter((row) => row.supersedes_receipt_id === null).length, 1);
+    assert.equal(rows.rows.filter((row) => row.supersedes_receipt_id === root.id).length, 1);
+    assert.equal(rows.rows.filter((row) => row.supersedes_receipt_id === first.id).length, 1);
+    const persistedRoot = rows.rows.find((row) => row.id === root.id);
+    assert.deepEqual({ ...persistedRoot.payload, signature: persistedRoot.signature }, root);
+
+    await pool.query(
+      `INSERT INTO mandate.idempotency_records
+        (tenant_id, environment, scope, idempotency_key, request_fingerprint,
+         response_status, response_headers, response_body, created_at, expires_at)
+       VALUES ($1,$2,$3,$4,$5,201,'{}'::jsonb,$6,$7,$8)`,
+      [ownership.tenantId, ownership.environment, `supersede-receipt:${root.id}`,
+        'supersession-downgrade-replay', `sha256:${'d'.repeat(64)}`,
+        JSON.stringify(first), '2026-07-29T18:08:00.000Z', '2026-07-30T18:08:00.000Z']
+    );
+    const replayBeforeDown = await pool.query(
+      `SELECT 1 FROM mandate.idempotency_records
+       WHERE tenant_id = $1 AND environment = $2 AND scope LIKE 'supersede-receipt:%'`,
+      [ownership.tenantId, ownership.environment]
+    );
+    assert.equal(replayBeforeDown.rowCount, 1);
+
+    const downSql = await readFile(downMigrationUrl, 'utf8');
+    await pool.query(downSql);
+    assert.equal(await supersessionColumnsExist(pool), false);
+    const migrationAfterDown = await pool.query(
+      `SELECT 1 FROM mandate.schema_migrations WHERE version = '007_receipt_supersession'`
+    );
+    assert.equal(migrationAfterDown.rowCount, 0);
+    const replayAfterDown = await pool.query(
+      `SELECT 1 FROM mandate.idempotency_records
+       WHERE tenant_id = $1 AND environment = $2 AND scope LIKE 'supersede-receipt:%'`,
+      [ownership.tenantId, ownership.environment]
+    );
+    assert.equal(replayAfterDown.rowCount, 0);
+    const remainingReceipts = await pool.query(
+      `SELECT payload, signature FROM mandate.receipts
+       WHERE tenant_id = $1 AND environment = $2 AND action_attempt_id = $3`,
+      [ownership.tenantId, ownership.environment, attemptId]
+    );
+    assert.equal(remainingReceipts.rowCount, 1);
+    assert.deepEqual(
+      { ...remainingReceipts.rows[0].payload, signature: remainingReceipts.rows[0].signature },
+      root
+    );
+
+    const reapplied = await applyMigrations(pool, { logger: { log() {} } });
+    assert.deepEqual(reapplied.applied, ['007_receipt_supersession']);
+    assert.equal(await supersessionColumnsExist(pool), true);
+  } finally {
+    await pool.end();
+  }
+});

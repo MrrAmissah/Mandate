@@ -57,7 +57,7 @@ Remaining operational hardening:
 
 ## Phase 3 — execution and receipt lifecycle
 
-Status: core lifecycle and expiry operations merged; verification products in progress.
+Status: core execution, expiry, verification, and artifact boundaries merged; receipt supersession in progress.
 
 ### Phase 3A — single-use decision reservation
 
@@ -93,7 +93,7 @@ Delivered:
 - public receipt creation only from a `COMPLETED` attempt;
 - receipt schema v1.1 with signed `actionAttemptId`;
 - `executedAt` bound to attempt completion rather than signature time;
-- one receipt per attempt and decision;
+- one root receipt per attempt and decision;
 - receipt recovery after later mandate revocation;
 - stable OpenAPI v0.6.0 for the complete execution lifecycle;
 - memory and real-PostgreSQL concurrent receipt tests;
@@ -103,7 +103,7 @@ Exit gate met:
 
 - a public receipt cannot exist without a completed attempt;
 - terminal attempt evidence cannot be overwritten;
-- signing retries do not duplicate execution or receipts;
+- signing retries do not duplicate execution or root receipts;
 - cancelled or expired attempts cannot produce receipts.
 
 ### Phase 3B.1 — database-time reservation expiry
@@ -180,50 +180,96 @@ Delivered:
 - parity tests against an independent server-style crypto verifier;
 - dry-run package-content and package-syntax gates.
 
-Remaining publication work:
-
-- package release automation;
-- provenance attestation and release signing;
-- published-version compatibility policy.
-
 ### Phase 3C.2 — strict key-set caching
 
-Status: implementation branch.
+Status: merged.
 
-Delivered in the branch:
+Delivered:
 
 - permanently scope-bound cache instances;
 - caller-injected discovery loader with no embedded HTTP;
 - five-minute default lifetime with bounded override;
 - freshness measured after loading completes;
-- single-flight concurrent refresh;
+- single-flight ordinary and unknown-key refreshes;
 - strict expiry with no stale-key fallback;
-- one unknown-key refresh when the first verification used cached data;
+- one unknown-key refresh per cached generation, bounded across random key IDs;
+- failed-refresh suppression until the cache advances or is invalidated;
 - invalid-receipt and unsupported-algorithm preflight without loader traffic;
-- invalidation protection against stale in-flight refresh completion;
+- invalidation that detaches a pending loader while rejecting stale completion;
+- retention of public discovery fields only;
 - frozen cloned key material;
 - safe `KEY_SET_UNAVAILABLE` results and error type;
-- TypeScript declarations, package artifact coverage, and deterministic cache tests.
+- TypeScript declarations, package artifact coverage, and deterministic concurrency/failure tests.
 
-Remaining before Phase 3C.2 closes:
+Remaining integration work:
 
-- exact-head CI and review merge gate;
 - SDK-level endpoint loader example;
-- package publication together with Phase 3C.1.
+- higher-level SDK cache composition and application guidance.
 
-### Phase 3C.3 — receipt corrections and compact forms
+### Phase 3C.3 — reproducible verifier artifacts
 
-Scope:
+Status: merged.
 
-- receipt correction/supersession model;
-- optional compact/JWS representation after compatibility review.
+Delivered:
+
+- deterministic `npm pack` artifact command;
+- two isolated pack runs with matching SHA-256 and npm integrity requirements;
+- exact package identity and public-file inventory checks;
+- PEM private-key rejection;
+- safe recursive output-path validation;
+- stable manifest and `SHA256SUMS` output;
+- read-only GitHub Actions artifact creation without a registry token;
+- package reproducibility, manifest, checksum, and safety tests.
+
+Remaining publication work:
+
+- npm namespace and ownership decision;
+- provenance attestation and release signing;
+- registry publication workflow and approval boundary;
+- published-version compatibility policy.
+
+### Phase 3C.4 — append-only receipt supersession
+
+Status: implementation branch.
+
+Delivered in the branch:
+
+- receipt schema v1.2 with signed `supersedesReceiptId` and `supersessionReason`;
+- immutable execution evidence copied from the predecessor rather than caller input;
+- one immutable root per decision and action attempt;
+- one direct successor per predecessor, producing a linear non-forking chain;
+- predecessor verification through the tenant/environment signing-key registry;
+- active and retired predecessor keys accepted; revoked, unknown, or tampered predecessors rejected;
+- PostgreSQL shared key-row lock preventing revocation races during supersession;
+- composite foreign-key enforcement preserving decision and action-attempt identity;
+- payload-bound idempotent `POST /v1/receipts/{id}/supersede`;
+- atomic successor, audit, outbox, and replay persistence;
+- `receipt.superseded` audit/outbox events;
+- OpenAPI v0.7.0;
+- domain, HTTP, offline-verifier, and real-PostgreSQL concurrency tests;
+- migration 007 and dedicated lifecycle documentation.
+
+Remaining before Phase 3C.4 closes:
+
+- exact-head CI and automated review merge gate.
 
 Exit gate:
 
-- historical verification survives rotation;
 - corrections never rewrite signed history;
-- offline and server verification produce identical results;
-- published package provenance and reproducible fixtures are documented.
+- concurrent corrections produce one direct successor;
+- historical verification survives signing-key rotation;
+- a revoked or unverifiable predecessor is never silently re-signed;
+- offline and server verification agree on v1.2 signature integrity.
+
+### Phase 3C.5 — compact receipt representation
+
+Scope:
+
+- optional compact/JWS representation after compatibility review;
+- explicit mapping between compact and JSON receipt forms;
+- versioning and downgrade policy.
+
+This phase must not weaken canonical JSON verification or the append-only correction model.
 
 ## Phase 4 — approval operations
 

@@ -28,6 +28,18 @@ The second argument may be the complete discovery response or its `keys` array.
 
 Active and retired Ed25519 keys may verify historical receipts. Revoked, unknown, malformed, ambiguous, and non-Ed25519 keys fail closed with a stable reason code.
 
+## Receipt corrections
+
+Attempt-bound root receipts use schema version `1.1` and must not carry `supersedesReceiptId` or `supersessionReason`. Append-only correction receipts use version `1.2` and must sign both fields together with the preserved execution evidence.
+
+The verifier treats every receipt as an independent signed statement. It verifies v1.1 and v1.2 without special transport or server access, and rejects any change to the predecessor reference, correction reason, or execution fields.
+
+It deliberately does **not** fetch or reconstruct a correction chain, choose a latest receipt, or treat a valid successor as invalidating its predecessor. Applications validating a complete chain must additionally require:
+
+- every v1.2 predecessor ID to reference the immediately preceding receipt;
+- identical decision, mandate, action-attempt, action, resource, hashes, execution metadata, and execution timestamp across the chain;
+- no missing predecessors or forks under the application's trust policy.
+
 ## Verify through a scope-bound cache
 
 The package does not embed HTTP. Supply a loader that obtains the discovery response for exactly one tenant/environment scope:
@@ -83,6 +95,6 @@ The manifest deliberately contains no build timestamp, machine path, runner iden
 
 ## Trust boundary
 
-A valid result proves that the supplied public key signed the canonical receipt payload and that the payload has not changed. It does not prove the origin of the supplied key set, current mandate validity, legal authority, or the truth of facts outside the signed payload.
+A valid result proves that the supplied public key signed the canonical receipt payload and that the payload has not changed. It does not prove the origin of the supplied key set, current mandate validity, legal authority, chain completeness, or the truth of facts outside the signed payload.
 
-The caller is responsible for obtaining the key set from the correct tenant and environment, authenticating the discovery origin, and choosing an appropriate cache lifetime. The default five-minute lifetime matches the current discovery response cache policy.
+The caller is responsible for obtaining the key set from the correct tenant and environment, authenticating the discovery origin, choosing an appropriate cache lifetime, and applying any chain-level trust policy. The default five-minute lifetime matches the current discovery response cache policy.

@@ -15,6 +15,14 @@ function normalizePublicKey(publicKeyPem) {
   return { key, pem, fingerprint };
 }
 
+function safePublicKeyFingerprint(publicKeyPem) {
+  try {
+    return normalizePublicKey(publicKeyPem).fingerprint;
+  } catch {
+    return null;
+  }
+}
+
 function validateKeyId(keyId) {
   if (typeof keyId !== 'string' || !/^key_[A-Za-z0-9_-]{3,120}$/.test(keyId)) {
     throw new TypeError('Signing key IDs must use the key_ prefix and contain only safe characters.');
@@ -124,12 +132,41 @@ export class PostgresSigningKeyRegistry {
     return result.rows.map(rowToKey);
   }
 
-  async verifyPayload({ keyId, algorithm, payload, signature }) {
+  async verifyActiveSigner({
+    keyId,
+    algorithm,
+    publicKeyPem,
+    queryable = this.pool,
+    lock = false
+  }) {
+    if (algorithm !== 'Ed25519' || !queryable || typeof queryable.query !== 'function') return false;
+    const fingerprint = safePublicKeyFingerprint(publicKeyPem);
+    if (!fingerprint) return false;
+    const lockClause = lock ? ' FOR SHARE' : '';
+    const result = await queryable.query(
+      `SELECT fingerprint FROM mandate.signing_keys
+       WHERE tenant_id = $1 AND environment = $2 AND key_id = $3
+         AND algorithm = $4 AND status = 'ACTIVE'${lockClause}`,
+      [this.ownership.tenantId, this.ownership.environment, keyId, algorithm]
+    );
+    return result.rowCount === 1 && result.rows[0].fingerprint === fingerprint;
+  }
+
+  async verifyPayload({
+    keyId,
+    algorithm,
+    payload,
+    signature,
+    queryable = this.pool,
+    lock = false
+  }) {
     if (algorithm !== 'Ed25519' || typeof signature !== 'string') return false;
-    const result = await this.pool.query(
+    if (!queryable || typeof queryable.query !== 'function') return false;
+    const lockClause = lock ? ' FOR SHARE' : '';
+    const result = await queryable.query(
       `SELECT public_key_pem FROM mandate.signing_keys
        WHERE tenant_id = $1 AND environment = $2 AND key_id = $3
-         AND algorithm = $4 AND status IN ('ACTIVE','RETIRED')`,
+         AND algorithm = $4 AND status IN ('ACTIVE','RETIRED')${lockClause}`,
       [this.ownership.tenantId, this.ownership.environment, keyId, algorithm]
     );
     if (result.rowCount !== 1) return false;
@@ -174,6 +211,11 @@ export function createStaticSigningKeyRegistry(signer) {
       return structuredClone(key);
     },
     async listDiscoverable() { return [structuredClone(key)]; },
+    async verifyActiveSigner({ keyId, algorithm, publicKeyPem }) {
+      return keyId === key.keyId
+        && algorithm === key.algorithm
+        && safePublicKeyFingerprint(publicKeyPem) === key.fingerprint;
+    },
     async verifyPayload({ keyId, algorithm, payload, signature }) {
       if (keyId !== key.keyId || algorithm !== key.algorithm) return false;
       return signer.verifyPayload(payload, signature);

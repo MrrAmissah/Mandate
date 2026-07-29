@@ -5,6 +5,7 @@ import {
   completeAttempt,
   issueAttemptReceipt
 } from '../application/attempt-lifecycle-service.js';
+import { supersedeReceipt } from '../application/receipt-supersession-service.js';
 import { API_SCOPES, ownershipFrom, requireScope } from '../auth/authentication.js';
 import { verifyReceiptWithRegistry } from '../domain/receipts.js';
 import { DomainError } from '../domain/errors.js';
@@ -59,8 +60,11 @@ export function createRuntimeHandler(runtime) {
     const isDiscovery = method === 'GET' && url.pathname === '/.well-known/mandate-keys';
     const isVerification = method === 'POST' && url.pathname === '/v1/receipts/verify';
     const isReceiptIssuance = method === 'POST' && url.pathname === '/v1/receipts';
+    const receiptSupersession = method === 'POST'
+      ? routeMatch(url.pathname, '/v1/receipts/:id/supersede')
+      : null;
     const handlesActionAttempt = actionAttemptRoute(method, url.pathname);
-    if (!isDiscovery && !isVerification && !isReceiptIssuance && !handlesActionAttempt) {
+    if (!isDiscovery && !isVerification && !isReceiptIssuance && !receiptSupersession && !handlesActionAttempt) {
       return application(request, response);
     }
 
@@ -227,6 +231,7 @@ export function createRuntimeHandler(runtime) {
               ownership,
               input: body,
               signer: runtime.signer,
+              signingKeys: runtime.signingKeys,
               now: new Date()
             });
             await recordSecurityEvent({
@@ -244,6 +249,46 @@ export function createRuntimeHandler(runtime) {
               }
             });
             return issued;
+          }
+        });
+        return respond(201, receipt);
+      }
+
+      if (receiptSupersession) {
+        requireScope(authentication, API_SCOPES.RECEIPTS_WRITE);
+        const body = await readJson(request);
+        const receipt = await idempotentMutation({
+          runtime,
+          ownership,
+          scope: `supersede-receipt:${receiptSupersession.id}`,
+          key: request.headers['idempotency-key'],
+          fingerprint: requestFingerprint({ method, pathname: url.pathname, body }),
+          execute: async (transaction) => {
+            const successor = await supersedeReceipt({
+              transaction,
+              ownership,
+              receiptId: receiptSupersession.id,
+              input: body,
+              signer: runtime.signer,
+              signingKeys: runtime.signingKeys,
+              now: new Date()
+            });
+            await recordSecurityEvent({
+              transaction,
+              ownership,
+              authentication,
+              requestId,
+              type: 'receipt.superseded',
+              objectType: 'receipt',
+              objectId: successor.id,
+              data: {
+                supersedesReceiptId: successor.supersedesReceiptId,
+                decisionId: successor.decisionId,
+                actionAttemptId: successor.actionAttemptId,
+                keyId: successor.keyId
+              }
+            });
+            return successor;
           }
         });
         return respond(201, receipt);

@@ -31,6 +31,26 @@ A receipt verifies only when:
 
 Unknown, mismatched, unsupported, or `REVOKED` keys return `valid: false`. The endpoint deliberately does not reveal whether a failed key was unknown or revoked.
 
+## Receipt versions and successor chains
+
+Attempt-bound root receipts use schema version `1.1`. Append-only correction receipts use version `1.2` and add:
+
+- `supersedesReceiptId`, identifying the direct predecessor;
+- `supersessionReason`, recording why the successor was appended.
+
+Both fields are covered by the v1.2 signature. Changing either field invalidates verification.
+
+Verification treats every receipt as an independent signed statement. A consumer validating a complete correction chain should:
+
+1. verify every receipt using the correct scoped key set;
+2. require each v1.2 `supersedesReceiptId` to equal the immediately preceding receipt ID;
+3. require the decision, mandate, action-attempt, action, resource, execution evidence, and execution timestamp to remain identical across the chain;
+4. reject forks or missing predecessors according to the consumer's trust policy.
+
+The server enforces those chain invariants when successors are created. The offline verifier intentionally verifies cryptographic integrity only; it does not fetch or reconstruct a chain.
+
+See [Append-only receipt supersession](RECEIPT_SUPERSESSION.md) for the creation and concurrency contract.
+
 ## Offline Node.js and TypeScript verifier
 
 The zero-dependency package under `packages/receipt-verifier` verifies a receipt without calling Mandate-API:
@@ -109,11 +129,13 @@ The conformance fixture at `test/fixtures/receipt-verification/ed25519-v1.1.json
 - the exact canonical payload string;
 - no private key.
 
-The tamper corpus changes independently signed fields and proves that both the offline verifier and an independent server-style verifier reject every mutation.
+The tamper corpus changes independently signed fields and proves that both the offline verifier and an independent server-style verifier reject every mutation. A separate v1.2 test proves that changing the predecessor reference or supersession reason also fails verification.
 
 ## Rotation behavior
 
 Activating a new key atomically retires the previous active key. Existing receipts continue to verify through the retired public key. A key ID cannot be reused for different key material, and a revoked key cannot be reactivated.
+
+Receipt supersession accepts predecessors signed by an active or retired scoped key and signs the successor with the current runtime key. In PostgreSQL mode the predecessor key row is held with a shared transaction lock while the successor commits, so concurrent revocation cannot pass the verification boundary mid-operation.
 
 Offline callers are responsible for obtaining the correct tenant/environment key set and refreshing it according to the discovery cache policy. The verifier does not infer scope from a receipt or select a discovery endpoint.
 
@@ -121,6 +143,6 @@ See [Signing key operations](SIGNING_KEYS.md) for the runtime rotation and revoc
 
 ## Trust boundary
 
-The registry is scoped to one tenant and one `test` or `live` environment. A public key from one scope is not used by the server to verify a receipt in another scope. Receipt issuance uses only the current active runtime signer; retired keys are verification-only.
+The registry is scoped to one tenant and one `test` or `live` environment. A public key from one scope is not used by the server to verify a receipt in another scope. Receipt issuance uses only the current active runtime signer; retired keys are verification-only except as trusted predecessors during append-only supersession.
 
-A valid signature proves that the receipt payload has not changed and that a supplied verifiable key signed it. It does **not** independently prove current mandate validity, legal authority, successful external side effects, or the truth of data outside the signed payload. Consumers must apply their own trust policy to the key-set origin, environment, receipt version, and business context.
+A valid signature proves that the receipt payload has not changed and that a supplied verifiable key signed it. It does **not** independently prove current mandate validity, legal authority, successful external side effects, chain completeness, or the truth of data outside the signed payload. Consumers must apply their own trust policy to the key-set origin, environment, receipt version, correction chain, and business context.
