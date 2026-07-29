@@ -1,5 +1,7 @@
 BEGIN;
 
+DROP TRIGGER IF EXISTS receipts_immutable ON mandate.receipts;
+
 DELETE FROM mandate.receipts
 WHERE supersedes_receipt_id IS NOT NULL;
 
@@ -22,6 +24,10 @@ ALTER TABLE mandate.receipts
 CREATE UNIQUE INDEX receipts_action_attempt_unique_idx
   ON mandate.receipts (tenant_id, environment, action_attempt_id)
   WHERE action_attempt_id IS NOT NULL;
+
+CREATE TRIGGER receipts_immutable
+BEFORE UPDATE OR DELETE ON mandate.receipts
+FOR EACH ROW EXECUTE FUNCTION mandate.reject_immutable_change();
 
 CREATE OR REPLACE FUNCTION mandate.assign_idempotency_http_metadata()
 RETURNS trigger
