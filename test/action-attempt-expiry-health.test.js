@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { connect } from 'node:net';
 import {
   createActionAttemptExpiryHealthServer,
   renderActionAttemptExpiryMetrics
@@ -39,6 +40,18 @@ function observableProcess() {
       });
     }
   };
+}
+
+function rawHttpRequest({ host, port, request }) {
+  return new Promise((resolve, reject) => {
+    let response = '';
+    const socket = connect({ host, port }, () => socket.write(request));
+    socket.setEncoding('utf8');
+    socket.setTimeout(2000, () => socket.destroy(new Error('raw health request timed out')));
+    socket.on('data', (chunk) => { response += chunk; });
+    socket.on('end', () => resolve(response));
+    socket.on('error', reject);
+  });
 }
 
 test('expiry health server exposes liveness, cached readiness, and Prometheus metrics', async () => {
@@ -91,6 +104,31 @@ test('expiry health server exposes liveness, cached readiness, and Prometheus me
 
     const missing = await fetch(`${base}/missing`);
     assert.equal(missing.status, 404);
+  } finally {
+    await health.close();
+  }
+});
+
+test('malformed request targets return 400 without terminating the health server', async () => {
+  const expiryProcess = observableProcess();
+  const health = createActionAttemptExpiryHealthServer({
+    expiryProcess,
+    host: '127.0.0.1',
+    port: 0,
+    clock: () => new Date('2026-07-29T12:00:01.000Z')
+  });
+  const address = await health.start();
+  try {
+    const malformed = await rawHttpRequest({
+      host: address.host,
+      port: address.port,
+      request: 'GET http://[ HTTP/1.1\r\nHost: health.local\r\nConnection: close\r\n\r\n'
+    });
+    assert.match(malformed, /^HTTP\/1\.1 400/);
+
+    const live = await fetch(`http://${address.host}:${address.port}/health/live`);
+    assert.equal(live.status, 200);
+    assert.equal((await live.json()).status, 'ok');
   } finally {
     await health.close();
   }
