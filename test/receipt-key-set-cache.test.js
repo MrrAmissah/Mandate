@@ -23,6 +23,14 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+async function waitFor(predicate) {
+  for (let index = 0; index < 100; index += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error('condition was not reached');
+}
+
 test('cold verification loads once and timestamps freshness after loading completes', async () => {
   const data = await fixture();
   let now = Date.parse('2026-07-29T12:00:00.000Z');
@@ -131,7 +139,7 @@ test('concurrent unknown-key callers share the same forced refresh result', asyn
   await cache.get();
   const first = cache.verify(data.receipt);
   const second = cache.verify(data.receipt);
-  assert.equal(loads, 2);
+  await waitFor(() => loads === 2);
   pending.resolve({ keys: [data.verificationKey] });
 
   const results = await Promise.all([first, second]);
