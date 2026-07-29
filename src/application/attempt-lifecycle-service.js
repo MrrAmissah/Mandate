@@ -10,8 +10,28 @@ import {
   updateActionAttempt
 } from '../store/action-attempts.js';
 
-export async function completeAttempt({ transaction, ownership, attemptId, input, requestId, now = new Date() }) {
+function assertAttemptOwner(attempt, authentication) {
+  if (!attempt) throw new DomainError('ACTION_ATTEMPT_NOT_FOUND', 'The action attempt does not exist.', 404);
+  if (!authentication?.credentialId || attempt.reservedByCredentialId !== authentication.credentialId) {
+    throw new DomainError(
+      'ACTION_ATTEMPT_OWNER_MISMATCH',
+      'Only the credential that reserved this action attempt may complete or cancel it.',
+      403
+    );
+  }
+}
+
+export async function completeAttempt({
+  transaction,
+  ownership,
+  authentication,
+  attemptId,
+  input,
+  requestId,
+  now = new Date()
+}) {
   const attempt = await lockActionAttempt(transaction, ownership, attemptId);
+  assertAttemptOwner(attempt, authentication);
   return updateActionAttempt(
     transaction,
     ownership,
@@ -19,8 +39,17 @@ export async function completeAttempt({ transaction, ownership, attemptId, input
   );
 }
 
-export async function cancelAttempt({ transaction, ownership, attemptId, input, requestId, now = new Date() }) {
+export async function cancelAttempt({
+  transaction,
+  ownership,
+  authentication,
+  attemptId,
+  input,
+  requestId,
+  now = new Date()
+}) {
   const attempt = await lockActionAttempt(transaction, ownership, attemptId);
+  assertAttemptOwner(attempt, authentication);
   return updateActionAttempt(
     transaction,
     ownership,
