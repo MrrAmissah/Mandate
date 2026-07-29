@@ -14,7 +14,7 @@
     "check": "npm run check:syntax && node --test",
     "check:syntax": "node scripts/check-syntax.js",
     "migrate": "node scripts/migrate.js",
-    "test:postgres": "node --test test/postgres-*.test.js"
+    "test:postgres": "node --test --test-concurrency=1 test/postgres-*.test.js"
   },
   "license": "Apache-2.0",
   "dependencies": {
