@@ -7,6 +7,7 @@ on:
       - 'scripts/package-receipt-verifier.js'
       - 'test/receipt-verifier-release-artifact*.test.js'
       - 'test/offline-receipt-verifier-package.test.js'
+      - 'test/offline-receipt-supersession.test.js'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/receipt-verifier-artifact.yml'
@@ -17,6 +18,7 @@ on:
       - 'scripts/package-receipt-verifier.js'
       - 'test/receipt-verifier-release-artifact*.test.js'
       - 'test/offline-receipt-verifier-package.test.js'
+      - 'test/offline-receipt-supersession.test.js'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/receipt-verifier-artifact.yml'
@@ -40,6 +42,7 @@ jobs:
           node --test
           test/offline-receipt-verifier-package.test.js
           test/offline-receipt-verifier.test.js
+          test/offline-receipt-supersession.test.js
           test/receipt-key-set-cache*.test.js
           test/receipt-verifier-release-artifact*.test.js
       - name: Build reproducible package artifact
