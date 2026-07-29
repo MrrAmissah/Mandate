@@ -14,6 +14,14 @@ function deferred() {
   return { promise, resolve };
 }
 
+async function waitFor(predicate) {
+  for (let index = 0; index < 100; index += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error('condition was not reached');
+}
+
 test('a mixed shared refresh preserves missing-key suppression for the refreshed generation', async () => {
   const data = JSON.parse(await readFile(fixtureUrl, 'utf8'));
   const pending = deferred();
@@ -33,7 +41,7 @@ test('a mixed shared refresh preserves missing-key suppression for the refreshed
     ...data.receipt,
     keyId: 'key_not_in_refreshed_generation'
   });
-  assert.equal(loads, 2);
+  await waitFor(() => loads === 2);
 
   pending.resolve({ keys: [data.verificationKey] });
   assert.equal((await validAfterRefresh).valid, true);
