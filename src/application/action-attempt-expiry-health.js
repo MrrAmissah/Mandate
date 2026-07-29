@@ -88,7 +88,13 @@ export function createActionAttemptExpiryHealthServer({
       response.setHeader('allow', 'GET, HEAD');
       return sendJson(response, method, 405, { error: 'method_not_allowed' });
     }
-    const url = new URL(request.url ?? '/', 'http://health.local');
+
+    let url;
+    try {
+      url = new URL(request.url ?? '/', 'http://health.local');
+    } catch {
+      return sendJson(response, method, 400, { error: 'bad_request' });
+    }
     const now = clock();
 
     if (url.pathname === '/health/live') {
