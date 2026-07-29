@@ -19,7 +19,7 @@ Content-Type: application/json
 }
 ```
 
-The credential requires `receipts:write`. `reason` is trimmed, required, and limited to 1,000 characters.
+The credential requires `receipts:write`. `reason` is trimmed, required, and limited to 1,000 Unicode characters.
 
 A successful request returns `201` with receipt schema version `1.2`.
 
@@ -58,18 +58,20 @@ PostgreSQL enforces this with:
 - one root receipt per decision and action attempt;
 - one successor per predecessor;
 - a composite foreign key requiring every successor to retain the predecessor's decision and action-attempt identity;
+- check constraints binding indexed chain columns to the signed JSON payload;
 - immutable receipt rows;
-- predecessor row locking and a unique-index final arbiter for concurrent requests.
+- an exclusive predecessor-row lock and a unique-index final arbiter for concurrent requests.
 
-## Verification requirement
+## Verification and signing requirements
 
 The predecessor must verify through the tenant and environment's signing-key registry before a successor is signed.
 
 - `ACTIVE` and `RETIRED` predecessor keys are accepted;
 - `REVOKED`, unknown, malformed, or tampered predecessors fail closed;
-- in PostgreSQL mode the matching signing-key row is held with a shared transaction lock until the successor commits, preventing a concurrent revocation race.
+- the successor signer must match the exact scoped key record and that key must still be `ACTIVE`;
+- in PostgreSQL mode the predecessor verification key and current successor key are held with shared transaction locks until commit, while the predecessor receipt is held with an exclusive row lock.
 
-The successor is always signed by the runtime's current signer.
+Those locks prevent key rotation or revocation from passing either trust check between verification and durable successor creation. A stale, retired, revoked, mismatched, or unregistered runtime signer returns `503 SIGNING_KEY_NOT_ACTIVE` and no receipt is committed.
 
 ## Idempotency and events
 
@@ -78,7 +80,8 @@ The route is payload-bound and idempotent under the scope `supersede-receipt:{re
 - an exact retry returns the original successor;
 - reusing the same key with a different reason returns `IDEMPOTENCY_CONFLICT`;
 - a different key after a successor already exists returns `RECEIPT_ALREADY_SUPERSEDED` and identifies the existing successor;
-- the successor, audit event, outbox message, and idempotency response commit together.
+- the successor, audit event, outbox message, and idempotency response commit together;
+- migration downgrade removes supersession replay records before deleting successor receipts, preventing stale responses from surviving a downgrade and reapply.
 
 The append-only event type is `receipt.superseded`.
 
@@ -90,6 +93,7 @@ The append-only event type is `receipt.superseded`.
 | `RECEIPT_NOT_VERIFIABLE` | The predecessor signature or scoped key status is not trusted. |
 | `RECEIPT_NOT_SUPERSEDABLE` | The predecessor is not an attempt-bound v1.1 or v1.2 execution receipt. |
 | `RECEIPT_ALREADY_SUPERSEDED` | The predecessor already has its one direct successor. |
+| `SIGNING_KEY_NOT_ACTIVE` | The configured successor signer is not the active scoped key. |
 | `INVALID_REQUEST` | The request or reason is malformed or out of bounds. |
 | `IDEMPOTENCY_CONFLICT` | The idempotency key was reused with different input. |
 
