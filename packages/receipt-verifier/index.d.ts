@@ -21,6 +21,7 @@ export type ReceiptVerificationReason =
   | 'UNSUPPORTED_ALGORITHM'
   | 'KEY_NOT_FOUND'
   | 'KEY_NOT_VERIFIABLE'
+  | 'KEY_SET_UNAVAILABLE'
   | 'INVALID_KEY'
   | 'INVALID_SIGNATURE';
 
@@ -31,12 +32,45 @@ export type ReceiptVerificationResult = Readonly<{
   algorithm: string | null;
 }>;
 
+export type MandateKeySetCacheSnapshot = Readonly<{
+  scopeId: string;
+  generation: number;
+  loadedAt: string | null;
+  expiresAt: string | null;
+  refreshing: boolean;
+  cached: boolean;
+}>;
+
+export type MandateKeySetCacheOptions = Readonly<{
+  scopeId: string;
+  load(context: Readonly<{ scopeId: string }>):
+    | MandateVerificationKeySet
+    | Promise<MandateVerificationKeySet>;
+  maxAgeMs?: number;
+  clock?: () => Date | number;
+}>;
+
+export type MandateKeySetCache = Readonly<{
+  scopeId: string;
+  get(options?: Readonly<{ forceRefresh?: boolean }>): Promise<Readonly<{
+    keys: readonly MandateVerificationKey[];
+  }>>;
+  verify(receipt: MandateReceipt | unknown): Promise<ReceiptVerificationResult>;
+  invalidate(): void;
+  snapshot(): MandateKeySetCacheSnapshot;
+}>;
+
+export class MandateKeySetUnavailableError extends Error {
+  readonly code: 'KEY_SET_UNAVAILABLE';
+}
+
 export const RECEIPT_VERIFICATION_REASONS: Readonly<{
   VALID: 'VALID';
   INVALID_RECEIPT: 'INVALID_RECEIPT';
   UNSUPPORTED_ALGORITHM: 'UNSUPPORTED_ALGORITHM';
   KEY_NOT_FOUND: 'KEY_NOT_FOUND';
   KEY_NOT_VERIFIABLE: 'KEY_NOT_VERIFIABLE';
+  KEY_SET_UNAVAILABLE: 'KEY_SET_UNAVAILABLE';
   INVALID_KEY: 'INVALID_KEY';
   INVALID_SIGNATURE: 'INVALID_SIGNATURE';
 }>;
@@ -47,3 +81,7 @@ export function verifyMandateReceipt(
   receipt: MandateReceipt | unknown,
   keySet: MandateVerificationKeySet | unknown
 ): ReceiptVerificationResult;
+
+export function createMandateKeySetCache(
+  options: MandateKeySetCacheOptions
+): MandateKeySetCache;
