@@ -11,6 +11,7 @@
 | [Transactional outbox](./OUTBOX.md) | Claims, leases, retry, dead-letter, attempt evidence, and handler requirements |
 | [Signing key operations](./SIGNING_KEYS.md) | Persistent Ed25519 key registration, rotation, revocation, and startup invariants |
 | [Receipt verification](./RECEIPT_VERIFICATION.md) | Public key discovery and rotation-safe verification behavior |
+| [Action attempts](./ACTION_ATTEMPTS.md) | Single-use decision reservations, execution windows, and exactly-one-winner semantics |
 | [Delivery roadmap](./ROADMAP.md) | Sequenced implementation phases and exit criteria |
 
-The OpenAPI contract at [`../openapi.yaml`](../openapi.yaml) documents the currently implemented surface. These documents describe the intended complete v1 platform and clearly distinguish current behavior from future additions.
+The OpenAPI contract at [`../openapi.yaml`](../openapi.yaml) documents the stable core surface. New phase-specific resources are documented with their implementation until the next consolidated contract version is published. These documents distinguish current behavior from future additions.

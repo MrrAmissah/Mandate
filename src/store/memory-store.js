@@ -5,6 +5,7 @@ const ENTITY_KINDS = Object.freeze([
   'mandates',
   'approvals',
   'decisions',
+  'actionAttempts',
   'receipts',
   'auditEvents',
   'outboxMessages'
@@ -16,6 +17,7 @@ function newState() {
     mandates: new Map(),
     approvals: new Map(),
     decisions: new Map(),
+    actionAttempts: new Map(),
     receipts: new Map(),
     auditEvents: new Map(),
     outboxMessages: new Map(),
