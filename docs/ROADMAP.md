@@ -13,8 +13,7 @@ Delivered:
 - approval-gated actions;
 - `ALLOW`, `DENY`, and `REQUIRE_APPROVAL` outcomes;
 - signed receipts and verification;
-- basic HTTP API and tests;
-- documented in-memory and single-key limitations.
+- basic HTTP API and tests.
 
 ## Phase 1 — contract and invariant hardening
 
@@ -28,8 +27,7 @@ Delivered:
 - request IDs and consistent error correlation;
 - expanded API contract;
 - product, architecture, API, and security blueprints;
-- `Mandate-API` naming and documentation structure;
-- dedicated project asset directory.
+- `Mandate-API` naming and documentation structure.
 
 ## Phase 2 — durable multi-tenant core
 
@@ -39,86 +37,35 @@ Status: core runtime merged; operational hardening remains.
 
 Status: merged.
 
-Delivered:
-
-- tenant and test/live ownership at the API and store boundary;
-- scoped API authentication primitives;
-- hash-only API credential records with rotation/revocation lifecycle;
-- transactionally atomic reference store with rollback;
-- one-winner concurrency tests for mandate uses and approvals;
-- append-only audit-event and transactional-outbox writes;
-- cursor-paginated collections;
-- PostgreSQL schema and reversible development migrations;
-- immutable decision, receipt, and audit tables.
+Delivered tenant/test-live ownership, scoped credential primitives, atomic reference transactions, one-winner authorization tests, audit/outbox writes, pagination, and the durable PostgreSQL schema.
 
 ### Phase 2B — PostgreSQL runtime
 
 Status: merged.
 
-Delivered:
-
-- exact `pg` dependency and connection-pool composition;
-- one checked-out client per transaction;
-- migration command and PostgreSQL CI service;
-- tenant-scoped PostgreSQL repositories;
-- stored-credential authentication with atomic last-used/revocation checking;
-- serializable authorization transactions with bounded retry;
-- explicit JSONB serialization;
-- restart-safe state and idempotency tests;
-- real cross-tenant, concurrency, denial-persistence, approval, receipt, and immutability tests;
-- live-mode posture gates for storage, scopes, secrets, and signing keys.
+Delivered connection-pool composition, one client per transaction, stored-credential authentication, serializable bounded retries, explicit JSONB encoding, restart-safe persistence, and real isolation/concurrency tests.
 
 ### Phase 2C — transactional outbox execution
 
 Status: merged.
 
-Delivered:
-
-- ordered migrations protected by one 64-bit PostgreSQL advisory lock;
-- append-only outbox attempt evidence;
-- exact-handler claims with `FOR UPDATE SKIP LOCKED`;
-- environment-scoped and optionally tenant-scoped workers;
-- committed leases before handler I/O;
-- stale-lease recovery and old-worker rejection;
-- bounded exponential retry and dead-letter transitions;
-- safe error-code persistence without raw handler exceptions;
-- multi-worker PostgreSQL concurrency and failure-path tests;
-- no automatically registered external handler or worker process.
+Delivered ordered migrations, append-only attempt evidence, `SKIP LOCKED` claims, committed leases, stale recovery, late-worker rejection, retry/backoff, dead-letter transitions, and multi-worker tests.
 
 ### Phase 2D — exact idempotency replay
 
 Status: merged.
 
-Delivered:
-
-- canonical JSON response bytes;
-- exact successful status mapping for supported mutation scopes;
-- stable persisted application headers;
-- PostgreSQL rejection of unknown idempotency scopes;
-- retry-specific `X-Request-Id` behavior;
-- memory and restart-safe PostgreSQL byte-replay tests;
-- migration 003 with existing-record backfill.
+Delivered canonical response bytes, persisted status and application headers, retry-specific request IDs, unknown-scope rejection, and restart-safe replay tests.
 
 ### Phase 2E — persistent signing keys
 
 Status: merged.
 
-Delivered:
-
-- tenant/environment-scoped Ed25519 public-key registry;
-- active, retired, and revoked key states;
-- one active key per algorithm and scope;
-- atomic retirement during rotation;
-- key-ID reuse protection;
-- retry-safe concurrent startup registration;
-- public discovery of active and retired keys;
-- receipt verification through historical retired keys;
-- rejection of unsupported key material;
-- live startup requirement for explicit persistent key identity.
+Delivered tenant/environment-scoped Ed25519 public keys, active/retired/revoked states, atomic rotation, key-ID reuse protection, retry-safe startup registration, discovery, historical verification, and unsupported-key rejection.
 
 Remaining operational hardening:
 
-- deployment migration role separation and production runbook;
+- deployment migration-role separation and production runbook;
 - worker-process composition, metrics, alerting, and operator dead-letter replay;
 - database-time and production clock-skew policy;
 - idempotency retention cleanup and configurable policy;
@@ -130,42 +77,56 @@ Status: in progress.
 
 ### Phase 3A — single-use decision reservation
 
-Status: implementation branch.
+Status: merged.
 
-Scope:
+Delivered:
 
 - `ActionAttempt` resource;
 - one reservation per `ALLOW` decision;
-- bounded reservation expiry;
-- tenant-scoped read and list routes;
-- dedicated API scopes;
+- 30–900 second reservation windows;
+- tenant-scoped create/list/read routes;
+- dedicated action-attempt scopes;
 - atomic audit, outbox, and idempotency writes;
-- PostgreSQL decision locking and unique final arbiter;
-- memory and real-database concurrency proofs.
+- decision-row locking and a unique database final arbiter;
+- memory and real-PostgreSQL concurrency proofs.
 
-Exit gate:
+Exit gate met:
 
 - one decision produces at most one action attempt;
 - non-allowed, inactive, already-receipted, or already-reserved decisions fail closed;
-- a reservation is not represented as execution success.
+- a reservation is never represented as execution success.
 
 ### Phase 3B — attempt completion and receipt binding
 
-Scope:
+Status: implementation branch under review.
 
-- controlled `RESERVED → COMPLETED | FAILED | CANCELLED | EXPIRED` transitions;
-- completion input/output hashes and tool metadata;
-- expiry worker using database time;
-- receipt issuance only from a terminal completed attempt;
+Delivered in the branch:
+
+- controlled `RESERVED → COMPLETED | CANCELLED` transitions;
+- terminal input/output hashes and tool/provider/model metadata;
+- expiry checks on completion and cancellation;
+- immutable completion and termination timestamps/request IDs;
+- public receipt creation only from a `COMPLETED` attempt;
+- receipt schema v1.1 with signed `actionAttemptId`;
+- `executedAt` bound to attempt completion rather than signature time;
 - one receipt per attempt and decision;
-- recovery from signing failure without re-executing the tool;
-- cancellation ownership and audit evidence.
+- receipt recovery after later mandate revocation;
+- memory and real-PostgreSQL concurrent receipt tests;
+- migration 006 with terminal-shape and ownership constraints.
+
+Remaining before Phase 3B closes:
+
+- exact-head CI and review merge gate;
+- database-time expiry materialization;
+- composed expiry worker and operator observability;
+- clock-skew policy for externally reported completion timestamps.
 
 Exit gate:
 
-- a receipt cannot exist without a completed attempt;
-- the tool cannot silently reuse a reservation;
-- signing retries do not duplicate execution or receipts.
+- a public receipt cannot exist without a completed attempt;
+- terminal attempt evidence cannot be overwritten;
+- signing retries do not duplicate execution or receipts;
+- cancelled or expired attempts cannot produce receipts.
 
 ### Phase 3C — verification products and corrections
 
@@ -188,12 +149,12 @@ Exit gate:
 Scope:
 
 - approver policies and groups;
-- approval inbox/list endpoints;
+- approval inbox and assignment endpoints;
 - cancellation and expiry worker;
 - Slack, email, and mobile-link delivery adapters;
 - approval comments and evidence links;
 - optional multi-party thresholds;
-- durable workflow resumption callbacks.
+- durable workflow-resumption callbacks.
 
 Exit gate:
 
