@@ -23,11 +23,11 @@ ALTER TABLE mandate.receipts
       AND supersession_reason IS NOT NULL
       AND char_length(supersession_reason) BETWEEN 1 AND 1000
       AND supersedes_receipt_id <> id
-      AND payload ->> 'version' = '1.2'
-      AND payload ->> 'supersedesReceiptId' = supersedes_receipt_id
-      AND payload ->> 'supersessionReason' = supersession_reason
-      AND payload ->> 'decisionId' = decision_id
-      AND payload ->> 'actionAttemptId' = action_attempt_id
+      AND (payload ->> 'version') IS NOT DISTINCT FROM '1.2'
+      AND (payload ->> 'supersedesReceiptId') IS NOT DISTINCT FROM supersedes_receipt_id
+      AND (payload ->> 'supersessionReason') IS NOT DISTINCT FROM supersession_reason
+      AND (payload ->> 'decisionId') IS NOT DISTINCT FROM decision_id
+      AND (payload ->> 'actionAttemptId') IS NOT DISTINCT FROM action_attempt_id
     )
   ),
   ADD CONSTRAINT receipts_execution_identity_unique
