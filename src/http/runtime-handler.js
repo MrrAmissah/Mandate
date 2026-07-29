@@ -146,6 +146,7 @@ export function createRuntimeHandler(runtime) {
             const completed = await completeAttempt({
               transaction,
               ownership,
+              authentication,
               attemptId: params.id,
               input: body,
               requestId,
@@ -185,6 +186,7 @@ export function createRuntimeHandler(runtime) {
             const cancelled = await cancelAttempt({
               transaction,
               ownership,
+              authentication,
               attemptId: params.id,
               input: body,
               requestId,
