@@ -1,0 +1,28 @@
+{
+  "name": "@mandate-api/receipt-verifier",
+  "version": "0.1.0",
+  "description": "Offline Ed25519 verification for Mandate-API action receipts.",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    },
+    "./canonical-json": {
+      "types": "./canonical-json.d.ts",
+      "import": "./canonical-json.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "canonical-json.js",
+    "canonical-json.d.ts"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "Apache-2.0"
+}
