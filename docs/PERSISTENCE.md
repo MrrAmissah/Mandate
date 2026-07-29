@@ -2,7 +2,7 @@
 
 ## Current status
 
-Phase 2B wires PostgreSQL as an active runtime mode. Set `MANDATE_STORE=postgres`, configure `DATABASE_URL`, apply migrations with `npm run migrate`, and then start the API.
+PostgreSQL is an active runtime mode. Set `MANDATE_STORE=postgres`, configure `DATABASE_URL`, apply migrations with `npm run migrate`, and then start the API.
 
 Memory mode remains available for local experimentation and fast domain tests. It is not restart-safe and is rejected in a live environment.
 
@@ -40,15 +40,19 @@ The PostgreSQL adapter serializes every JSONB-bound value explicitly. This is re
 
 ## Idempotency
 
-An idempotency record is scoped by tenant, environment, operation scope, and caller key. It stores the canonical request fingerprint and response body. Reusing a key with different input is a conflict. The domain state, audit event, outbox message, and idempotency record commit in the same transaction.
+An idempotency record is scoped by tenant, environment, operation scope, and caller key. It stores the canonical request fingerprint, logical response body, original success status, and stable application headers. Reusing a key with different input is a conflict. The domain state, audit event, outbox message, and idempotency record commit in the same transaction.
 
-A restart test proves that replay after closing and recreating the connection pool returns the original resource without duplicating state, audit events, or outbox messages.
+All JSON responses use canonical serialization, so the first committed response and a replay loaded from PostgreSQL produce byte-identical bodies even though `jsonb` does not preserve object insertion order.
 
-Response-status and header replay remain a follow-up hardening item; the current routes have deterministic success status codes, while every retry receives its own current `X-Request-Id` header.
+A restart test proves that replay after closing and recreating the connection pool returns the original status, canonical body bytes, and stable headers without duplicating state, audit events, or outbox messages. `X-Request-Id` intentionally identifies the current retry rather than replaying the first attempt's diagnostic ID.
+
+Migration `003_idempotency_http_metadata` derives status and stable header metadata from the exact supported mutation scope and rejects unknown scopes instead of guessing.
+
+See [Idempotency and HTTP replay](./IDEMPOTENCY.md) for the complete contract.
 
 ## Immutable records
 
-Authorization decisions, signed receipts, and audit events are insert-only. A decision preserves the requested `mandateId` even when policy returns `MANDATE_NOT_FOUND`; that field is therefore not a mandate foreign key, while receipt issuance still requires a real allowed decision and active mandate. PostgreSQL triggers reject update and delete attempts.
+Authorization decisions, signed receipts, audit events, and outbox attempts are insert-only. A decision preserves the requested `mandateId` even when policy returns `MANDATE_NOT_FOUND`; that field is therefore not a mandate foreign key, while receipt issuance still requires a real allowed decision and active mandate. PostgreSQL triggers reject update and delete attempts.
 
 ## Credential storage
 
@@ -64,8 +68,8 @@ Successful authentication advances `lastUsedAt` atomically. If revocation or exp
 
 ## Bootstrap behavior
 
-At startup in PostgreSQL mode, Mandate-API ensures the configured tenant and credential ID exist. Configuration can rotate the secret and scopes while the stored credential is active. A revoked bootstrap credential is not silently reactivated; recovery requires a deliberate new credential ID or database administration procedure.
+At startup in PostgreSQL mode, Mandate-API ensures the configured tenant and credential ID exist under a serialized bootstrap lock. Configuration can rotate the secret and scopes while the stored credential is active. A revoked bootstrap credential is not silently reactivated; recovery requires a deliberate new credential ID or database administration procedure.
 
 ## Outbox
 
-The outbox row is inserted with the domain transaction. External delivery is not performed inside the authorization request. Claim/lease/retry/dead-letter worker execution is the next persistence subphase.
+The outbox row is inserted with the domain transaction. External delivery is not performed inside the authorization request. The execution layer supports environment-scoped claims, leases, stale recovery, bounded retries, dead-letter transitions, and immutable attempt evidence. No external handler or continuously running worker is registered by default.
