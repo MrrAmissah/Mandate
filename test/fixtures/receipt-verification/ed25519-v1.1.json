@@ -1,0 +1,36 @@
+{
+  "description": "Public-only Ed25519 receipt verification fixture. No private key is included.",
+  "canonicalPayload": "{\"action\":\"repository.read\",\"actionAttemptId\":\"att_conformance\",\"agentId\":\"agent_conformance\",\"algorithm\":\"Ed25519\",\"approvalId\":null,\"authorizedAt\":\"2026-07-29T12:00:00.000Z\",\"decisionId\":\"dec_conformance_allow\",\"executedAt\":\"2026-07-29T12:00:01.000Z\",\"executionStatus\":\"SUCCEEDED\",\"id\":\"rcpt_conformance_valid\",\"inputHash\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"issuedAt\":\"2026-07-29T12:00:02.000Z\",\"keyId\":\"key_conformance_ed25519_01\",\"mandateId\":\"mnd_conformance\",\"model\":null,\"outputHash\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"principalId\":\"principal_conformance\",\"provider\":\"github\",\"resource\":\"github:MrrAmissah/Mandate\",\"tool\":\"github.fetch_file\",\"version\":\"1.1\"}",
+  "verificationKey": {
+    "keyId": "key_conformance_ed25519_01",
+    "algorithm": "Ed25519",
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAbVHPOKXoRO/4rP2HgpRfxXnMoh2Fw3MI/+n2cw7EOgs=\n-----END PUBLIC KEY-----\n",
+    "status": "ACTIVE",
+    "activatedAt": "2026-07-29T11:00:00.000Z",
+    "retiredAt": null
+  },
+  "receipt": {
+    "id": "rcpt_conformance_valid",
+    "version": "1.1",
+    "keyId": "key_conformance_ed25519_01",
+    "algorithm": "Ed25519",
+    "decisionId": "dec_conformance_allow",
+    "mandateId": "mnd_conformance",
+    "actionAttemptId": "att_conformance",
+    "principalId": "principal_conformance",
+    "agentId": "agent_conformance",
+    "action": "repository.read",
+    "resource": "github:MrrAmissah/Mandate",
+    "executionStatus": "SUCCEEDED",
+    "inputHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "outputHash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "tool": "github.fetch_file",
+    "provider": "github",
+    "model": null,
+    "approvalId": null,
+    "authorizedAt": "2026-07-29T12:00:00.000Z",
+    "executedAt": "2026-07-29T12:00:01.000Z",
+    "issuedAt": "2026-07-29T12:00:02.000Z",
+    "signature": "HNZTAdbB-QEzx-K7S_PUq3voeQgwZe7BDHdAd6L_ofBTsV5ESnlEwGmzMiOpDJ1X9j8piWHXdqEKWKRt01Y0DA"
+  }
+}
