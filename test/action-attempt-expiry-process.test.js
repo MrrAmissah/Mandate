@@ -14,7 +14,37 @@ function capturingLogger() {
   };
 }
 
-test('expiry process configuration requires a database, explicit live identity, and bounded settings', () => {
+function backlog(overrides = {}) {
+  return {
+    reservedCount: 4,
+    dueCount: 2,
+    oldestDueAt: '2026-07-29T11:59:30.000Z',
+    oldestOverdueSeconds: 30,
+    observedAt: '2026-07-29T12:00:00.000Z',
+    ...overrides
+  };
+}
+
+function processOptions(worker, overrides = {}) {
+  return {
+    worker,
+    pollIntervalMs: 100,
+    batchLimit: 5,
+    readinessStaleMs: 500,
+    readinessFailureThreshold: 2,
+    ...overrides
+  };
+}
+
+async function waitFor(predicate) {
+  for (let index = 0; index < 100; index += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error('condition was not reached');
+}
+
+test('expiry process configuration requires a database, explicit live identity, and bounded health settings', () => {
   assert.throws(() => parseActionAttemptExpiryConfig({
     MANDATE_ENVIRONMENT: 'test'
   }), /DATABASE_URL is required/);
@@ -22,6 +52,12 @@ test('expiry process configuration requires a database, explicit live identity, 
     DATABASE_URL: 'postgresql://example',
     MANDATE_ENVIRONMENT: 'live'
   }), /MANDATE_EXPIRY_WORKER_ID is required/);
+  assert.throws(() => parseActionAttemptExpiryConfig({
+    DATABASE_URL: 'postgresql://example',
+    MANDATE_ENVIRONMENT: 'test',
+    MANDATE_EXPIRY_POLL_INTERVAL_MS: '1000',
+    MANDATE_EXPIRY_READINESS_STALE_MS: '1500'
+  }), /between 2000 and 3600000/);
 
   const config = parseActionAttemptExpiryConfig({
     DATABASE_URL: 'postgresql://example',
@@ -30,6 +66,10 @@ test('expiry process configuration requires a database, explicit live identity, 
     MANDATE_EXPIRY_WORKER_ID: 'expiry.worker-live-01.example.internal',
     MANDATE_EXPIRY_POLL_INTERVAL_MS: '500',
     MANDATE_EXPIRY_BATCH_LIMIT: '25',
+    MANDATE_EXPIRY_READINESS_STALE_MS: '4000',
+    MANDATE_EXPIRY_READINESS_FAILURE_THRESHOLD: '4',
+    MANDATE_EXPIRY_HEALTH_HOST: '127.0.0.2',
+    MANDATE_EXPIRY_HEALTH_PORT: '9797',
     MANDATE_DATABASE_POOL_MAX: '4',
     MANDATE_DATABASE_SSL: 'true',
     MANDATE_API_KEY: 'must-not-be-consumed-by-worker'
@@ -42,92 +82,137 @@ test('expiry process configuration requires a database, explicit live identity, 
     tenantId: 'ten_live',
     workerId: 'expiry.worker-live-01.example.internal',
     pollIntervalMs: 500,
-    batchLimit: 25
+    batchLimit: 25,
+    readinessStaleMs: 4000,
+    readinessFailureThreshold: 4,
+    healthHost: '127.0.0.2',
+    healthPort: 9797
   });
 });
 
-test('expiry process records successful cycle counters and limit state', async () => {
+test('expiry process records successful cycle and database backlog counters', async () => {
   const logger = capturingLogger();
-  const process = new ActionAttemptExpiryProcess({
-    worker: {
-      async drain({ limit }) {
-        assert.equal(limit, 2);
-        return {
-          expired: [{ id: 'att_one' }, { id: 'att_two' }],
-          limitReached: true
-        };
-      }
+  const expiryProcess = new ActionAttemptExpiryProcess(processOptions({
+    async drain({ limit }) {
+      assert.equal(limit, 2);
+      return {
+        expired: [{ id: 'att_one' }, { id: 'att_two' }],
+        limitReached: true
+      };
     },
-    pollIntervalMs: 100,
+    async backlog() { return backlog(); }
+  }, {
     batchLimit: 2,
     logger
-  });
+  }));
   const at = new Date('2026-07-29T12:00:00.000Z');
-  const result = await process.runCycle(at);
+  const result = await expiryProcess.runCycle(at);
   assert.equal(result.expired.length, 2);
   assert.equal(result.limitReached, true);
-  assert.deepEqual(process.snapshot(), {
+  assert.deepEqual(result.backlog, backlog());
+  assert.deepEqual(expiryProcess.snapshot(), {
     cycles: 1,
     expiredTotal: 2,
     failures: 0,
+    limitReachedTotal: 1,
     consecutiveFailures: 0,
     lastCycleAt: at.toISOString(),
     lastSuccessAt: at.toISOString(),
-    lastErrorCode: null
+    lastErrorCode: null,
+    backlogReserved: 4,
+    backlogDue: 2,
+    oldestDueAt: '2026-07-29T11:59:30.000Z',
+    oldestOverdueSeconds: 30,
+    backlogObservedAt: '2026-07-29T12:00:00.000Z',
+    running: false,
+    shuttingDown: false,
+    startedAt: null,
+    stoppedAt: null
   });
   assert.equal(logger.entries[0].event, 'action_attempt_expiry.cycle');
   assert.equal(logger.entries[0].expired, 2);
 });
 
-test('expiry process exposes safe failure counters and recovers on the next cycle', async () => {
+test('expiry process exposes safe failure counters and preserves committed expiry counts', async () => {
   const logger = capturingLogger();
-  let fail = true;
-  const process = new ActionAttemptExpiryProcess({
-    worker: {
-      async drain() {
-        if (fail) {
-          const error = new Error('secret database detail');
-          error.code = '40001';
-          throw error;
-        }
-        return { expired: [], limitReached: false };
-      }
+  let failBacklog = true;
+  const expiryProcess = new ActionAttemptExpiryProcess(processOptions({
+    async drain() {
+      return { expired: [{ id: 'att_committed' }], limitReached: false };
     },
-    pollIntervalMs: 100,
-    batchLimit: 5,
-    logger
-  });
+    async backlog() {
+      if (failBacklog) {
+        const error = new Error('secret database detail');
+        error.code = '40001';
+        throw error;
+      }
+      return backlog({ dueCount: 0, oldestDueAt: null, oldestOverdueSeconds: 0 });
+    }
+  }, { logger }));
 
-  await assert.rejects(process.runCycle(new Date('2026-07-29T12:00:00.000Z')), /secret database detail/);
-  assert.equal(process.snapshot().lastErrorCode, '40001');
-  assert.equal(process.snapshot().consecutiveFailures, 1);
+  await assert.rejects(expiryProcess.runCycle(new Date('2026-07-29T12:00:00.000Z')), /secret database detail/);
+  assert.equal(expiryProcess.snapshot().expiredTotal, 1);
+  assert.equal(expiryProcess.snapshot().lastErrorCode, '40001');
+  assert.equal(expiryProcess.snapshot().consecutiveFailures, 1);
   assert.equal(JSON.stringify(logger.entries).includes('secret database detail'), false);
 
-  fail = false;
-  await process.runCycle(new Date('2026-07-29T12:00:01.000Z'));
-  assert.equal(process.snapshot().consecutiveFailures, 0);
-  assert.equal(process.snapshot().lastErrorCode, null);
-  assert.equal(process.snapshot().lastSuccessAt, '2026-07-29T12:00:01.000Z');
+  failBacklog = false;
+  await expiryProcess.runCycle(new Date('2026-07-29T12:00:01.000Z'));
+  assert.equal(expiryProcess.snapshot().expiredTotal, 2);
+  assert.equal(expiryProcess.snapshot().consecutiveFailures, 0);
+  assert.equal(expiryProcess.snapshot().lastErrorCode, null);
+  assert.equal(expiryProcess.snapshot().lastSuccessAt, '2026-07-29T12:00:01.000Z');
+});
+
+test('expiry readiness becomes ready, stale, and shutting down without database probe traffic', async () => {
+  const controller = new AbortController();
+  let releaseSleep;
+  let backlogCalls = 0;
+  const clockValues = [
+    new Date('2026-07-29T12:00:00.000Z'),
+    new Date('2026-07-29T12:00:00.000Z'),
+    new Date('2026-07-29T12:00:00.000Z'),
+    new Date('2026-07-29T12:00:01.000Z')
+  ];
+  const expiryProcess = new ActionAttemptExpiryProcess(processOptions({
+    async drain() { return { expired: [], limitReached: false }; },
+    async backlog() {
+      backlogCalls += 1;
+      return backlog({ reservedCount: 0, dueCount: 0, oldestDueAt: null, oldestOverdueSeconds: 0 });
+    }
+  }, {
+    clock: () => clockValues.shift() ?? new Date('2026-07-29T12:00:01.000Z'),
+    sleep: async () => new Promise((resolve) => { releaseSleep = resolve; })
+  }));
+
+  const run = expiryProcess.run({ signal: controller.signal });
+  await waitFor(() => expiryProcess.snapshot().lastSuccessAt !== null);
+  assert.equal(expiryProcess.readiness(new Date('2026-07-29T12:00:00.200Z')).reason, 'READY');
+  assert.equal(expiryProcess.readiness(new Date('2026-07-29T12:00:00.600Z')).reason, 'STALE');
+  assert.equal(backlogCalls, 1);
+
+  controller.abort();
+  releaseSleep?.();
+  await run;
+  assert.equal(expiryProcess.readiness(new Date('2026-07-29T12:00:01.000Z')).reason, 'SHUTTING_DOWN');
 });
 
 test('expiry process loop stops through an AbortSignal', async () => {
   const controller = new AbortController();
   const logger = capturingLogger();
   let cycles = 0;
-  const process = new ActionAttemptExpiryProcess({
-    worker: {
-      async drain() {
-        cycles += 1;
-        controller.abort();
-        return { expired: [], limitReached: false };
-      }
+  const expiryProcess = new ActionAttemptExpiryProcess(processOptions({
+    async drain() {
+      cycles += 1;
+      controller.abort();
+      return { expired: [], limitReached: false };
     },
-    pollIntervalMs: 100,
-    batchLimit: 5,
+    async backlog() { return backlog({ reservedCount: 0, dueCount: 0, oldestDueAt: null, oldestOverdueSeconds: 0 }); }
+  }, {
     logger,
     sleep: async () => {}
-  });
-  await process.run({ signal: controller.signal });
+  }));
+  await expiryProcess.run({ signal: controller.signal });
   assert.equal(cycles, 1);
   assert.deepEqual(logger.entries.map((entry) => entry.event), [
     'action_attempt_expiry.started',
