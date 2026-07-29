@@ -34,6 +34,10 @@ The authorization transaction:
 
 Transactions run at `SERIALIZABLE` isolation and retry bounded serialization, deadlock, and first-writer uniqueness races. A failure at any point rolls back every step. Real PostgreSQL tests prove that concurrent requests for the final mandate use produce exactly one `ALLOW`.
 
+## JSONB encoding
+
+The PostgreSQL adapter serializes every JSONB-bound value explicitly. This is required for JavaScript arrays because `node-postgres` otherwise treats them as PostgreSQL array literals rather than JSON arrays. Real database tests cover mandate action/resource array round trips together with decision, audit, outbox, and idempotency JSON payloads.
+
 ## Idempotency
 
 An idempotency record is scoped by tenant, environment, operation scope, and caller key. It stores the canonical request fingerprint and response body. Reusing a key with different input is a conflict. The domain state, audit event, outbox message, and idempotency record commit in the same transaction.
