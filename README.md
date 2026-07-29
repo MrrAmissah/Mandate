@@ -11,9 +11,9 @@ It answers two questions ordinary application authorization does not answer well
 1. What may this specific agent do for this specific task, resource, and time window?
 2. What verifiable evidence records the authority, decision, and execution outcome?
 
-## Current milestone: PostgreSQL runtime
+## Current milestone: transactional outbox execution
 
-Phase 2B activates PostgreSQL persistence while retaining memory mode only as a local reference implementation.
+Phase 2C adds safe asynchronous execution over the PostgreSQL outbox while keeping external handlers deliberately unregistered.
 
 Implemented now:
 
@@ -25,15 +25,20 @@ Implemented now:
 - route-level API credential scopes;
 - high-entropy API credential generation with hash-only durable records;
 - payload-bound idempotency;
-- atomic domain, audit-event, and outbox writes in the reference transaction store;
+- atomic domain, audit-event, and outbox writes;
 - cursor-paginated mandate, approval, decision, and receipt collections;
-- a tenant-aware PostgreSQL migration with immutable decisions, receipts, and audit events;
+- tenant-aware PostgreSQL persistence with immutable decisions, receipts, audit events, and outbox attempts;
 - connection-pool runtime composition with one client per transaction;
 - stored credential authentication with revocation-race protection;
 - explicit JSONB serialization for arrays and structured payloads;
-- real PostgreSQL restart, isolation, concurrency, denial-persistence, and immutability tests.
+- ordered migrations protected by one PostgreSQL advisory lock;
+- exact-handler outbox claims using `FOR UPDATE SKIP LOCKED`;
+- committed leases, stale-lease recovery, late-worker rejection, retry, and dead-letter transitions;
+- real PostgreSQL restart, isolation, concurrency, receipt, approval, and outbox failure-path tests.
 
 Memory mode remains available for local experiments. Live environments require PostgreSQL, explicit scopes, a non-default API key, and persistent receipt-signing keys.
+
+The outbox dispatcher is currently a library boundary. The API does not start a worker or register webhook, email, Slack, or connector handlers by default.
 
 ## Run locally
 
@@ -113,6 +118,7 @@ See [`openapi.yaml`](./openapi.yaml) for the current contract.
 - [Target architecture](./docs/ARCHITECTURE.md)
 - [Security model](./docs/SECURITY_MODEL.md)
 - [Persistence and transaction contract](./docs/PERSISTENCE.md)
+- [Transactional outbox execution](./docs/OUTBOX.md)
 - [Delivery roadmap](./docs/ROADMAP.md)
 - [Database migrations](./migrations/)
 - [Project assets](./assets/)
@@ -126,8 +132,9 @@ See [`openapi.yaml`](./openapi.yaml) for the current contract.
 - Receipt issuance requires a stored `ALLOW` decision and an active underlying mandate.
 - Receipt signatures cover every receipt field except the signature itself.
 - Raw generated API credentials are displayed once and are not part of the durable credential record.
-- Authorization decisions, receipts, and audit events are immutable in the PostgreSQL schema.
+- Authorization decisions, receipts, audit events, and outbox attempts are immutable in PostgreSQL.
+- An outbox worker may complete only the exact unexpired lease it owns.
 
 ## Not production-ready yet
 
-PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential live agent actions. Persistent signing-key rotation, exact status/header idempotency replay, outbox delivery workers, operational migration locking, metrics, backup/restore, and deployment runbooks remain open.
+PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential live agent actions. Persistent signing-key rotation, exact status/header idempotency replay, worker-process composition, external delivery handlers, operational migration role separation, metrics, backup/restore, dead-letter operations, clock-skew policy, and deployment runbooks remain open.
