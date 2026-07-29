@@ -29,6 +29,15 @@ postgresTest('PostgreSQL expiry backlog uses database time and excludes future o
 
   try {
     await applyMigrations(pool, { logger: { log() {} } });
+    const empty = await inspectActionAttemptExpiryBacklog(store, {
+      tenantId: `ten_empty_${suffix}`,
+      environment
+    });
+    assert.equal(empty.reservedCount, 0);
+    assert.equal(empty.dueCount, 0);
+    assert.equal(empty.oldestDueAt, null);
+    assert.equal(empty.oldestOverdueSeconds, 0);
+
     await pool.query(
       `INSERT INTO mandate.tenants (id, name, status, created_at, updated_at)
        VALUES ($1, 'Backlog tenant', 'ACTIVE', clock_timestamp(), clock_timestamp())`,
@@ -46,9 +55,9 @@ postgresTest('PostgreSQL expiry backlog uses database time and excludes future o
          allowed_actions, denied_actions, approval_required_actions, constraints, valid_from,
          valid_until, max_uses, uses, version, created_at)
        VALUES ($1,$2,$3,'ACTIVE','principal_backlog','agent_backlog','Measure expiry backlog',
-         $4,$5,$6,$6,clock_timestamp() - interval '1 hour',clock_timestamp() + interval '1 day',10,3,0,clock_timestamp())`,
+         $4,$5,$6,$6,$7,clock_timestamp() - interval '1 hour',clock_timestamp() + interval '1 day',10,3,0,clock_timestamp())`,
       [tenantId, environment, mandateId, JSON.stringify(['github:repo']),
-        JSON.stringify(['repository.write']), JSON.stringify([])]
+        JSON.stringify(['repository.write']), JSON.stringify([]), JSON.stringify({})]
     );
     for (const decisionId of decisionIds) {
       await pool.query(
