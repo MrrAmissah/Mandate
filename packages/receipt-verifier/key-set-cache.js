@@ -52,6 +52,8 @@ export function createStrictKeySetCache({
   let refreshing = null;
   let epoch = 0;
   let generation = 0;
+  let unknownRefreshGeneration = null;
+  let unknownRefreshUnavailable = false;
 
   async function refresh() {
     if (refreshing) return refreshing;
@@ -117,20 +119,44 @@ export function createStrictKeySetCache({
       }
 
       let verification = verifyReceipt(receipt, obtained.record.keySet);
-      if (verification.reason !== keyNotFoundReason || obtained.refreshed) return verification;
+      if (verification.reason !== keyNotFoundReason) return verification;
 
-      try {
-        const refreshed = await obtain(true);
-        verification = verifyReceipt(receipt, refreshed.record.keySet);
+      const currentGeneration = obtained.record.generation;
+      if (obtained.refreshed) {
+        unknownRefreshGeneration = currentGeneration;
+        unknownRefreshUnavailable = false;
         return verification;
+      }
+      if (unknownRefreshGeneration === currentGeneration) {
+        return unknownRefreshUnavailable ? unavailableResult(receipt) : verification;
+      }
+
+      unknownRefreshGeneration = currentGeneration;
+      unknownRefreshUnavailable = false;
+      let refreshed;
+      try {
+        refreshed = await obtain(true);
       } catch {
+        unknownRefreshUnavailable = true;
         return unavailableResult(receipt);
       }
+
+      verification = verifyReceipt(receipt, refreshed.record.keySet);
+      if (verification.reason === keyNotFoundReason) {
+        unknownRefreshGeneration = refreshed.record.generation;
+        unknownRefreshUnavailable = false;
+      } else {
+        unknownRefreshGeneration = null;
+        unknownRefreshUnavailable = false;
+      }
+      return verification;
     },
 
     invalidate() {
       epoch += 1;
       cached = null;
+      unknownRefreshGeneration = null;
+      unknownRefreshUnavailable = false;
     },
 
     snapshot() {
