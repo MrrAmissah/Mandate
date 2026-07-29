@@ -28,7 +28,7 @@ export async function applyMigrations(pool, { logger = console } = {}) {
   let locked = false;
 
   try {
-    await client.query('SELECT pg_advisory_lock(hashtext($1))', [MIGRATION_LOCK]);
+    await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [MIGRATION_LOCK]);
     locked = true;
 
     let state = await schemaState(client);
@@ -60,7 +60,7 @@ export async function applyMigrations(pool, { logger = console } = {}) {
     return { applied };
   } finally {
     if (locked) {
-      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [MIGRATION_LOCK]).catch(() => {});
+      await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [MIGRATION_LOCK]).catch(() => {});
     }
     client.release();
   }
