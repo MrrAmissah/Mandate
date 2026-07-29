@@ -35,9 +35,9 @@ function mandate() {
   };
 }
 
-function decision() {
+function decision(id = decisionId) {
   return {
-    id: decisionId,
+    id,
     mandateId,
     agentId: 'agent_receipt_shape_pg',
     action: 'repository.write',
@@ -48,11 +48,11 @@ function decision() {
     reason: 'The action is allowed.',
     approvalId: null,
     evaluatedAt: '2026-07-29T18:00:00.000Z',
-    requestId: 'req_receipt_shape_pg'
+    requestId: `req_${id}`
   };
 }
 
-test('PostgreSQL rejects successor rows whose signed payload omits chain identity fields', {
+test('PostgreSQL rejects malformed successor and root receipt payload shapes', {
   skip: !connectionString
 }, async () => {
   const pool = await createPostgresPool({ connectionString });
@@ -117,6 +117,28 @@ test('PostgreSQL rejects successor rows whose signed payload omits chain identit
         [ownership.tenantId, ownership.environment, 'rcpt_receipt_shape_missing_payload',
           decisionId, mandateId, attemptId, signer.keyId, 'invalid-signature',
           '2026-07-29T18:03:00.000Z', root.id, 'Missing signed payload fields']
+      ),
+      (error) => error.code === '23514' && error.constraint === 'receipts_supersession_shape'
+    );
+
+    const chainlessDecisionId = 'dec_receipt_shape_chainless_v12';
+    await store.save('decisions', ownership, decision(chainlessDecisionId));
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO mandate.receipts
+          (tenant_id, environment, id, decision_id, mandate_id, action_attempt_id, key_id,
+           algorithm, payload, signature, issued_at, supersedes_receipt_id, supersession_reason)
+         VALUES ($1,$2,$3,$4,$5,NULL,$6,'Ed25519',$7,$8,$9,NULL,NULL)`,
+        [ownership.tenantId, ownership.environment, 'rcpt_receipt_shape_chainless_v12',
+          chainlessDecisionId, mandateId, signer.keyId,
+          JSON.stringify({
+            id: 'rcpt_receipt_shape_chainless_v12',
+            version: '1.2',
+            decisionId: chainlessDecisionId,
+            mandateId,
+            actionAttemptId: null
+          }),
+          'invalid-signature', '2026-07-29T18:04:00.000Z']
       ),
       (error) => error.code === '23514' && error.constraint === 'receipts_supersession_shape'
     );
