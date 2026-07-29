@@ -57,7 +57,7 @@ Remaining operational hardening:
 
 ## Phase 3 — execution and receipt lifecycle
 
-Status: core lifecycle merged; worker operations in progress.
+Status: core lifecycle and expiry process merged; observability in progress.
 
 ### Phase 3A — single-use decision reservation
 
@@ -125,9 +125,9 @@ Delivered:
 
 ### Phase 3B.2 — expiry process composition
 
-Status: implementation branch.
+Status: merged.
 
-Delivered in the branch:
+Delivered:
 
 - dedicated `npm run worker:attempt-expiry` executable;
 - no dependency on API credentials or API-process startup;
@@ -139,16 +139,31 @@ Delivered in the branch:
 - structured success/failure logs with safe error codes;
 - in-process cycle, expiry, and failure counters;
 - recovery after a failed cycle;
-- readiness and process-behavior tests.
+- configuration, entry-point, process, and PostgreSQL readiness tests.
 
-Remaining before process composition closes:
+### Phase 3B.3 — expiry observability and supervision
+
+Status: implementation branch.
+
+Delivered in the branch:
+
+- database-time scoped backlog inspection;
+- reserved count, due count, oldest due timestamp, and oldest overdue age;
+- cached backlog snapshots with no per-probe database queries;
+- loopback-default `/health/live` and `/health/ready` endpoints;
+- stable readiness reasons for starting, failures, staleness, and shutdown;
+- Prometheus-compatible low-cardinality metrics;
+- health listener startup after migration readiness and shutdown before pool closure;
+- memory, HTTP, entry-point, and real-PostgreSQL backlog tests.
+
+Remaining before observability closes:
 
 - exact-head CI and review merge gate;
-- platform-specific deployment manifest;
+- platform-specific service manifest;
 - restricted runtime database role;
-- external liveness/readiness supervision;
-- metrics export or log-based extraction;
-- alert thresholds and overdue-backlog runbook.
+- deployment network policy for non-loopback health binding;
+- alert thresholds and overdue-backlog runbook;
+- supervisor restart policy.
 
 ### Phase 3C — verification products and corrections
 
