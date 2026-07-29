@@ -4,44 +4,40 @@
 
 # Mandate-API
 
-**Mandate-API is a provider-independent trust layer for AI agents: delegated authorization, approval gates, and cryptographically signed action receipts.**
+**Mandate-API is a provider-independent trust layer for AI agents: delegated authorization, approval gates, single-use execution reservations, and cryptographically signed action receipts.**
 
-It answers two questions ordinary application authorization does not answer well:
+It answers three questions ordinary application authorization does not answer well:
 
-1. What may this specific agent do for this specific task, resource, and time window?
-2. What verifiable evidence records the authority, decision, and execution outcome?
+1. What may this specific agent do for this task, resource, and time window?
+2. Which caller acquired the one execution opportunity represented by an authorization decision?
+3. What verifiable evidence records the authority, execution, and outcome?
 
-## Current milestone: exact idempotency replay
+## Current milestone: single-use execution reservations
 
-Phase 2D makes committed mutation retries deterministic across process and PostgreSQL restarts.
+Phase 3A prevents an `ALLOW` decision from functioning as an indefinitely reusable execution token.
 
 Implemented now:
 
 - scoped mandates with expiry, revocation, resource boundaries, deny precedence, and use limits;
 - deterministic `ALLOW`, `DENY`, and `REQUIRE_APPROVAL` decisions;
 - exact, single-use human approvals;
-- Ed25519-signed action receipts and verification;
-- tenant and `test`/`live` environment isolation at the API/store boundary;
-- route-level API credential scopes;
-- high-entropy API credential generation with hash-only durable records;
-- payload-bound idempotency;
+- one action-attempt reservation per allowed decision;
+- bounded reservation windows and dedicated attempt scopes;
+- Ed25519-signed action receipts;
+- persistent signing-key rotation, retirement, revocation, discovery, and historical verification;
+- tenant and `test`/`live` isolation;
+- high-entropy API credentials with hash-only durable records;
+- payload-bound idempotency with exact committed HTTP replay;
 - atomic domain, audit-event, and outbox writes;
-- cursor-paginated mandate, approval, decision, and receipt collections;
-- tenant-aware PostgreSQL persistence with immutable decisions, receipts, audit events, and outbox attempts;
-- connection-pool runtime composition with one client per transaction;
-- stored credential authentication with revocation-race protection;
-- explicit JSONB serialization for arrays and structured payloads;
-- ordered migrations protected by one 64-bit PostgreSQL advisory lock;
-- exact-handler outbox claims using `FOR UPDATE SKIP LOCKED`;
-- committed leases, stale-lease recovery, late-worker rejection, retry, and dead-letter transitions;
-- canonical JSON response bytes;
-- persisted original success status and stable application headers for supported idempotent mutations;
-- retry-specific request IDs with byte-identical replayed bodies;
-- real PostgreSQL restart, isolation, concurrency, receipt, approval, outbox, and idempotency replay tests.
+- cursor-paginated resource collections;
+- tenant-aware PostgreSQL persistence;
+- serializable transactions and one-winner concurrency tests;
+- leased outbox claims, retries, stale-lease recovery, and dead-letter transitions;
+- real PostgreSQL restart, isolation, concurrency, receipt, approval, outbox, key-rotation, and replay tests.
 
-Memory mode remains available for local experiments. Live environments require PostgreSQL, explicit scopes, a non-default API key, and persistent receipt-signing keys.
+Memory mode remains available for local experiments. Live environments require PostgreSQL, explicit scopes, a non-default API key, an explicit persistent key ID, and persistent receipt-signing keys.
 
-The outbox dispatcher is currently a library boundary. The API does not start a worker or register webhook, email, Slack, or connector handlers by default.
+The outbox dispatcher remains a library boundary. The API does not automatically register webhook, email, Slack, or connector handlers.
 
 ## Run locally
 
@@ -61,14 +57,18 @@ Principal defines authority
           ↓
 Agent proposes an action
           ↓
-Mandate-API authenticates the tenant and evaluates policy
+Mandate-API evaluates policy
           ↓
 ALLOW / DENY / REQUIRE_APPROVAL
           ↓
-Tool executes only after ALLOW
+Caller reserves the ALLOW decision once
           ↓
-Mandate-API issues a signed action receipt
+Tool executes within the reservation window
+          ↓
+Mandate-API records completion and signs a receipt
 ```
+
+Attempt completion and receipt binding are Phase 3B. A current `RESERVED` attempt is not proof that execution started or succeeded.
 
 ## Example mandate
 
@@ -99,7 +99,7 @@ Mandate-API issues a signed action receipt
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/health` | Health check |
-| `GET` | `/.well-known/mandate-keys` | Public receipt verification keys |
+| `GET` | `/.well-known/mandate-keys` | Active and retired public verification keys |
 | `POST`, `GET` | `/v1/mandates` | Create or list mandates |
 | `GET` | `/v1/mandates/:id` | Retrieve a mandate |
 | `POST` | `/v1/mandates/:id/revoke` | Revoke a mandate |
@@ -108,16 +108,21 @@ Mandate-API issues a signed action receipt
 | `POST` | `/v1/approvals/:id/decide` | Approve or reject |
 | `POST` | `/v1/authorize` | Evaluate an agent action |
 | `GET` | `/v1/decisions`, `/v1/decisions/:id` | List or retrieve immutable decisions |
+| `POST`, `GET` | `/v1/action-attempts` | Reserve or list execution attempts |
+| `GET` | `/v1/action-attempts/:id` | Retrieve an action attempt |
 | `POST`, `GET` | `/v1/receipts` | Issue or list signed receipts |
 | `GET` | `/v1/receipts/:id` | Retrieve a receipt |
-| `POST` | `/v1/receipts/verify` | Verify a receipt signature |
+| `POST` | `/v1/receipts/verify` | Verify using active or retired registered keys |
 
-See [`openapi.yaml`](./openapi.yaml) for the current contract.
+See [`openapi.yaml`](./openapi.yaml) for the stable core contract and [`openapi/action-attempts.yaml`](./openapi/action-attempts.yaml) for the Phase 3A resource contract.
 
 ## Documentation
 
 - [Product blueprint](./docs/PRODUCT_BLUEPRINT.md)
 - [API conventions](./docs/API_CONVENTIONS.md)
+- [Action attempts](./docs/ACTION_ATTEMPTS.md)
+- [Receipt verification](./docs/RECEIPT_VERIFICATION.md)
+- [Signing-key operations](./docs/SIGNING_KEYS.md)
 - [Idempotency and HTTP replay](./docs/IDEMPOTENCY.md)
 - [Target architecture](./docs/ARCHITECTURE.md)
 - [Security model](./docs/SECURITY_MODEL.md)
@@ -130,16 +135,18 @@ See [`openapi.yaml`](./openapi.yaml) for the current contract.
 ## Security invariants
 
 - Explicit deny rules override every allow rule.
-- Cross-tenant access returns the same result as a missing object.
+- Cross-tenant access is indistinguishable from a missing object.
 - An allowed decision, mandate-use increment, approval consumption, audit event, and outbox row belong to one transaction.
 - The final mandate use and an approved approval can each be consumed only once under concurrency.
-- Receipt issuance requires a stored `ALLOW` decision and an active underlying mandate.
+- One allowed decision can be reserved by at most one action attempt.
+- A reservation is not execution success and cannot itself prove a tool outcome.
 - Receipt signatures cover every receipt field except the signature itself.
-- Raw generated API credentials are displayed once and are not part of the durable credential record.
+- Active and retired keys verify historical receipts; revoked keys do not.
+- Raw generated API credentials are displayed once and are not stored durably.
 - Authorization decisions, receipts, audit events, and outbox attempts are immutable in PostgreSQL.
 - An outbox worker may complete only the exact unexpired lease it owns.
 - Unknown idempotency operation scopes are rejected instead of receiving guessed HTTP metadata.
 
 ## Not production-ready yet
 
-PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential live agent actions. Persistent signing-key rotation, worker-process composition, external delivery handlers, operational migration role separation, metrics, backup/restore, dead-letter operations, clock-skew policy, idempotency retention cleanup, and deployment runbooks remain open.
+PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential autonomous actions. Attempt completion and receipt binding, expiry processing, external delivery handlers, operational migration-role separation, metrics, backup/restore, dead-letter operations, clock-skew policy, idempotency retention cleanup, and deployment runbooks remain open.
