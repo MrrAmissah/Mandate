@@ -53,3 +53,34 @@ test('receipt key cache rejects invalid clock output before loading', async () =
   await assert.rejects(cache.get(), /clock must return a valid Date or millisecond timestamp/);
   assert.equal(loads, 0);
 });
+
+test('receipt key cache retains only public discovery fields', async () => {
+  const source = {
+    keyId: 'key_public_only',
+    algorithm: 'Ed25519',
+    publicKeyPem: 'public material',
+    status: 'ACTIVE',
+    fingerprint: 'sha256:public',
+    activatedAt: '2026-07-29T12:00:00.000Z',
+    retiredAt: null,
+    privateKeyPem: 'must not be cached',
+    providerSecret: 'must not be cached'
+  };
+  const cache = createMandateKeySetCache({
+    scopeId: 'scope-public-fields',
+    load() { return { keys: [source] }; }
+  });
+
+  const keySet = await cache.get();
+  assert.deepEqual(keySet.keys[0], {
+    keyId: 'key_public_only',
+    algorithm: 'Ed25519',
+    publicKeyPem: 'public material',
+    status: 'ACTIVE',
+    fingerprint: 'sha256:public',
+    activatedAt: '2026-07-29T12:00:00.000Z',
+    retiredAt: null
+  });
+  assert.equal('privateKeyPem' in keySet.keys[0], false);
+  assert.equal('providerSecret' in keySet.keys[0], false);
+});
