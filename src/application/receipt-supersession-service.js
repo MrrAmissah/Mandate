@@ -1,5 +1,9 @@
 import { DomainError } from '../domain/errors.js';
-import { issueSupersedingReceipt, verifyReceiptWithRegistry } from '../domain/receipts.js';
+import {
+  issueSupersedingReceipt,
+  requireActiveReceiptSigner,
+  verifyReceiptWithRegistry
+} from '../domain/receipts.js';
 import { assertObject, requiredString } from '../domain/validate.js';
 import {
   findReceiptSuccessor,
@@ -41,6 +45,12 @@ export async function supersedeReceipt({
       { successorReceiptId: successor.id }
     );
   }
+  await requireActiveReceiptSigner({
+    signer,
+    signingKeys,
+    queryable: transaction?.queryable,
+    lock: Boolean(transaction?.queryable)
+  });
 
   const replacement = issueSupersedingReceipt({
     receipt: predecessor,
