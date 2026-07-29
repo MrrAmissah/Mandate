@@ -5,6 +5,20 @@ function timestamp(clock) {
   return milliseconds;
 }
 
+function publicVerificationKey(value) {
+  const key = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const normalized = {
+    keyId: key.keyId,
+    algorithm: key.algorithm,
+    publicKeyPem: key.publicKeyPem,
+    status: key.status
+  };
+  for (const field of ['fingerprint', 'activatedAt', 'retiredAt']) {
+    if (key[field] !== undefined) normalized[field] = key[field];
+  }
+  return Object.freeze(normalized);
+}
+
 function normalizeKeySet(value) {
   const keys = Array.isArray(value)
     ? value
@@ -13,7 +27,7 @@ function normalizeKeySet(value) {
       : null;
   if (!keys) throw new TypeError('key-set loader must return a key array or discovery response.');
   return Object.freeze({
-    keys: Object.freeze(keys.map((key) => Object.freeze({ ...key })))
+    keys: Object.freeze(keys.map(publicVerificationKey))
   });
 }
 
