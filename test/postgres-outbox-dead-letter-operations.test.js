@@ -48,7 +48,7 @@ async function createDeadLetter(pool, tenantId, {
              clock_timestamp() - interval '2 days')`,
     [tenantId, messageId, eventType, auditId, JSON.stringify(payload), attemptCount]
   );
-  return messageId;
+  return { auditId, messageId };
 }
 
 function replayRequest(tenantId, sourceMessageId, overrides = {}) {
@@ -65,12 +65,17 @@ function replayRequest(tenantId, sourceMessageId, overrides = {}) {
   };
 }
 
-integration('dead-letter replay preserves history and creates one idempotent replacement', async () => {
+integration('dead-letter replay preserves business provenance and creates one idempotent replacement', async () => {
   const pool = await createPostgresPool({ connectionString, max: 8 });
   const tenantId = unique('ten_dead_letter');
+  const eventType = unique('test.dead.letter');
   try {
     await createTenant(pool, tenantId);
-    const sourceMessageId = await createDeadLetter(pool, tenantId);
+    const { auditId: sourceAuditEventId, messageId: sourceMessageId } = await createDeadLetter(
+      pool,
+      tenantId,
+      { eventType }
+    );
     const request = replayRequest(tenantId, sourceMessageId);
 
     const [first, second] = await Promise.all([
@@ -80,9 +85,10 @@ integration('dead-letter replay preserves history and creates one idempotent rep
     assert.equal(first.id, second.id);
     assert.equal(first.replayMessageId, second.replayMessageId);
     assert.equal(first.sourceMessageId, sourceMessageId);
+    assert.equal(first.operatorAuditEventId, second.operatorAuditEventId);
 
     const source = await pool.query(
-      `SELECT status, attempt_count, payload, processed_at, last_error_code
+      `SELECT status, attempt_count, payload, processed_at, last_error_code, audit_event_id
        FROM mandate.outbox_messages
        WHERE tenant_id = $1 AND environment = 'test' AND id = $2`,
       [tenantId, sourceMessageId]
@@ -91,6 +97,7 @@ integration('dead-letter replay preserves history and creates one idempotent rep
     assert.equal(source.rows[0].attempt_count, 5);
     assert.deepEqual(source.rows[0].payload, { safe: 'payload' });
     assert.equal(source.rows[0].last_error_code, 'TEST_FAILURE');
+    assert.equal(source.rows[0].audit_event_id, sourceAuditEventId);
     assert.ok(source.rows[0].processed_at);
 
     const replacement = await pool.query(
@@ -102,26 +109,38 @@ integration('dead-letter replay preserves history and creates one idempotent rep
     assert.equal(replacement.rows[0].status, 'PENDING');
     assert.equal(replacement.rows[0].attempt_count, 0);
     assert.deepEqual(replacement.rows[0].payload, { safe: 'payload' });
-    assert.equal(replacement.rows[0].event_type, 'test.dead.letter');
+    assert.equal(replacement.rows[0].event_type, eventType);
     assert.equal(replacement.rows[0].processed_at, null);
     assert.equal(replacement.rows[0].last_error_code, null);
+    assert.equal(replacement.rows[0].audit_event_id, sourceAuditEventId);
+
+    const replayLink = await pool.query(
+      `SELECT operator_audit_event_id
+       FROM mandate.outbox_dead_letter_replays
+       WHERE tenant_id = $1 AND environment = 'test' AND id = $2`,
+      [tenantId, first.id]
+    );
+    assert.equal(replayLink.rows[0].operator_audit_event_id, first.operatorAuditEventId);
+    assert.notEqual(first.operatorAuditEventId, sourceAuditEventId);
 
     const audit = await pool.query(
       `SELECT type, object_id, actor_type, actor_id, data
        FROM mandate.audit_events
        WHERE tenant_id = $1 AND environment = 'test' AND id = $2`,
-      [tenantId, replacement.rows[0].audit_event_id]
+      [tenantId, first.operatorAuditEventId]
     );
     assert.equal(audit.rows[0].type, 'outbox.dead_letter_replayed');
     assert.equal(audit.rows[0].object_id, sourceMessageId);
     assert.equal(audit.rows[0].actor_type, 'OPERATOR');
     assert.equal(audit.rows[0].actor_id, 'operator@test');
     assert.equal(audit.rows[0].data.replayMessageId, first.replayMessageId);
+    assert.equal(audit.rows[0].data.originalAuditEventId, sourceAuditEventId);
 
     const listed = await listDeadLetterMessages(pool, {
-      environment: 'test', tenantId, eventTypes: ['test.dead.letter'], limit: 10
+      environment: 'test', tenantId: undefined, eventTypes: [eventType], limit: 10
     });
     assert.equal(listed.length, 1);
+    assert.equal(listed[0].tenantId, tenantId);
     assert.equal(listed[0].id, sourceMessageId);
     assert.equal(listed[0].replayMessageId, first.replayMessageId);
     assert.equal('payload' in listed[0], false);
@@ -152,7 +171,7 @@ integration('dead-letter replay fails closed on stale attempt count and permits 
   const tenantId = unique('ten_dead_chain');
   try {
     await createTenant(pool, tenantId);
-    const sourceMessageId = await createDeadLetter(pool, tenantId);
+    const { messageId: sourceMessageId } = await createDeadLetter(pool, tenantId);
     await assert.rejects(
       replayDeadLetterMessage(pool, replayRequest(tenantId, sourceMessageId, { expectedAttemptCount: 4 })),
       (error) => error.code === 'OUTBOX_ATTEMPT_COUNT_CONFLICT'
