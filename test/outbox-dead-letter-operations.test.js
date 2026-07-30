@@ -39,10 +39,19 @@ test('dead-letter inspection configuration is bounded and optionally scoped', ()
   assert.deepEqual(config.eventTypes, ['mandate.created', 'receipt.issued']);
   assert.equal(config.limit, 50);
 
+  const exact = parseDeadLetterListConfig(listEnvironment({
+    MANDATE_OUTBOX_EVENT_TYPES: '["event,type","receipt.issued"]'
+  }));
+  assert.deepEqual(exact.eventTypes, ['event,type', 'receipt.issued']);
+
   assert.throws(() => parseDeadLetterListConfig({}), /DATABASE_URL is required/);
   assert.throws(
     () => parseDeadLetterListConfig(listEnvironment({ MANDATE_OUTBOX_DEAD_LETTER_LIMIT: '501' })),
     /between 1 and 500/
+  );
+  assert.throws(
+    () => parseDeadLetterListConfig(listEnvironment({ MANDATE_OUTBOX_EVENT_TYPES: '[invalid' })),
+    /comma-separated list or JSON string array/
   );
 });
 
@@ -74,16 +83,16 @@ test('dead-letter replay configuration requires explicit optimistic and idempote
   );
 });
 
-test('dead-letter inspection returns safe metadata without payload or replay secrets', async () => {
+test('dead-letter inspection uses separately capped samples and preserves exact event types', async () => {
   const calls = [];
   const pool = {
-    async query(text, parameters) {
-      calls.push({ text, parameters });
+    async query(queryText, parameters) {
+      calls.push({ text: queryText, parameters });
       return {
         rows: [{
           tenant_id: 'ten_inspect',
           id: 'out_failed',
-          event_type: 'mandate.created',
+          event_type: 'mandate,created',
           aggregate_type: 'mandate',
           aggregate_id: 'man_1',
           status: 'DEAD_LETTER',
@@ -101,13 +110,13 @@ test('dead-letter inspection returns safe metadata without payload or replay sec
   const messages = await listDeadLetterMessages(pool, {
     environment: 'test',
     tenantId: 'ten_inspect',
-    eventTypes: ['mandate.created'],
+    eventTypes: ['mandate,created'],
     limit: 10
   });
   assert.deepEqual(messages, [{
     tenantId: 'ten_inspect',
     id: 'out_failed',
-    eventType: 'mandate.created',
+    eventType: 'mandate,created',
     aggregateType: 'mandate',
     aggregateId: 'man_1',
     status: 'DEAD_LETTER',
@@ -117,10 +126,21 @@ test('dead-letter inspection returns safe metadata without payload or replay sec
     createdAt: '2026-07-30T02:00:00.000Z',
     replayMessageId: null
   }]);
-  assert.match(calls[0].text, /messages\.tenant_id/);
-  assert.match(calls[0].text, /ORDER BY \(replays\.replay_message_id IS NOT NULL\)/);
+  assert.match(calls[0].text, /WITH unreplayed AS MATERIALIZED/);
+  assert.match(calls[0].text, /replayed AS MATERIALIZED/);
+  assert.match(calls[0].text, /LIMIT GREATEST\(\$4 - \(SELECT count\(\*\) FROM unreplayed\), 0\)/);
+  assert.doesNotMatch(calls[0].text, /ORDER BY \(replays\.replay_message_id IS NOT NULL\)/);
   assert.doesNotMatch(calls[0].text, /payload|idempotency_key_hash|request_fingerprint/);
-  assert.deepEqual(calls[0].parameters, ['test', 'ten_inspect', ['mandate.created'], 10]);
+  assert.deepEqual(calls[0].parameters, ['test', 'ten_inspect', ['mandate,created'], 10]);
+});
+
+test('dead-letter inspection rejects non-array library filters', async () => {
+  await assert.rejects(
+    listDeadLetterMessages({ query() { throw new Error('query should not run'); } }, {
+      environment: 'test', tenantId: undefined, eventTypes: 'event,type', limit: 10
+    }),
+    /must be an array/
+  );
 });
 
 test('dead-letter operator entry points have no API or migration authority', async () => {
