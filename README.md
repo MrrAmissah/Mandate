@@ -59,12 +59,13 @@ Implemented now:
 - tenant and `test`/`live` isolation;
 - high-entropy API credentials with hash-only durable records;
 - payload-bound idempotency with exact committed HTTP replay;
+- database-time, bounded idempotency replay cleanup with a seven-day safety floor;
 - atomic domain, audit-event, and outbox writes;
 - cursor-paginated resource collections;
 - tenant-aware PostgreSQL persistence;
 - serializable transactions and one-winner concurrency tests;
 - leased outbox claims, retries, stale-lease recovery, and dead-letter transitions;
-- real PostgreSQL restart, isolation, attempt, expiry, backlog, receipt, supersession, approval, outbox, key-rotation, and replay tests.
+- real PostgreSQL restart, isolation, attempt, expiry, backlog, receipt, supersession, approval, outbox, key-rotation, replay, and retention tests.
 
 Memory mode remains available for local API experiments. Live API environments require PostgreSQL, explicit scopes, a non-default API key, an explicit persistent key ID, and persistent receipt-signing keys.
 
@@ -98,6 +99,17 @@ The expiry process does not use the API key and never applies migrations itself.
 | `/metrics` | Cached Prometheus counters and backlog gauges |
 
 These are operational endpoints, not part of the public Mandate API contract. Binding them beyond loopback requires deployment network controls.
+
+Run idempotency retention cleanup as a controlled one-shot maintenance job:
+
+```bash
+MANDATE_STORE=postgres \
+MANDATE_ENVIRONMENT=test \
+MANDATE_IDEMPOTENCY_RETENTION_SECONDS=604800 \
+npm run idempotency:cleanup
+```
+
+Cleanup uses PostgreSQL time, bounded `SKIP LOCKED` batches, and a hard seven-day minimum. It uses no API credential and never applies migrations.
 
 ## Verify a receipt offline
 
@@ -233,7 +245,8 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.7.0 contract.
 - Authorization decisions, receipts, audit events, and outbox attempts are immutable in PostgreSQL.
 - Workers may mutate only the exact rows claimed within their transactions.
 - Unknown idempotency operation scopes are rejected instead of receiving guessed HTTP metadata.
+- Idempotency cleanup cannot shorten the seven-day replay floor or cross tenant/environment scope.
 
 ## Not production-ready yet
 
-PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential autonomous actions. Platform-specific service manifests, restricted deployment roles, network policy, alert thresholds, supervisor restart policy, backup/restore, dead-letter operations, idempotency retention cleanup, npm publication and provenance attestation, external delivery handlers, SDKs, and deployment runbooks remain open.
+PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential autonomous actions. Platform-specific service manifests, restricted deployment roles, network policy, alert thresholds, supervisor restart policy, backup/restore, dead-letter operations, npm publication and provenance attestation, external delivery handlers, SDKs, and deployment runbooks remain open.

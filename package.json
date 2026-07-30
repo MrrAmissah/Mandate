@@ -11,6 +11,7 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "worker:attempt-expiry": "node scripts/run-action-attempt-expiry.js",
+    "idempotency:cleanup": "node scripts/cleanup-idempotency.js",
     "package:receipt-verifier": "node scripts/package-receipt-verifier.js",
     "test": "node --test",
     "check": "npm run check:syntax && node --test",
