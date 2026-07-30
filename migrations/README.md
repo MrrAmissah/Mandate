@@ -10,6 +10,7 @@ Mandate-API targets PostgreSQL. Migrations are ordered, immutable SQL pairs:
 - `006_attempt_completion_receipts` adds terminal attempt evidence and attempt-bound root receipts.
 - `007_receipt_supersession` adds append-only signed receipt correction chains.
 - `008_idempotency_retention` adds the scoped access index used by bounded replay-record cleanup.
+- `009_outbox_worker_operations` adds status-specific scope/event indexes for bounded worker claims and backlog samples.
 
 Each numbered migration has a matching `.up.sql` and `.down.sql` file. The baseline down migration removes the dedicated schema and is intended only for disposable development environments. Later down migrations remove only the objects owned by that migration.
 
@@ -21,6 +22,7 @@ Each numbered migration has a matching `.up.sql` and `.down.sql` file. The basel
 4. The migration runner takes one 64-bit PostgreSQL advisory lock for the ordered migration sequence so concurrent deploys do not apply the same change independently.
 5. Runtime and maintenance roles must not own the schema and must not be allowed to disable immutable-table triggers.
 6. The idempotency cleanup command checks for migration 008 but never applies migrations.
-7. Back up and test restore procedures before the first live environment.
+7. The outbox worker checks migrations 002 and 009 but never applies migrations.
+8. Back up and test restore procedures before the first live environment.
 
 PostgreSQL runtime and database integration tests are active. Deployment role separation, backup/restore, and forward-recovery runbooks remain production-hardening work.

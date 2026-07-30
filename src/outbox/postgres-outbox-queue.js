@@ -45,6 +45,11 @@ function workerScope(value) {
   };
 }
 
+function eventTypeList(eventTypes) {
+  if (!Array.isArray(eventTypes) || eventTypes.length === 0) return [];
+  return [...new Set(eventTypes.map((value) => requiredText(value, 'eventType', 255)))];
+}
+
 function errorCode(value) {
   if (typeof value !== 'string' || !/^[A-Z0-9_]{1,64}$/.test(value)) {
     throw new TypeError('errorCode must contain 1 to 64 uppercase letters, digits, or underscores.');
@@ -118,6 +123,107 @@ export class PostgresOutboxQueue {
     this.pool = pool;
   }
 
+  async databaseNow() {
+    const result = await this.pool.query('SELECT clock_timestamp() AS observed_at');
+    return instant(result.rows[0]?.observed_at, 'PostgreSQL clock');
+  }
+
+  async inspectBacklog({ scope, eventTypes, sampleLimit = 500 }) {
+    const partition = workerScope(scope);
+    const types = eventTypeList(eventTypes);
+    positiveInteger(sampleLimit, 'sampleLimit');
+    if (sampleLimit > 5000) throw new TypeError('sampleLimit may not exceed 5000.');
+    if (types.length === 0) {
+      return Object.freeze({
+        environment: partition.environment,
+        tenantId: partition.tenantId,
+        eventTypes: Object.freeze([]),
+        sampleLimit,
+        dueSampleCount: 0,
+        staleSampleCount: 0,
+        deadLetterSampleCount: 0,
+        hasDue: false,
+        hasStale: false,
+        hasDeadLetter: false,
+        oldestDueAt: null,
+        oldestStaleAt: null,
+        oldestDeadLetterAt: null,
+        observedAt: (await this.databaseNow()).toISOString()
+      });
+    }
+
+    const result = await this.pool.query(
+      `WITH observed AS MATERIALIZED (
+         SELECT clock_timestamp() AS observed_at
+       ), due_sample AS MATERIALIZED (
+         SELECT available_at
+         FROM mandate.outbox_messages messages
+         CROSS JOIN observed
+         WHERE messages.environment = $1
+           AND ($2::text IS NULL OR messages.tenant_id = $2)
+           AND messages.event_type = ANY($3::text[])
+           AND messages.status = 'PENDING'
+           AND messages.available_at <= observed.observed_at
+         ORDER BY messages.tenant_id, messages.event_type, messages.available_at,
+                  messages.created_at, messages.id
+         LIMIT $4
+       ), stale_sample AS MATERIALIZED (
+         SELECT lock_expires_at
+         FROM mandate.outbox_messages messages
+         CROSS JOIN observed
+         WHERE messages.environment = $1
+           AND ($2::text IS NULL OR messages.tenant_id = $2)
+           AND messages.event_type = ANY($3::text[])
+           AND messages.status = 'PROCESSING'
+           AND messages.lock_expires_at <= observed.observed_at
+         ORDER BY messages.tenant_id, messages.event_type, messages.lock_expires_at,
+                  messages.created_at, messages.id
+         LIMIT $4
+       ), dead_letter_sample AS MATERIALIZED (
+         SELECT processed_at
+         FROM mandate.outbox_messages messages
+         WHERE messages.environment = $1
+           AND ($2::text IS NULL OR messages.tenant_id = $2)
+           AND messages.event_type = ANY($3::text[])
+           AND messages.status = 'DEAD_LETTER'
+         ORDER BY messages.tenant_id, messages.event_type, messages.processed_at,
+                  messages.created_at, messages.id
+         LIMIT $4
+       )
+       SELECT
+         (SELECT count(*) FROM due_sample) AS due_sample_count,
+         (SELECT count(*) FROM stale_sample) AS stale_sample_count,
+         (SELECT count(*) FROM dead_letter_sample) AS dead_letter_sample_count,
+         EXISTS (SELECT 1 FROM due_sample) AS has_due,
+         EXISTS (SELECT 1 FROM stale_sample) AS has_stale,
+         EXISTS (SELECT 1 FROM dead_letter_sample) AS has_dead_letter,
+         (SELECT min(available_at) FROM due_sample) AS oldest_due_at,
+         (SELECT min(lock_expires_at) FROM stale_sample) AS oldest_stale_at,
+         (SELECT min(processed_at) FROM dead_letter_sample) AS oldest_dead_letter_at,
+         observed.observed_at
+       FROM observed`,
+      [partition.environment, partition.tenantId, types, sampleLimit]
+    );
+    const row = result.rows[0];
+    const iso = (value) => value ? instant(value, 'backlog timestamp').toISOString() : null;
+    return Object.freeze({
+      environment: partition.environment,
+      tenantId: partition.tenantId,
+      eventTypes: Object.freeze([...types]),
+      sampleLimit,
+      dueSampleCount: Number(row?.due_sample_count ?? 0),
+      staleSampleCount: Number(row?.stale_sample_count ?? 0),
+      deadLetterSampleCount: Number(row?.dead_letter_sample_count ?? 0),
+      hasDue: row?.has_due === true,
+      hasStale: row?.has_stale === true,
+      hasDeadLetter: row?.has_dead_letter === true,
+      oldestDueAt: iso(row?.oldest_due_at),
+      oldestStaleAt: iso(row?.oldest_stale_at),
+      oldestDeadLetterAt: iso(row?.oldest_dead_letter_at),
+      observedAt: iso(row?.observed_at)
+    });
+  }
+
   async claim({
     workerId,
     scope,
@@ -130,33 +236,42 @@ export class PostgresOutboxQueue {
     const partition = workerScope(scope);
     positiveInteger(leaseMs, 'leaseMs');
     positiveInteger(maxAttempts, 'maxAttempts');
-    if (!Array.isArray(eventTypes) || eventTypes.length === 0) return null;
-    const types = [...new Set(eventTypes.map((value) => requiredText(value, 'eventType', 255)))];
+    const types = eventTypeList(eventTypes);
+    if (types.length === 0) return null;
     const claimedAt = instant(now, 'now');
     const leaseExpiresAt = new Date(claimedAt.getTime() + leaseMs);
     const client = await this.pool.connect();
 
     try {
       await client.query('BEGIN');
-      const candidate = await client.query(
+      let candidate = await client.query(
         `SELECT *
          FROM mandate.outbox_messages
          WHERE event_type = ANY($1::text[])
            AND environment = $2
            AND ($3::text IS NULL OR tenant_id = $3)
-           AND (
-             (status = 'PENDING' AND available_at <= $4)
-             OR (status = 'PROCESSING' AND lock_expires_at <= $4)
-           )
-         ORDER BY
-           CASE WHEN status = 'PROCESSING' THEN 0 ELSE 1 END,
-           available_at,
-           created_at,
-           id
+           AND status = 'PROCESSING'
+           AND lock_expires_at <= $4
+         ORDER BY tenant_id, event_type, lock_expires_at, created_at, id
          FOR UPDATE SKIP LOCKED
          LIMIT 1`,
         [types, partition.environment, partition.tenantId, claimedAt]
       );
+      if (candidate.rowCount === 0) {
+        candidate = await client.query(
+          `SELECT *
+           FROM mandate.outbox_messages
+           WHERE event_type = ANY($1::text[])
+             AND environment = $2
+             AND ($3::text IS NULL OR tenant_id = $3)
+             AND status = 'PENDING'
+             AND available_at <= $4
+           ORDER BY tenant_id, event_type, available_at, created_at, id
+           FOR UPDATE SKIP LOCKED
+           LIMIT 1`,
+          [types, partition.environment, partition.tenantId, claimedAt]
+        );
+      }
       const row = candidate.rows[0];
       if (!row) {
         await client.query('COMMIT');
