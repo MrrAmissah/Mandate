@@ -37,6 +37,8 @@ test('production compose separates migration, API, expiry and outbox identities'
   assert.match(compose, /no-new-privileges:true/);
   assert.match(compose, /cap_drop:\n    - ALL/);
   assert.match(compose, /MANDATE_API_KEY_FILE: \/run\/secrets\/api_key/);
+  assert.match(compose, /MANDATE_API_READINESS_TIMEOUT_MS/);
+  assert.match(compose, /127\.0\.0\.1:8787\/health\/ready/);
   assert.match(compose, /MANDATE_OUTBOX_HANDLER_FILE:\?Set MANDATE_OUTBOX_HANDLER_FILE/);
   const expiryBlock = compose.split('\n  attempt-expiry:')[1].split('\n  outbox:')[0];
   const outboxBlock = compose.split('\n  outbox:')[1].split('\nnetworks:')[0];
