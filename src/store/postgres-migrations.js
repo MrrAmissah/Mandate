@@ -8,7 +8,8 @@ const MIGRATIONS = Object.freeze([
   { version: '005_action_attempt_reservations', file: new URL('../../migrations/005_action_attempt_reservations.up.sql', import.meta.url) },
   { version: '006_attempt_completion_receipts', file: new URL('../../migrations/006_attempt_completion_receipts.up.sql', import.meta.url) },
   { version: '007_receipt_supersession', file: new URL('../../migrations/007_receipt_supersession.up.sql', import.meta.url) },
-  { version: '008_idempotency_retention', file: new URL('../../migrations/008_idempotency_retention.up.sql', import.meta.url) }
+  { version: '008_idempotency_retention', file: new URL('../../migrations/008_idempotency_retention.up.sql', import.meta.url) },
+  { version: '009_outbox_worker_operations', file: new URL('../../migrations/009_outbox_worker_operations.up.sql', import.meta.url) }
 ]);
 
 const MIGRATION_LOCK = 'mandate:migrations';
