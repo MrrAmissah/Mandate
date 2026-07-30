@@ -26,6 +26,13 @@ function workerScope(value) {
   });
 }
 
+async function observedTime(clock, name) {
+  const value = await clock();
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(parsed.getTime())) throw new TypeError(`${name} must return a valid timestamp.`);
+  return parsed;
+}
+
 export function safeOutboxErrorCode(error) {
   const candidate = typeof error?.code === 'string' ? error.code.toUpperCase() : '';
   return /^[A-Z0-9_]{1,64}$/.test(candidate) ? candidate : 'HANDLER_FAILED';
@@ -74,15 +81,20 @@ export class OutboxDispatcher {
     this.maximumDelayMs = maximumDelayMs;
   }
 
+  eventTypes() {
+    return Object.freeze([...this.handlers.keys()]);
+  }
+
   async pollOnce() {
     const eventTypes = [...this.handlers.keys()];
     if (eventTypes.length === 0) return { kind: 'IDLE', reason: 'NO_HANDLERS' };
 
+    const claimedAt = await observedTime(this.now, 'outbox clock');
     const claimed = await this.queue.claim({
       workerId: this.workerId,
       scope: this.scope,
       eventTypes,
-      now: this.now(),
+      now: claimedAt,
       leaseMs: this.leaseMs,
       maxAttempts: this.maxAttempts
     });
@@ -97,10 +109,10 @@ export class OutboxDispatcher {
       await handler(message.payload, message);
       return this.queue.succeed(message, {
         workerId: this.workerId,
-        now: this.now()
+        now: await observedTime(this.now, 'outbox completion clock')
       });
     } catch (error) {
-      const completedAt = this.now();
+      const completedAt = await observedTime(this.now, 'outbox completion clock');
       const delay = retryDelayMs(message.attemptCount, {
         baseDelayMs: this.baseDelayMs,
         maximumDelayMs: this.maximumDelayMs
