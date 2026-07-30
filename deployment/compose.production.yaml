@@ -21,7 +21,7 @@ services:
   migrate:
     <<: *service-security
     restart: "no"
-    command: ["npm", "run", "migrate"]
+    command: ["node", "scripts/migrate.js"]
     environment:
       DATABASE_URL_FILE: /run/secrets/migration_database_url
       MANDATE_DATABASE_SSL: ${MANDATE_DATABASE_SSL:-true}
@@ -31,7 +31,7 @@ services:
   configure-database-roles:
     <<: *service-security
     restart: "no"
-    command: ["npm", "run", "database:roles"]
+    command: ["node", "scripts/configure-database-roles.js"]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -84,7 +84,7 @@ services:
 
   attempt-expiry:
     <<: *service-security
-    command: ["npm", "run", "worker:attempt-expiry"]
+    command: ["node", "scripts/run-action-attempt-expiry.js"]
     depends_on:
       configure-database-roles:
         condition: service_completed_successfully
@@ -108,7 +108,7 @@ services:
 
   outbox:
     <<: *service-security
-    command: ["npm", "run", "worker:outbox"]
+    command: ["node", "scripts/run-outbox-worker.js"]
     depends_on:
       configure-database-roles:
         condition: service_completed_successfully
