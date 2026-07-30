@@ -62,7 +62,7 @@ postgresTest('database role policy is least-privilege and rejects inherited auth
 
     const result = await applyDatabaseRolePolicy(client, { roles });
     assert.equal(result.roles.api, roles.api);
-    assert.equal(result.policyVersion, '2026-07-30.2');
+    assert.equal(result.policyVersion, '2026-07-30.3');
 
     assert.equal(await privilege(client, roles.api, 'mandates', 'SELECT'), true);
     assert.equal(await privilege(client, roles.api, 'mandates', 'INSERT'), true);
