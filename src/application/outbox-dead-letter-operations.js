@@ -292,17 +292,23 @@ export async function replayDeadLetterMessage(pool, request) {
         createdAt]
     );
 
-    await client.query(
+    const replacement = await client.query(
       `INSERT INTO mandate.outbox_messages
         (tenant_id, environment, id, event_type, aggregate_type, aggregate_id,
          audit_event_id, payload, status, attempt_count, available_at,
          locked_by, locked_at, lock_expires_at, processed_at, last_error_code, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,'PENDING',0,$9,
-               NULL,NULL,NULL,NULL,NULL,$9)`,
-      [normalized.tenantId, normalized.environment, replayMessageId,
-        source.event_type, source.aggregate_type, source.aggregate_id,
-        source.audit_event_id, JSON.stringify(source.payload), createdAt]
+       SELECT source.tenant_id, source.environment, $4, source.event_type,
+              source.aggregate_type, source.aggregate_id, source.audit_event_id,
+              source.payload, 'PENDING', 0, $5, NULL, NULL, NULL, NULL, NULL, $5
+       FROM mandate.outbox_messages source
+       WHERE source.tenant_id = $1 AND source.environment = $2 AND source.id = $3
+       RETURNING id`,
+      [normalized.tenantId, normalized.environment, normalized.sourceMessageId,
+        replayMessageId, createdAt]
     );
+    if (replacement.rowCount !== 1) {
+      throw operationalError('OUTBOX_MESSAGE_NOT_FOUND', 'The outbox message was not found.');
+    }
 
     const replay = await client.query(
       `INSERT INTO mandate.outbox_dead_letter_replays
