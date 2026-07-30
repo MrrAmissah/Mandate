@@ -107,10 +107,10 @@ The command:
 - uses `clock_timestamp()` as the time authority;
 - deletes bounded batches with `FOR UPDATE SKIP LOCKED`;
 - is safe for overlapping scheduler runs;
-- reports counts and backlog timestamps only;
+- reports bounded expired/eligible samples and backlog timestamps only;
 - never logs idempotency keys, fingerprints, response headers, or response bodies;
 - does not use `MANDATE_API_KEY`;
 - checks migration readiness but never applies migrations;
 - deletes no mandate, decision, approval, attempt, receipt, audit, or outbox data.
 
-If the configured batch budget is exhausted, `limitReached` is derived from a fresh database backlog query. The next scheduled run can continue without weakening replay semantics.
+After the batch budget is spent, two index-aligned samples—expired rows and deletion-eligible rows—are each capped at the configured batch limit. `limitReached` is derived from the bounded eligible sample rather than an unbounded full-table count. The next scheduled run can continue without weakening replay semantics.
