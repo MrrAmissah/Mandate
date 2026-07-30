@@ -88,7 +88,8 @@ integration('dead-letter replay preserves business provenance and creates one id
     assert.equal(first.operatorAuditEventId, second.operatorAuditEventId);
 
     const source = await pool.query(
-      `SELECT status, attempt_count, payload, processed_at, last_error_code, audit_event_id
+      `SELECT status, attempt_count, payload, processed_at, last_error_code,
+              audit_event_id, replay_message_id
        FROM mandate.outbox_messages
        WHERE tenant_id = $1 AND environment = 'test' AND id = $2`,
       [tenantId, sourceMessageId]
@@ -98,10 +99,12 @@ integration('dead-letter replay preserves business provenance and creates one id
     assert.deepEqual(source.rows[0].payload, { safe: 'payload' });
     assert.equal(source.rows[0].last_error_code, 'TEST_FAILURE');
     assert.equal(source.rows[0].audit_event_id, sourceAuditEventId);
+    assert.equal(source.rows[0].replay_message_id, first.replayMessageId);
     assert.ok(source.rows[0].processed_at);
 
     const replacement = await pool.query(
-      `SELECT status, attempt_count, payload, event_type, processed_at, last_error_code, audit_event_id
+      `SELECT status, attempt_count, payload, event_type, processed_at,
+              last_error_code, audit_event_id, replay_message_id
        FROM mandate.outbox_messages
        WHERE tenant_id = $1 AND environment = 'test' AND id = $2`,
       [tenantId, first.replayMessageId]
@@ -113,6 +116,7 @@ integration('dead-letter replay preserves business provenance and creates one id
     assert.equal(replacement.rows[0].processed_at, null);
     assert.equal(replacement.rows[0].last_error_code, null);
     assert.equal(replacement.rows[0].audit_event_id, sourceAuditEventId);
+    assert.equal(replacement.rows[0].replay_message_id, null);
 
     const replayLink = await pool.query(
       `SELECT operator_audit_event_id
@@ -161,15 +165,33 @@ integration('dead-letter replay preserves business provenance and creates one id
       ),
       /immutable table outbox_dead_letter_replays cannot be updated or deleted/
     );
+    await assert.rejects(
+      pool.query(
+        `UPDATE mandate.outbox_messages SET replay_message_id = NULL
+         WHERE tenant_id = $1 AND environment = 'test' AND id = $2`,
+        [tenantId, sourceMessageId]
+      ),
+      /outbox replay link is immutable/
+    );
+
+    const { messageId: unrelatedId } = await createDeadLetter(pool, tenantId, { eventType });
+    await assert.rejects(
+      pool.query(
+        `UPDATE mandate.outbox_messages SET replay_message_id = $3
+         WHERE tenant_id = $1 AND environment = 'test' AND id = $2`,
+        [tenantId, unrelatedId, first.replayMessageId]
+      ),
+      /outbox replay link requires an immutable replay record/
+    );
   } finally {
     await pool.end();
   }
 });
 
-integration('bounded dead-letter inspection prioritizes unreplayed messages', async () => {
+integration('bounded dead-letter inspection prioritizes indexed unreplayed messages and exact event types', async () => {
   const pool = await createPostgresPool({ connectionString, max: 4 });
   const tenantId = unique('ten_dead_priority');
-  const eventType = unique('test.dead.priority');
+  const eventType = unique('test,dead.priority');
   try {
     await createTenant(pool, tenantId);
     const { messageId: replayedSourceId } = await createDeadLetter(pool, tenantId, { eventType });
@@ -181,6 +203,7 @@ integration('bounded dead-letter inspection prioritizes unreplayed messages', as
     });
     assert.equal(listed.length, 1);
     assert.equal(listed[0].id, actionableSourceId);
+    assert.equal(listed[0].eventType, eventType);
     assert.equal(listed[0].replayMessageId, null);
   } finally {
     await pool.end();
