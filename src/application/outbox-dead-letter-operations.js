@@ -193,8 +193,8 @@ export async function listDeadLetterMessages(pool, {
        AND ($2::text IS NULL OR messages.tenant_id = $2)
        AND ($3::text[] IS NULL OR messages.event_type = ANY($3::text[]))
        AND messages.status = 'DEAD_LETTER'
-     ORDER BY messages.tenant_id, messages.event_type, messages.processed_at,
-              messages.created_at, messages.id
+     ORDER BY (replays.replay_message_id IS NOT NULL), messages.tenant_id,
+              messages.event_type, messages.processed_at, messages.created_at, messages.id
      LIMIT $4`,
     [scopeEnvironment, scopeTenantId ?? null, normalizedTypes, limit]
   );
