@@ -87,7 +87,7 @@ test('schema readiness requires the retention migration without applying it', as
   );
 });
 
-test('cleanup batch uses database time, scoped locking, and returns counts only', async () => {
+test('cleanup batch uses database time, index-aligned locking, and returns counts only', async () => {
   const calls = [];
   let released = false;
   const client = {
@@ -112,6 +112,10 @@ test('cleanup batch uses database time, scoped locking, and returns counts only'
   assert.match(mutation.text, /FOR UPDATE OF records SKIP LOCKED/);
   assert.match(mutation.text, /records\.environment = \$1/);
   assert.match(mutation.text, /records\.tenant_id = \$2/);
+  assert.match(
+    mutation.text,
+    /ORDER BY records\.tenant_id, records\.expires_at, records\.created_at,\s+records\.scope, records\.idempotency_key/
+  );
   assert.doesNotMatch(mutation.text, /RETURNING/);
   assert.deepEqual(mutation.parameters, ['live', 'ten_cleanup', 604800, 25]);
 });
