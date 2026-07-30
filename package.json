@@ -12,6 +12,8 @@
     "start": "node src/server.js",
     "worker:attempt-expiry": "node scripts/run-action-attempt-expiry.js",
     "worker:outbox": "node scripts/run-outbox-worker.js",
+    "outbox:dead-letter:list": "node scripts/list-outbox-dead-letters.js",
+    "outbox:dead-letter:replay": "node scripts/replay-outbox-dead-letter.js",
     "idempotency:cleanup": "node scripts/cleanup-idempotency.js",
     "package:receipt-verifier": "node scripts/package-receipt-verifier.js",
     "test": "node --test",
