@@ -74,6 +74,7 @@ function operationalError(code, message) {
 
 function safeMessage(row) {
   return Object.freeze({
+    tenantId: row.tenant_id,
     id: row.id,
     eventType: row.event_type,
     aggregateType: row.aggregate_type,
@@ -92,6 +93,7 @@ function replayResult(row) {
     id: row.id,
     sourceMessageId: row.source_message_id,
     replayMessageId: row.replay_message_id,
+    operatorAuditEventId: row.operator_audit_event_id,
     operatorId: row.operator_id,
     reason: row.reason,
     requestId: row.request_id,
@@ -178,9 +180,10 @@ export async function listDeadLetterMessages(pool, {
   integer(limit, 100, { name: 'limit', minimum: 1, maximum: 500 });
   const normalizedTypes = types === undefined ? null : eventTypes(types.join(','));
   const result = await pool.query(
-    `SELECT messages.id, messages.event_type, messages.aggregate_type, messages.aggregate_id,
-            messages.status, messages.attempt_count, messages.processed_at,
-            messages.last_error_code, messages.created_at, replays.replay_message_id
+    `SELECT messages.tenant_id, messages.id, messages.event_type,
+            messages.aggregate_type, messages.aggregate_id, messages.status,
+            messages.attempt_count, messages.processed_at, messages.last_error_code,
+            messages.created_at, replays.replay_message_id
      FROM mandate.outbox_messages messages
      LEFT JOIN mandate.outbox_dead_letter_replays replays
        ON replays.tenant_id = messages.tenant_id
@@ -270,7 +273,7 @@ export async function replayDeadLetterMessage(pool, request) {
     const createdAt = observed.rows[0].observed_at;
     const replayId = `odr_${randomUUID()}`;
     const replayMessageId = `out_${randomUUID()}`;
-    const auditEventId = `aud_${randomUUID()}`;
+    const operatorAuditEventId = `aud_${randomUUID()}`;
 
     await client.query(
       `INSERT INTO mandate.audit_events
@@ -278,9 +281,14 @@ export async function replayDeadLetterMessage(pool, request) {
          actor_type, actor_id, request_id, data, created_at)
        VALUES ($1,$2,$3,0,'outbox.dead_letter_replayed','outbox_message',$4,
                'OPERATOR',$5,$6,$7::jsonb,$8)`,
-      [normalized.tenantId, normalized.environment, auditEventId,
+      [normalized.tenantId, normalized.environment, operatorAuditEventId,
         normalized.sourceMessageId, normalized.operatorId, normalized.requestId,
-        JSON.stringify({ sourceMessageId: normalized.sourceMessageId, replayMessageId, reason: normalized.reason }),
+        JSON.stringify({
+          sourceMessageId: normalized.sourceMessageId,
+          replayMessageId,
+          originalAuditEventId: source.audit_event_id,
+          reason: normalized.reason
+        }),
         createdAt]
     );
 
@@ -293,19 +301,20 @@ export async function replayDeadLetterMessage(pool, request) {
                NULL,NULL,NULL,NULL,NULL,$9)`,
       [normalized.tenantId, normalized.environment, replayMessageId,
         source.event_type, source.aggregate_type, source.aggregate_id,
-        auditEventId, JSON.stringify(source.payload), createdAt]
+        source.audit_event_id, JSON.stringify(source.payload), createdAt]
     );
 
     const replay = await client.query(
       `INSERT INTO mandate.outbox_dead_letter_replays
         (tenant_id, environment, id, source_message_id, replay_message_id,
-         operator_id, reason, idempotency_key_hash, request_fingerprint,
-         request_id, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         operator_audit_event_id, operator_id, reason, idempotency_key_hash,
+         request_fingerprint, request_id, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING *`,
       [normalized.tenantId, normalized.environment, replayId,
-        normalized.sourceMessageId, replayMessageId, normalized.operatorId,
-        normalized.reason, keyHash, requestFingerprint, normalized.requestId, createdAt]
+        normalized.sourceMessageId, replayMessageId, operatorAuditEventId,
+        normalized.operatorId, normalized.reason, keyHash, requestFingerprint,
+        normalized.requestId, createdAt]
     );
     await client.query('COMMIT');
     return replayResult(replay.rows[0]);
