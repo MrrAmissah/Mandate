@@ -2,6 +2,7 @@ import { createApiCredentialRecord, assertCredentialUsable, hashApiKey, verifyAp
 import { createStaticApiKeyAuthenticator, createStoredApiKeyAuthenticator } from './auth/authentication.js';
 import { createReceiptSigner } from './crypto/receipt-signer.js';
 import { createStaticSigningKeyRegistry, PostgresSigningKeyRegistry } from './crypto/signing-key-registry.js';
+import { createApiHealth, parseApiHealthConfig } from './application/api-health.js';
 import { MemoryStore } from './store/memory-store.js';
 import { ensurePostgresBootstrap } from './store/postgres-bootstrap.js';
 import { createPostgresPool, PostgresStore } from './store/postgres-store.js';
@@ -47,6 +48,7 @@ export async function createRuntime({ env = process.env } = {}) {
   const privateKeyPem = env.MANDATE_PRIVATE_KEY_PEM;
   const publicKeyPem = env.MANDATE_PUBLIC_KEY_PEM;
   const keyId = env.MANDATE_KEY_ID ?? 'key_local_dev_ed25519';
+  const healthConfig = parseApiHealthConfig(env);
 
   assertRuntimePosture({
     mode, environment, apiKey, scopes, privateKeyPem, publicKeyPem,
@@ -59,9 +61,10 @@ export async function createRuntime({ env = process.env } = {}) {
   if (mode === 'memory') {
     const store = new MemoryStore(ownership);
     const signingKeys = createStaticSigningKeyRegistry(signer);
+    const health = createApiHealth({ mode, queryTimeoutMs: healthConfig.queryTimeoutMs });
     await signingKeys.registerActive(signer);
     return {
-      mode, store, signer, signingKeys,
+      mode, store, signer, signingKeys, health,
       authenticator: createStaticApiKeyAuthenticator({ apiKey, tenantId, environment, credentialId, scopes }),
       async close() {}
     };
@@ -74,6 +77,11 @@ export async function createRuntime({ env = process.env } = {}) {
   });
   const store = new PostgresStore(pool, { maximumTransactionAttempts: positiveInteger(env.MANDATE_TRANSACTION_ATTEMPTS, 4) });
   const signingKeys = new PostgresSigningKeyRegistry(pool, ownership);
+  const health = createApiHealth({
+    mode,
+    pool,
+    queryTimeoutMs: healthConfig.queryTimeoutMs
+  });
 
   try {
     const credential = createApiCredentialRecord({
@@ -93,7 +101,7 @@ export async function createRuntime({ env = process.env } = {}) {
   }
 
   return {
-    mode, store, signer, signingKeys,
+    mode, store, signer, signingKeys, health,
     authenticator: createStoredApiKeyAuthenticator({ store, hashApiKey, verifyApiKey, assertCredentialUsable }),
     close: () => store.close()
   };
