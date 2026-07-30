@@ -4,29 +4,30 @@
 
 Every security-relevant API mutation writes domain state, an immutable audit event, and an outbox message in one transaction. The outbox worker executes committed messages asynchronously without performing external I/O inside the originating API transaction.
 
-The core remains handler-neutral. It does not register webhook, email, Slack, or connector behavior by default. A deployment starts the worker only with an explicit trusted local JavaScript module that exports exact event handlers.
+The core remains handler-neutral. A deployment starts the worker only with an explicit trusted local JavaScript module that exports exact event handlers.
 
 ## Safety rules
 
-1. **No handler means no startup.** The standalone worker refuses an absent or empty handler module. The dispatcher itself still returns `NO_HANDLERS` when used as a library with no handlers.
-2. **Handlers are exact.** Wildcard event types are rejected. A message whose event type is not registered remains `PENDING`.
-3. **Handler code is local and trusted.** `MANDATE_OUTBOX_HANDLER_MODULE` must resolve to a local `file:` URL or filesystem path. Remote URL schemes are rejected.
-4. **Workers are environment-partitioned.** Every worker declares exactly one `test` or `live` environment and may optionally narrow claims to one tenant.
-5. **PostgreSQL is the time authority.** The standalone process obtains claim and completion timestamps from `clock_timestamp()` rather than the application host clock.
+1. **No handler means no startup.** The standalone worker refuses an absent or empty handler module.
+2. **Handlers are exact.** Wildcard event types are rejected. Unregistered event types remain `PENDING`.
+3. **Handler code is local and trusted.** `MANDATE_OUTBOX_HANDLER_MODULE` must resolve to a local `file:` URL or filesystem path.
+4. **Workers are environment-partitioned.** Every worker declares one `test` or `live` environment and may narrow claims to one tenant.
+5. **PostgreSQL is the time authority.** Claims, completion, retries, and stale-lease recovery use `clock_timestamp()`.
 6. **Claim commits before handler I/O.** PostgreSQL leases the message and commits before the handler runs.
-7. **Claims use `FOR UPDATE SKIP LOCKED`.** Multiple workers can claim different due messages without blocking one another.
-8. **Stale work is prioritized.** A bounded stale-lease scan runs before the bounded pending-message scan.
-9. **One exact lease owner may complete.** Completion verifies tenant, environment, message ID, worker ID, attempt number, status, and unexpired lease.
-10. **Late workers cannot overwrite.** A worker returning after expiry or takeover records `LEASE_LOST`; it does not change the current message state.
-11. **Stale leases are recoverable.** Reclaim records immutable `LEASE_EXPIRED` evidence before issuing the next attempt.
-12. **Retries are bounded.** Handler failures return the message to `PENDING` with bounded exponential backoff until the configured maximum, then move it to `DEAD_LETTER`.
-13. **Errors are sanitized.** Attempts store only an uppercase machine-safe code. Exception messages, provider bodies, secrets, and stack traces are not persisted.
-14. **Attempt history is append-only.** PostgreSQL rejects update or deletion of `outbox_attempts` rows.
-15. **Backlog observation is bounded.** Due, stale, and dead-letter samples are each capped by the cycle limit and use status-specific indexes.
-16. **The worker has no API or migration authority.** It uses no `MANDATE_API_KEY`, checks migrations 002 and 009, and never applies migrations.
-17. **Dead letters are never reset in place.** Controlled replay creates a fresh pending message and an immutable source→replacement record.
-18. **One replacement per source.** A dead-letter message may produce at most one direct replacement, creating a linear replay chain rather than a fork.
-19. **Replay is optimistic and idempotent.** Operators must supply the observed attempt count and a payload-bound replay key.
+7. **Claims use `FOR UPDATE SKIP LOCKED`.** Multiple workers can claim different due messages without blocking.
+8. **Stale work is prioritized.** A bounded stale-lease scan runs before pending-message claims.
+9. **One exact lease owner may complete.** Completion verifies scope, message, worker, attempt, status, and lease.
+10. **Late workers cannot overwrite.** A late worker records `LEASE_LOST` without changing current state.
+11. **Stale leases are recoverable.** Recovery records immutable `LEASE_EXPIRED` evidence.
+12. **Retries are bounded.** Failures return to `PENDING` with backoff until the maximum, then become `DEAD_LETTER`.
+13. **Errors are sanitized.** Attempts store only a machine-safe error code.
+14. **Attempt history is append-only.** PostgreSQL rejects updates and deletion of `outbox_attempts`.
+15. **Backlog observation is bounded.** Due, stale, and dead-letter samples use capped indexed queries.
+16. **The worker has no API or migration authority.** It uses no API credential, checks migrations 002 and 009, and never applies migrations.
+17. **Dead letters are never reset in place.** Controlled replay creates a fresh pending message and immutable replay record.
+18. **One replacement per source.** Replay chains are linear and cannot fork.
+19. **Replay is optimistic and idempotent.** Operators supply the observed attempt count and a payload-bound replay key.
+20. **Business and operator provenance remain separate.** A replacement message retains the source message's business `audit_event_id`; the replay record separately references the operator's `outbox.dead_letter_replayed` audit event.
 
 ## Message lifecycle
 
@@ -58,11 +59,7 @@ A stale `PROCESSING` lease may be reclaimed. The prior attempt receives `LEASE_E
 | `LEASE_EXPIRED` | A later worker recovered an expired processing lease. |
 | `LEASE_LOST` | A previous worker returned after it no longer owned the attempt. |
 
-More than one evidence outcome may reference one attempt number. For example, a stale attempt can receive `LEASE_EXPIRED` when recovered and later `LEASE_LOST` when its original worker returns.
-
 ## Handler module contract
-
-The deployment-owned module exports either `handlers` or a default object/Map:
 
 ```js
 export const handlers = {
@@ -75,13 +72,11 @@ export const handlers = {
 };
 ```
 
-Handlers must be idempotent. A lease can expire after an external side effect succeeds but before Mandate-API records completion. The outbox provides at-least-once execution, not exactly-once effects across a network boundary.
-
-The module is trusted deployment code and receives the committed payload plus safe message metadata. It must not log secrets or raw provider responses.
+Handlers must be idempotent. A lease can expire after an external side effect succeeds but before Mandate records completion. The outbox provides at-least-once execution, not exactly-once effects across a network boundary.
 
 ## Run the worker
 
-Apply migrations with a dedicated deployment role, then start the process separately from the API:
+Apply migrations with a deployment role, then start the process separately from the API:
 
 ```bash
 MANDATE_STORE=postgres \
@@ -106,7 +101,7 @@ MANDATE_OUTBOX_HEALTH_HOST=127.0.0.1
 MANDATE_OUTBOX_HEALTH_PORT=8789
 ```
 
-The health listener is loopback-bound by default:
+The loopback-default health listener exposes:
 
 | Route | Purpose |
 |---|---|
@@ -114,11 +109,11 @@ The health listener is loopback-bound by default:
 | `/health/ready` | Recent successful-cycle readiness |
 | `/metrics` | Low-cardinality Prometheus counters and capped backlog samples |
 
-Health probes read cached state and do not query PostgreSQL per request. Binding beyond loopback requires deployment network controls.
+Health probes read cached state and do not query PostgreSQL per request.
 
 ## Inspect dead letters
 
-Inspection is bounded, read-only, and omits payloads, audit-event bodies, request fingerprints, and replay-key hashes:
+Inspection is bounded and read-only. It omits payloads, audit-event bodies, request fingerprints, and replay-key hashes:
 
 ```bash
 MANDATE_ENVIRONMENT=live \
@@ -127,7 +122,7 @@ MANDATE_OUTBOX_EVENT_TYPES=receipt.issued,mandate.created \
 npm run outbox:dead-letter:list
 ```
 
-`MANDATE_TENANT_ID` and `MANDATE_OUTBOX_EVENT_TYPES` are optional for inspection. `MANDATE_OUTBOX_DEAD_LETTER_LIMIT` defaults to 100 and is capped at 500.
+`MANDATE_TENANT_ID` and `MANDATE_OUTBOX_EVENT_TYPES` are optional. Every result includes `tenantId`, so an environment-wide listing remains replay-safe even when message IDs collide across tenants. `MANDATE_OUTBOX_DEAD_LETTER_LIMIT` defaults to 100 and is capped at 500.
 
 ## Replay one dead letter
 
@@ -151,24 +146,25 @@ Replay behavior:
 - serializes the hashed replay key with a PostgreSQL advisory transaction lock;
 - rejects key reuse with different source/operator/reason input;
 - creates an immutable `outbox.dead_letter_replayed` operator audit event;
-- copies the original event type, aggregate identity, and exact JSON payload into a new message;
+- copies the original event type, aggregate identity, exact JSON payload, and business `audit_event_id` into a new message;
+- stores the operator audit event separately as `operator_audit_event_id` on the immutable replay record;
 - starts the replacement as `PENDING` with attempt count zero;
-- leaves the source status, payload, timestamps, error code, and attempt history unchanged;
+- leaves source state, payload, timestamps, error code, business provenance, and attempt history unchanged;
 - permits no second direct replacement for the same source;
-- permits replaying the replacement later only if that replacement itself reaches `DEAD_LETTER`.
+- permits replaying a replacement only if that replacement later reaches `DEAD_LETTER`.
 
-The raw replay idempotency key is never stored. Migration 010 stores only its SHA-256 hash and the request fingerprint.
+The raw replay key is never stored. Migration 010 stores only its SHA-256 hash and request fingerprint.
 
 ## Operational interpretation
 
-- `hasDue=1` after a cycle indicates more registered work may remain.
-- `hasStale=1` indicates at least one expired lease remains recoverable.
+- `hasDue=1` means more registered work may remain after a bounded cycle.
+- `hasStale=1` means at least one expired lease remains recoverable.
 - `hasDeadLetter=1` is an operator signal; the worker never replays dead letters automatically.
-- sample gauges are capped and must not be interpreted as exact global counts.
+- sample gauges are capped and are not exact global counts.
 - repeated cycle failures or stale success timestamps make readiness fail closed.
 
 ## Remaining work
 
 - reference webhook/delivery handlers with their own idempotency contracts;
-- platform-specific service manifest and restricted runtime/operator database roles;
+- platform-specific service manifests and restricted runtime/operator database roles;
 - alert thresholds, approval policy for live replay, and supervisor restart policy.
