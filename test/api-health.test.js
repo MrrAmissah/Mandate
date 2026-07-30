@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApiHealth, parseApiHealthConfig } from '../src/application/api-health.js';
 import { createServerHandler } from '../src/http/server-handler.js';
-import { createPostgresPool } from '../src/store/postgres-store.js';
+import { createPostgresHealthPool } from '../src/store/postgres-health-pool.js';
 
 function fixedClock() {
   return new Date('2026-07-30T00:00:00.000Z');
@@ -42,10 +42,9 @@ test('API health configuration is bounded', () => {
   );
 });
 
-test('PostgreSQL pools accept an explicit acquisition timeout', async () => {
-  const pool = await createPostgresPool({
+test('readiness pool is isolated and acquisition-bounded', async () => {
+  const pool = await createPostgresHealthPool({
     connectionString: 'postgresql://unused:unused@127.0.0.1:1/unused',
-    max: 1,
     connectionTimeoutMillis: 750
   });
   try {
@@ -55,11 +54,11 @@ test('PostgreSQL pools accept an explicit acquisition timeout', async () => {
     await pool.end();
   }
   await assert.rejects(
-    createPostgresPool({
+    createPostgresHealthPool({
       connectionString: 'postgresql://unused:unused@127.0.0.1:1/unused',
-      connectionTimeoutMillis: 0
+      connectionTimeoutMillis: 99
     }),
-    /positive integer/
+    /between 100 and 10000/
   );
 });
 
