@@ -1,15 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApiHealth } from '../src/application/api-health.js';
-import { createPostgresPool } from '../src/store/postgres-store.js';
+import { createPostgresHealthPool } from '../src/store/postgres-health-pool.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 const postgresTest = databaseUrl ? test : test.skip;
 
 postgresTest('API readiness fails within its bound when the dedicated pool is exhausted', async () => {
-  const pool = await createPostgresPool({
+  const pool = await createPostgresHealthPool({
     connectionString: databaseUrl,
-    max: 1,
     connectionTimeoutMillis: 100
   });
   const heldClient = await pool.connect();
