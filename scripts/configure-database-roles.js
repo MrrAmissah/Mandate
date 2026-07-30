@@ -27,6 +27,7 @@ async function main(env = process.env) {
       policyVersion: result.policyVersion,
       databaseName: result.databaseName,
       roles: result.roles,
+      terminatedSessionCount: result.terminatedSessionCount,
       statementCount: result.statementCount
     }));
   } finally {
@@ -41,7 +42,8 @@ main().catch((error) => {
     at: new Date().toISOString(),
     errorCode: typeof error?.code === 'string' && /^[A-Z0-9_]{2,80}$/.test(error.code)
       ? error.code
-      : 'DATABASE_ROLE_CONFIGURATION_FAILED'
+      : 'DATABASE_ROLE_CONFIGURATION_FAILED',
+    rolesRemainQuiesced: error?.databaseRolesRemainQuiesced === true
   }));
   process.exitCode = 1;
 });
