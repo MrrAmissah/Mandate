@@ -83,10 +83,12 @@ function grantStatement(role, table, privileges) {
   return `GRANT ${privileges.join(', ')} ON TABLE mandate.${table} TO ${quoteIdentifier(role)};`;
 }
 
-export function buildDatabaseRolePolicyStatements({ roles, databaseName }) {
+export function buildDatabaseRolePolicyStatements({ roles, databaseName, deploymentRoleName }) {
   const quotedDatabase = quoteIdentifier(databaseName);
+  const quotedDeploymentRole = quoteIdentifier(deploymentRoleName);
   const statements = [
     `REVOKE CONNECT ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
+    `GRANT CONNECT ON DATABASE ${quotedDatabase} TO ${quotedDeploymentRole};`,
     'REVOKE ALL ON SCHEMA mandate FROM PUBLIC;',
     'REVOKE ALL ON ALL TABLES IN SCHEMA mandate FROM PUBLIC;',
     'REVOKE ALL ON ALL SEQUENCES IN SCHEMA mandate FROM PUBLIC;',
@@ -135,9 +137,53 @@ export async function applyDatabaseRolePolicy(client, config) {
     }
   }
 
-  const databaseResult = await client.query('SELECT current_database() AS database_name');
+  const databaseResult = await client.query('SELECT current_database() AS database_name, current_user AS deployment_role_name');
   const databaseName = databaseResult.rows[0]?.database_name;
+  const deploymentRoleName = databaseResult.rows[0]?.deployment_role_name;
   quoteIdentifier(databaseName);
+  quoteIdentifier(deploymentRoleName);
+  if (roleNames.includes(deploymentRoleName)) throw new Error('The deployment role must be separate from every runtime role.');
+
+  const memberships = await client.query(
+    `SELECT member.rolname AS member_name, parent.rolname AS granted_role
+       FROM pg_auth_members membership
+       JOIN pg_roles member ON member.oid = membership.member
+       JOIN pg_roles parent ON parent.oid = membership.roleid
+      WHERE member.rolname = ANY($1::text[])`,
+    [roleNames]
+  );
+  if (memberships.rowCount > 0) {
+    const membership = memberships.rows[0];
+    throw new Error(`Runtime PostgreSQL role inherits another role: ${membership.member_name} -> ${membership.granted_role}`);
+  }
+
+  const ownership = await client.query(
+    `SELECT owner_name, object_name
+       FROM (
+         SELECT owner.rolname AS owner_name, 'database:' || database.datname AS object_name
+           FROM pg_database database
+           JOIN pg_roles owner ON owner.oid = database.datdba
+          WHERE database.datname = current_database()
+         UNION ALL
+         SELECT owner.rolname, 'schema:' || namespace.nspname
+           FROM pg_namespace namespace
+           JOIN pg_roles owner ON owner.oid = namespace.nspowner
+          WHERE namespace.nspname = 'mandate'
+         UNION ALL
+         SELECT owner.rolname, 'relation:' || namespace.nspname || '.' || relation.relname
+           FROM pg_class relation
+           JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+           JOIN pg_roles owner ON owner.oid = relation.relowner
+          WHERE namespace.nspname = 'mandate'
+       ) owned
+      WHERE owner_name = ANY($1::text[])
+      LIMIT 1`,
+    [roleNames]
+  );
+  if (ownership.rowCount > 0) {
+    const object = ownership.rows[0];
+    throw new Error(`Runtime PostgreSQL role owns a protected object: ${object.owner_name} owns ${object.object_name}`);
+  }
 
   const registry = await client.query(
     `SELECT EXISTS (
@@ -149,7 +195,7 @@ export async function applyDatabaseRolePolicy(client, config) {
   const migration = await client.query('SELECT 1 FROM mandate.schema_migrations WHERE version = $1', [REQUIRED_MIGRATION]);
   if (migration.rowCount !== 1) throw new Error(`Required migration ${REQUIRED_MIGRATION} is not applied.`);
 
-  const statements = buildDatabaseRolePolicyStatements({ roles: config.roles, databaseName });
+  const statements = buildDatabaseRolePolicyStatements({ roles: config.roles, databaseName, deploymentRoleName });
   await client.query('BEGIN');
   try {
     for (const statement of statements) await client.query(statement);
@@ -161,6 +207,7 @@ export async function applyDatabaseRolePolicy(client, config) {
   return Object.freeze({
     policyVersion: DATABASE_ROLE_POLICY_VERSION,
     databaseName,
+    deploymentRoleName,
     roles: config.roles,
     statementCount: statements.length
   });
