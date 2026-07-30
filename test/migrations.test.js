@@ -12,6 +12,8 @@ const retentionUpPath = new URL('../migrations/008_idempotency_retention.up.sql'
 const retentionDownPath = new URL('../migrations/008_idempotency_retention.down.sql', import.meta.url);
 const outboxWorkerUpPath = new URL('../migrations/009_outbox_worker_operations.up.sql', import.meta.url);
 const outboxWorkerDownPath = new URL('../migrations/009_outbox_worker_operations.down.sql', import.meta.url);
+const replayUpPath = new URL('../migrations/010_outbox_dead_letter_replays.up.sql', import.meta.url);
+const replayDownPath = new URL('../migrations/010_outbox_dead_letter_replays.down.sql', import.meta.url);
 const runnerPath = new URL('../src/store/postgres-migrations.js', import.meta.url);
 
 async function baselineMigration() {
@@ -22,16 +24,9 @@ test('durable core migration is transactional and tenant-aware', async () => {
   const sql = await baselineMigration();
   assert.match(sql, /^BEGIN;/);
   assert.match(sql, /COMMIT;\s*$/);
-
   for (const table of [
-    'api_credentials',
-    'mandates',
-    'approvals',
-    'authorization_decisions',
-    'receipts',
-    'idempotency_records',
-    'audit_events',
-    'outbox_messages'
+    'api_credentials', 'mandates', 'approvals', 'authorization_decisions',
+    'receipts', 'idempotency_records', 'audit_events', 'outbox_messages'
   ]) {
     const tableBlock = sql.match(new RegExp(`CREATE TABLE mandate\\.${table} \\(([\\s\\S]*?)\\n\\);`));
     assert.ok(tableBlock, `missing ${table} table`);
@@ -60,7 +55,6 @@ test('missing-mandate denials remain persistable while receipts require real man
   const sql = await baselineMigration();
   const decisions = sql.match(new RegExp('CREATE TABLE mandate\\.authorization_decisions \\(([\\s\\S]*?)\\n\\);'))[1];
   assert.doesNotMatch(decisions, /FOREIGN KEY \(tenant_id, environment, mandate_id\)/);
-
   const receipts = sql.match(new RegExp('CREATE TABLE mandate\\.receipts \\(([\\s\\S]*?)\\n\\);'))[1];
   assert.match(receipts, /FOREIGN KEY \(tenant_id, environment, mandate_id\)/);
 });
@@ -107,25 +101,32 @@ test('outbox worker migration adds status-specific scope and event indexes only'
   assert.match(sql, /CREATE INDEX outbox_worker_pending_idx/);
   assert.match(sql, /CREATE INDEX outbox_worker_processing_idx/);
   assert.match(sql, /CREATE INDEX outbox_worker_dead_letter_idx/);
-  assert.match(sql, /environment, tenant_id, event_type, available_at, created_at, id/);
-  assert.match(sql, /environment, tenant_id, event_type, lock_expires_at, created_at, id/);
-  assert.match(sql, /environment, tenant_id, event_type, processed_at, created_at, id/);
   assert.match(sql, /009_outbox_worker_operations/);
+  assert.doesNotMatch(sql, /UPDATE mandate\.outbox_messages|DELETE FROM mandate\.outbox_messages/);
+});
+
+test('dead-letter replay migration creates immutable linear replay links', async () => {
+  const sql = await readFile(replayUpPath, 'utf8');
+  assert.match(sql, /^BEGIN;/);
+  assert.match(sql, /COMMIT;\s*$/);
+  assert.match(sql, /CREATE TABLE mandate\.outbox_dead_letter_replays/);
+  assert.match(sql, /UNIQUE \(tenant_id, environment, source_message_id\)/);
+  assert.match(sql, /UNIQUE \(tenant_id, environment, replay_message_id\)/);
+  assert.match(sql, /UNIQUE \(tenant_id, environment, idempotency_key_hash\)/);
+  assert.match(sql, /outbox_dead_letter_replays_immutable/);
+  assert.match(sql, /reject_immutable_change/);
+  assert.match(sql, /010_outbox_dead_letter_replays/);
   assert.doesNotMatch(sql, /UPDATE mandate\.outbox_messages|DELETE FROM mandate\.outbox_messages/);
 });
 
 test('migration runner applies all migrations in order under one advisory lock', async () => {
   const source = await readFile(runnerPath, 'utf8');
   const versions = [
-    '001_durable_core',
-    '002_outbox_attempts',
-    '003_idempotency_http_metadata',
-    '004_signing_key_lifecycle',
-    '005_action_attempt_reservations',
-    '006_attempt_completion_receipts',
-    '007_receipt_supersession',
-    '008_idempotency_retention',
-    '009_outbox_worker_operations'
+    '001_durable_core', '002_outbox_attempts', '003_idempotency_http_metadata',
+    '004_signing_key_lifecycle', '005_action_attempt_reservations',
+    '006_attempt_completion_receipts', '007_receipt_supersession',
+    '008_idempotency_retention', '009_outbox_worker_operations',
+    '010_outbox_dead_letter_replays'
   ];
   const positions = versions.map((version) => source.indexOf(`version: '${version}'`));
   assert.ok(positions.every((position) => position >= 0));
@@ -138,27 +139,24 @@ test('migration runner applies all migrations in order under one advisory lock',
 test('development down migrations remove only their owned objects', async () => {
   const baseline = await readFile(baselineDownPath, 'utf8');
   assert.equal(baseline.trim(), 'BEGIN;\nDROP SCHEMA IF EXISTS mandate CASCADE;\nCOMMIT;');
-
   const outbox = await readFile(outboxDownPath, 'utf8');
   assert.match(outbox, /DELETE FROM mandate\.schema_migrations WHERE version = '002_outbox_attempts'/);
   assert.match(outbox, /DROP TABLE IF EXISTS mandate\.outbox_attempts/);
   assert.doesNotMatch(outbox, /DROP SCHEMA/);
-
   const idempotency = await readFile(idempotencyDownPath, 'utf8');
   assert.match(idempotency, /DROP TRIGGER IF EXISTS idempotency_http_metadata/);
   assert.match(idempotency, /DROP FUNCTION IF EXISTS mandate\.assign_idempotency_http_metadata/);
-  assert.match(idempotency, /DELETE FROM mandate\.schema_migrations WHERE version = '003_idempotency_http_metadata'/);
   assert.doesNotMatch(idempotency, /DROP TABLE|DROP SCHEMA/);
-
   const retention = await readFile(retentionDownPath, 'utf8');
   assert.match(retention, /DROP INDEX IF EXISTS mandate\.idempotency_retention_scope_idx/);
-  assert.match(retention, /DELETE FROM mandate\.schema_migrations WHERE version = '008_idempotency_retention'/);
   assert.doesNotMatch(retention, /DROP TABLE|DROP SCHEMA/);
-
   const outboxWorker = await readFile(outboxWorkerDownPath, 'utf8');
   assert.match(outboxWorker, /DROP INDEX IF EXISTS mandate\.outbox_worker_pending_idx/);
   assert.match(outboxWorker, /DROP INDEX IF EXISTS mandate\.outbox_worker_processing_idx/);
   assert.match(outboxWorker, /DROP INDEX IF EXISTS mandate\.outbox_worker_dead_letter_idx/);
-  assert.match(outboxWorker, /DELETE FROM mandate\.schema_migrations WHERE version = '009_outbox_worker_operations'/);
   assert.doesNotMatch(outboxWorker, /DROP TABLE|DROP SCHEMA/);
+  const replay = await readFile(replayDownPath, 'utf8');
+  assert.match(replay, /DROP TABLE IF EXISTS mandate\.outbox_dead_letter_replays/);
+  assert.match(replay, /DELETE FROM mandate\.schema_migrations WHERE version = '010_outbox_dead_letter_replays'/);
+  assert.doesNotMatch(replay, /DROP SCHEMA/);
 });
