@@ -123,25 +123,28 @@ export async function inspectIdempotencyRetentionBacklog(
   const result = await pool.query(
     `WITH observed AS MATERIALIZED (
        SELECT clock_timestamp() AS observed_at
+     ), counts AS (
+       SELECT
+         count(*) FILTER (WHERE records.expires_at <= observed.observed_at) AS expired_count,
+         count(*) FILTER (
+           WHERE records.expires_at <= observed.observed_at
+             AND records.created_at <= observed.observed_at
+               - ($3::double precision * interval '1 second')
+         ) AS eligible_count,
+         min(records.expires_at) FILTER (
+           WHERE records.expires_at <= observed.observed_at
+             AND records.created_at <= observed.observed_at
+               - ($3::double precision * interval '1 second')
+         ) AS oldest_eligible_at
+       FROM mandate.idempotency_records records
+       CROSS JOIN observed
+       WHERE records.environment = $1
+         AND ($2::text IS NULL OR records.tenant_id = $2)
      )
-     SELECT
-       count(*) FILTER (WHERE records.expires_at <= observed.observed_at) AS expired_count,
-       count(*) FILTER (
-         WHERE records.expires_at <= observed.observed_at
-           AND records.created_at <= observed.observed_at
-             - ($3::double precision * interval '1 second')
-       ) AS eligible_count,
-       min(records.expires_at) FILTER (
-         WHERE records.expires_at <= observed.observed_at
-           AND records.created_at <= observed.observed_at
-             - ($3::double precision * interval '1 second')
-       ) AS oldest_eligible_at,
-       observed.observed_at
-     FROM mandate.idempotency_records records
-     CROSS JOIN observed
-     WHERE records.environment = $1
-       AND ($2::text IS NULL OR records.tenant_id = $2)
-     GROUP BY observed.observed_at`,
+     SELECT counts.expired_count, counts.eligible_count, counts.oldest_eligible_at,
+            observed.observed_at
+     FROM observed
+     CROSS JOIN counts`,
     [owner.environment, owner.tenantId ?? null, retention]
   );
   const row = result.rows[0];
