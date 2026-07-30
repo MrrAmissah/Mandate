@@ -1,5 +1,5 @@
 const RUNTIME_ROLE_IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
-export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.3';
+export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.4';
 
 const ROLE_ENVIRONMENT = Object.freeze({
   api: 'MANDATE_DATABASE_API_ROLE',
@@ -75,6 +75,16 @@ function quoteServerIdentifier(value, label) {
   return `"${value.replaceAll('"', '""')}"`;
 }
 
+function normalizedSchemaNames(schemaNames) {
+  if (!Array.isArray(schemaNames) || schemaNames.length === 0) {
+    throw new Error('At least one non-system PostgreSQL schema is required.');
+  }
+  const names = [...new Set(schemaNames)].sort();
+  for (const name of names) quoteServerIdentifier(name, 'schema');
+  if (!names.includes('mandate')) throw new Error('The mandate schema is required for database role configuration.');
+  return names;
+}
+
 export function parseDatabaseRolePolicyConfig(env = process.env) {
   const roles = {};
   for (const [key, environmentName] of Object.entries(ROLE_ENVIRONMENT)) {
@@ -91,29 +101,50 @@ function grantStatement(role, table, privileges) {
   return `GRANT ${privileges.join(', ')} ON TABLE mandate.${table} TO ${quoteRuntimeRole(role)};`;
 }
 
-export function buildDatabaseRolePolicyStatements({ roles, databaseName, deploymentRoleName }) {
+export function buildDatabaseRolePolicyStatements({
+  roles,
+  databaseName,
+  deploymentRoleName,
+  schemaNames = ['mandate', 'public']
+}) {
   const quotedDatabase = quoteServerIdentifier(databaseName, 'database');
   const quotedDeploymentRole = quoteServerIdentifier(deploymentRoleName, 'deployment role');
+  const schemas = normalizedSchemaNames(schemaNames);
   const statements = [
     `REVOKE CONNECT ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
-    `GRANT CONNECT ON DATABASE ${quotedDatabase} TO ${quotedDeploymentRole};`,
+    `REVOKE TEMPORARY ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
+    `GRANT CONNECT ON DATABASE ${quotedDatabase} TO ${quotedDeploymentRole};`
+  ];
+
+  for (const schemaName of schemas) {
+    statements.push(`REVOKE CREATE ON SCHEMA ${quoteServerIdentifier(schemaName, 'schema')} FROM PUBLIC;`);
+  }
+
+  statements.push(
     'REVOKE ALL ON SCHEMA mandate FROM PUBLIC;',
     'REVOKE ALL ON ALL TABLES IN SCHEMA mandate FROM PUBLIC;',
     'REVOKE ALL ON ALL SEQUENCES IN SCHEMA mandate FROM PUBLIC;',
     'REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mandate FROM PUBLIC;',
-    'ALTER DEFAULT PRIVILEGES IN SCHEMA mandate REVOKE ALL ON TABLES FROM PUBLIC;',
-    'ALTER DEFAULT PRIVILEGES IN SCHEMA mandate REVOKE ALL ON SEQUENCES FROM PUBLIC;',
-    'ALTER DEFAULT PRIVILEGES IN SCHEMA mandate REVOKE ALL ON FUNCTIONS FROM PUBLIC;'
-  ];
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedDeploymentRole} IN SCHEMA mandate REVOKE ALL ON TABLES FROM PUBLIC;`,
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedDeploymentRole} IN SCHEMA mandate REVOKE ALL ON SEQUENCES FROM PUBLIC;`,
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedDeploymentRole} IN SCHEMA mandate REVOKE ALL ON FUNCTIONS FROM PUBLIC;`
+  );
 
   for (const role of Object.values(roles)) {
     const quotedRole = quoteRuntimeRole(role);
     statements.push(`GRANT CONNECT ON DATABASE ${quotedDatabase} TO ${quotedRole};`);
+    statements.push(`REVOKE CREATE ON DATABASE ${quotedDatabase} FROM ${quotedRole};`);
+    statements.push(`REVOKE TEMPORARY ON DATABASE ${quotedDatabase} FROM ${quotedRole};`);
+    for (const schemaName of schemas) {
+      statements.push(`REVOKE CREATE ON SCHEMA ${quoteServerIdentifier(schemaName, 'schema')} FROM ${quotedRole};`);
+    }
     statements.push(`GRANT USAGE ON SCHEMA mandate TO ${quotedRole};`);
-    statements.push(`REVOKE CREATE ON SCHEMA mandate FROM ${quotedRole};`);
     statements.push(`REVOKE ALL ON ALL TABLES IN SCHEMA mandate FROM ${quotedRole};`);
     statements.push(`REVOKE ALL ON ALL SEQUENCES IN SCHEMA mandate FROM ${quotedRole};`);
     statements.push(`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mandate FROM ${quotedRole};`);
+    statements.push(`ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedDeploymentRole} IN SCHEMA mandate REVOKE ALL ON TABLES FROM ${quotedRole};`);
+    statements.push(`ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedDeploymentRole} IN SCHEMA mandate REVOKE ALL ON SEQUENCES FROM ${quotedRole};`);
+    statements.push(`ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedDeploymentRole} IN SCHEMA mandate REVOKE ALL ON FUNCTIONS FROM ${quotedRole};`);
   }
 
   for (const [roleKey, tables] of Object.entries(TABLE_GRANTS)) {
@@ -148,6 +179,15 @@ export async function applyDatabaseRolePolicy(client, config) {
   quoteServerIdentifier(deploymentRoleName, 'deployment role');
   if (roleNames.includes(deploymentRoleName)) throw new Error('The deployment role must be separate from every runtime role.');
 
+  const schemaResult = await client.query(
+    `SELECT nspname
+       FROM pg_namespace
+      WHERE nspname !~ '^pg_'
+        AND nspname <> 'information_schema'
+      ORDER BY nspname`
+  );
+  const schemaNames = normalizedSchemaNames(schemaResult.rows.map((row) => row.nspname));
+
   const memberships = await client.query(
     `SELECT member.rolname AS member_name, parent.rolname AS granted_role
        FROM pg_auth_members membership
@@ -172,13 +212,13 @@ export async function applyDatabaseRolePolicy(client, config) {
          SELECT owner.rolname, 'schema:' || namespace.nspname
            FROM pg_namespace namespace
            JOIN pg_roles owner ON owner.oid = namespace.nspowner
-          WHERE namespace.nspname = 'mandate'
+          WHERE namespace.nspname !~ '^pg_' AND namespace.nspname <> 'information_schema'
          UNION ALL
          SELECT owner.rolname, 'relation:' || namespace.nspname || '.' || relation.relname
            FROM pg_class relation
            JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
            JOIN pg_roles owner ON owner.oid = relation.relowner
-          WHERE namespace.nspname = 'mandate'
+          WHERE namespace.nspname !~ '^pg_' AND namespace.nspname <> 'information_schema'
          UNION ALL
          SELECT owner.rolname,
                 'function:' || namespace.nspname || '.' || procedure.proname ||
@@ -186,7 +226,7 @@ export async function applyDatabaseRolePolicy(client, config) {
            FROM pg_proc procedure
            JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
            JOIN pg_roles owner ON owner.oid = procedure.proowner
-          WHERE namespace.nspname = 'mandate'
+          WHERE namespace.nspname !~ '^pg_' AND namespace.nspname <> 'information_schema'
        ) owned
       WHERE owner_name = ANY($1::text[])
       LIMIT 1`,
@@ -207,7 +247,12 @@ export async function applyDatabaseRolePolicy(client, config) {
   const migration = await client.query('SELECT 1 FROM mandate.schema_migrations WHERE version = $1', [REQUIRED_MIGRATION]);
   if (migration.rowCount !== 1) throw new Error(`Required migration ${REQUIRED_MIGRATION} is not applied.`);
 
-  const statements = buildDatabaseRolePolicyStatements({ roles: config.roles, databaseName, deploymentRoleName });
+  const statements = buildDatabaseRolePolicyStatements({
+    roles: config.roles,
+    databaseName,
+    deploymentRoleName,
+    schemaNames
+  });
   await client.query('BEGIN');
   try {
     for (const statement of statements) await client.query(statement);
@@ -220,6 +265,7 @@ export async function applyDatabaseRolePolicy(client, config) {
     policyVersion: DATABASE_ROLE_POLICY_VERSION,
     databaseName,
     deploymentRoleName,
+    schemaNames: Object.freeze(schemaNames),
     roles: config.roles,
     statementCount: statements.length
   });
