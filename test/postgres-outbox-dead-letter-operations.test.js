@@ -166,6 +166,42 @@ integration('dead-letter replay preserves business provenance and creates one id
   }
 });
 
+integration('dead-letter replay preserves JSONB numbers beyond JavaScript safe integer range', async () => {
+  const pool = await createPostgresPool({ connectionString, max: 4 });
+  const tenantId = unique('ten_dead_jsonb');
+  try {
+    await createTenant(pool, tenantId);
+    const { messageId: sourceMessageId } = await createDeadLetter(pool, tenantId);
+    await pool.query(
+      `UPDATE mandate.outbox_messages
+       SET payload = jsonb_build_object(
+         'large', 9007199254740993::numeric,
+         'nested', jsonb_build_object('amount', 9007199254740995::numeric)
+       )
+       WHERE tenant_id = $1 AND environment = 'test' AND id = $2`,
+      [tenantId, sourceMessageId]
+    );
+
+    const replay = await replayDeadLetterMessage(pool, replayRequest(tenantId, sourceMessageId));
+    const payloads = await pool.query(
+      `SELECT id, payload::text AS payload_text, payload->>'large' AS large_value,
+              payload #>> '{nested,amount}' AS nested_value
+       FROM mandate.outbox_messages
+       WHERE tenant_id = $1 AND environment = 'test' AND id = ANY($2::text[])
+       ORDER BY id`,
+      [tenantId, [sourceMessageId, replay.replayMessageId]]
+    );
+    assert.equal(payloads.rowCount, 2);
+    assert.equal(payloads.rows[0].payload_text, payloads.rows[1].payload_text);
+    for (const row of payloads.rows) {
+      assert.equal(row.large_value, '9007199254740993');
+      assert.equal(row.nested_value, '9007199254740995');
+    }
+  } finally {
+    await pool.end();
+  }
+});
+
 integration('dead-letter replay fails closed on stale attempt count and permits a linear replay chain', async () => {
   const pool = await createPostgresPool({ connectionString, max: 6 });
   const tenantId = unique('ten_dead_chain');
