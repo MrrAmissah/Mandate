@@ -10,6 +10,8 @@ const idempotencyUpPath = new URL('../migrations/003_idempotency_http_metadata.u
 const idempotencyDownPath = new URL('../migrations/003_idempotency_http_metadata.down.sql', import.meta.url);
 const retentionUpPath = new URL('../migrations/008_idempotency_retention.up.sql', import.meta.url);
 const retentionDownPath = new URL('../migrations/008_idempotency_retention.down.sql', import.meta.url);
+const outboxWorkerUpPath = new URL('../migrations/009_outbox_worker_operations.up.sql', import.meta.url);
+const outboxWorkerDownPath = new URL('../migrations/009_outbox_worker_operations.down.sql', import.meta.url);
 const runnerPath = new URL('../src/store/postgres-migrations.js', import.meta.url);
 
 async function baselineMigration() {
@@ -98,6 +100,20 @@ test('idempotency retention migration adds only the scoped cleanup index', async
   assert.doesNotMatch(sql, /DELETE FROM mandate\.idempotency_records|UPDATE mandate\.idempotency_records/);
 });
 
+test('outbox worker migration adds status-specific scope and event indexes only', async () => {
+  const sql = await readFile(outboxWorkerUpPath, 'utf8');
+  assert.match(sql, /^BEGIN;/);
+  assert.match(sql, /COMMIT;\s*$/);
+  assert.match(sql, /CREATE INDEX outbox_worker_pending_idx/);
+  assert.match(sql, /CREATE INDEX outbox_worker_processing_idx/);
+  assert.match(sql, /CREATE INDEX outbox_worker_dead_letter_idx/);
+  assert.match(sql, /environment, tenant_id, event_type, available_at, created_at, id/);
+  assert.match(sql, /environment, tenant_id, event_type, lock_expires_at, created_at, id/);
+  assert.match(sql, /environment, tenant_id, event_type, processed_at, created_at, id/);
+  assert.match(sql, /009_outbox_worker_operations/);
+  assert.doesNotMatch(sql, /UPDATE mandate\.outbox_messages|DELETE FROM mandate\.outbox_messages/);
+});
+
 test('migration runner applies all migrations in order under one advisory lock', async () => {
   const source = await readFile(runnerPath, 'utf8');
   const versions = [
@@ -108,7 +124,8 @@ test('migration runner applies all migrations in order under one advisory lock',
     '005_action_attempt_reservations',
     '006_attempt_completion_receipts',
     '007_receipt_supersession',
-    '008_idempotency_retention'
+    '008_idempotency_retention',
+    '009_outbox_worker_operations'
   ];
   const positions = versions.map((version) => source.indexOf(`version: '${version}'`));
   assert.ok(positions.every((position) => position >= 0));
@@ -137,4 +154,11 @@ test('development down migrations remove only their owned objects', async () => 
   assert.match(retention, /DROP INDEX IF EXISTS mandate\.idempotency_retention_scope_idx/);
   assert.match(retention, /DELETE FROM mandate\.schema_migrations WHERE version = '008_idempotency_retention'/);
   assert.doesNotMatch(retention, /DROP TABLE|DROP SCHEMA/);
+
+  const outboxWorker = await readFile(outboxWorkerDownPath, 'utf8');
+  assert.match(outboxWorker, /DROP INDEX IF EXISTS mandate\.outbox_worker_pending_idx/);
+  assert.match(outboxWorker, /DROP INDEX IF EXISTS mandate\.outbox_worker_processing_idx/);
+  assert.match(outboxWorker, /DROP INDEX IF EXISTS mandate\.outbox_worker_dead_letter_idx/);
+  assert.match(outboxWorker, /DELETE FROM mandate\.schema_migrations WHERE version = '009_outbox_worker_operations'/);
+  assert.doesNotMatch(outboxWorker, /DROP TABLE|DROP SCHEMA/);
 });
