@@ -62,7 +62,7 @@ Delivered:
 - bounded `FOR UPDATE SKIP LOCKED` deletion batches;
 - index-aligned candidate ordering for environment-wide cleanup;
 - safe count-only structured output;
-- exact backlog inspection after the batch budget is exhausted;
+- bounded expired and eligible backlog sampling after the batch budget is exhausted;
 - configuration, migration, source-posture, and real PostgreSQL multi-worker tests.
 
 Remaining operational hardening:
