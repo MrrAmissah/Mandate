@@ -106,10 +106,12 @@ integration('PostgreSQL idempotency cleanup is scoped, bounded, and multi-worker
     assert.equal(final.limitReached, false);
 
     const backlog = await inspectIdempotencyRetentionBacklog(pool, scope, {
-      retentionSeconds: 604800
+      retentionSeconds: 604800,
+      sampleLimit: 10
     });
-    assert.equal(backlog.eligibleCount, 0);
-    assert.equal(backlog.expiredCount, 1);
+    assert.equal(backlog.eligibleSampleCount, 0);
+    assert.equal(backlog.expiredSampleCount, 1);
+    assert.equal(backlog.hasEligible, false);
     assert.equal(backlog.oldestEligibleAt, null);
     assert.match(backlog.observedAt, /^\d{4}-\d{2}-\d{2}T/);
 
@@ -134,6 +136,26 @@ integration('PostgreSQL idempotency cleanup is scoped, bounded, and multi-worker
       { tenant_id: tenantA, environment: 'live', count: 1 },
       { tenant_id: tenantB, environment: 'test', count: 1 }
     ].sort((left, right) => `${left.tenant_id}:${left.environment}`.localeCompare(`${right.tenant_id}:${right.environment}`)));
+  } finally {
+    await pool.end();
+  }
+});
+
+integration('PostgreSQL empty retention scope reports a bounded zero sample with database time', async () => {
+  const pool = await createPostgresPool({ connectionString, max: 2 });
+  const tenantId = unique('ten_retention_empty');
+  try {
+    await createTenant(pool, tenantId);
+    const backlog = await inspectIdempotencyRetentionBacklog(
+      pool,
+      { environment: 'test', tenantId },
+      { retentionSeconds: 604800, sampleLimit: 1 }
+    );
+    assert.equal(backlog.expiredSampleCount, 0);
+    assert.equal(backlog.eligibleSampleCount, 0);
+    assert.equal(backlog.hasEligible, false);
+    assert.equal(backlog.oldestEligibleAt, null);
+    assert.match(backlog.observedAt, /^\d{4}-\d{2}-\d{2}T/);
   } finally {
     await pool.end();
   }
