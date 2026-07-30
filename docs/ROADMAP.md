@@ -16,7 +16,7 @@ Delivered payload-bound idempotency, single-use approval consumption, canonical 
 
 ## Phase 2 — durable multi-tenant core
 
-Status: core runtime merged; operational hardening remains.
+Status: core runtime merged; operational hardening continues.
 
 ### Phase 2A — persistence contract
 
@@ -48,16 +48,32 @@ Status: merged.
 
 Delivered tenant/environment-scoped Ed25519 public keys, active/retired/revoked states, atomic rotation, key-ID reuse protection, retry-safe startup registration, discovery, historical verification, and unsupported-key rejection.
 
+### Phase 2F — idempotency retention operations
+
+Status: implemented.
+
+Delivered:
+
+- a hard seven-day replay floor with configurable retention up to 90 days;
+- one-shot scheduler-friendly cleanup with no API credential dependency;
+- migration-readiness checks without migration authority;
+- PostgreSQL `clock_timestamp()` as the retention authority;
+- test/live and optional tenant scoping;
+- bounded `FOR UPDATE SKIP LOCKED` deletion batches;
+- index-aligned candidate ordering for environment-wide cleanup;
+- safe count-only structured output;
+- exact backlog inspection after the batch budget is exhausted;
+- configuration, migration, source-posture, and real PostgreSQL multi-worker tests.
+
 Remaining operational hardening:
 
 - deployment migration-role separation and production runbook;
 - outbox worker-process composition, metrics, alerting, and operator dead-letter replay;
-- idempotency retention cleanup and configurable policy;
 - backup/restore and recovery drills.
 
 ## Phase 3 — execution and receipt lifecycle
 
-Status: core execution, expiry, verification, and artifact boundaries merged; receipt supersession in progress.
+Status: core execution, expiry, offline verification, artifact, and receipt-supersession boundaries merged.
 
 ### Phase 3A — single-use decision reservation
 
@@ -230,9 +246,9 @@ Remaining publication work:
 
 ### Phase 3C.4 — append-only receipt supersession
 
-Status: implementation branch.
+Status: merged.
 
-Delivered in the branch:
+Delivered:
 
 - receipt schema v1.2 with signed `supersedesReceiptId` and `supersessionReason`;
 - immutable execution evidence copied from the predecessor rather than caller input;
@@ -240,7 +256,7 @@ Delivered in the branch:
 - one direct successor per predecessor, producing a linear non-forking chain;
 - predecessor verification through the tenant/environment signing-key registry;
 - active and retired predecessor keys accepted; revoked, unknown, or tampered predecessors rejected;
-- PostgreSQL shared key-row lock preventing revocation races during supersession;
+- PostgreSQL key-row locking preventing revocation races during supersession;
 - composite foreign-key enforcement preserving decision and action-attempt identity;
 - payload-bound idempotent `POST /v1/receipts/{id}/supersede`;
 - atomic successor, audit, outbox, and replay persistence;
@@ -249,11 +265,7 @@ Delivered in the branch:
 - domain, HTTP, offline-verifier, and real-PostgreSQL concurrency tests;
 - migration 007 and dedicated lifecycle documentation.
 
-Remaining before Phase 3C.4 closes:
-
-- exact-head CI and automated review merge gate.
-
-Exit gate:
+Exit gate met:
 
 - corrections never rewrite signed history;
 - concurrent corrections produce one direct successor;
