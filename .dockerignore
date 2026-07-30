@@ -1,0 +1,15 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+node_modules
+coverage
+artifacts
+release-artifacts
+test
+*.log
+*.pem
+*.key
+*.crt
+.DS_Store
