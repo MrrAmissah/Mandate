@@ -66,8 +66,51 @@ Authentication, authorization, malformed requests, and domain errors are evaluat
 
 This avoids persisting transient precondition failures while preserving exactly one committed successful result.
 
-## Concurrency and retention
+## Concurrency
 
 The idempotency row is inserted in the same transaction as domain state, audit event, and outbox message. Concurrent first attempts are serialized by the database uniqueness boundary and transaction retry policy.
 
-Records currently expire after seven days. Retention cleanup and configurable policy remain operational follow-up work.
+## Retention policy
+
+A committed idempotency record receives an `expires_at` timestamp seven days after creation. The service continues to replay an expired row until a maintenance run deletes it, so delayed cleanup extends replay protection rather than shortening it.
+
+The cleanup policy has a hard seven-day minimum and may be configured up to 90 days:
+
+```text
+MANDATE_IDEMPOTENCY_RETENTION_SECONDS=604800
+MANDATE_IDEMPOTENCY_CLEANUP_BATCH_LIMIT=500
+MANDATE_IDEMPOTENCY_CLEANUP_MAX_BATCHES=20
+```
+
+A record is eligible for deletion only when PostgreSQL determines that both conditions are true:
+
+1. `expires_at` has passed; and
+2. `created_at` is at least the configured retention age.
+
+This means a configuration error cannot delete a record before the original seven-day replay window.
+
+## Cleanup operation
+
+After migration `008_idempotency_retention` is applied by the deployment role, run the one-shot command from a scheduler or controlled maintenance job:
+
+```bash
+MANDATE_STORE=postgres \
+MANDATE_ENVIRONMENT=live \
+MANDATE_IDEMPOTENCY_RETENTION_SECONDS=604800 \
+npm run idempotency:cleanup
+```
+
+The command:
+
+- requires PostgreSQL and an explicit `test` or `live` environment;
+- can optionally restrict cleanup to `MANDATE_TENANT_ID`;
+- uses `clock_timestamp()` as the time authority;
+- deletes bounded batches with `FOR UPDATE SKIP LOCKED`;
+- is safe for overlapping scheduler runs;
+- reports counts and backlog timestamps only;
+- never logs idempotency keys, fingerprints, response headers, or response bodies;
+- does not use `MANDATE_API_KEY`;
+- checks migration readiness but never applies migrations;
+- deletes no mandate, decision, approval, attempt, receipt, audit, or outbox data.
+
+If the configured batch budget is exhausted, `limitReached` is derived from a fresh database backlog query. The next scheduled run can continue without weakening replay semantics.
