@@ -1,5 +1,5 @@
 const RUNTIME_ROLE_IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
-export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.5';
+export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.6';
 
 const ROLE_ENVIRONMENT = Object.freeze({
   api: 'MANDATE_DATABASE_API_ROLE',
@@ -85,6 +85,25 @@ function normalizedSchemaNames(schemaNames) {
   return names;
 }
 
+function normalizedTableColumns(tableColumns) {
+  if (!Array.isArray(tableColumns)) throw new Error('Mandate table-column inventory must be an array.');
+  const byTable = new Map();
+  for (const entry of tableColumns) {
+    const tableName = entry?.tableName;
+    const columnName = entry?.columnName;
+    quoteServerIdentifier(tableName, 'table');
+    quoteServerIdentifier(columnName, 'column');
+    if (!byTable.has(tableName)) byTable.set(tableName, new Set());
+    byTable.get(tableName).add(columnName);
+  }
+  return [...byTable.entries()]
+    .sort(([left], [right]) => left.localeCompare(right, 'en'))
+    .map(([tableName, columns]) => Object.freeze({
+      tableName,
+      columns: Object.freeze([...columns].sort((left, right) => left.localeCompare(right, 'en')))
+    }));
+}
+
 function defaultPrivilegeRevokes(deploymentRole, grantee, { schemaScoped = false } = {}) {
   const scope = schemaScoped ? ' IN SCHEMA mandate' : '';
   return [
@@ -92,6 +111,14 @@ function defaultPrivilegeRevokes(deploymentRole, grantee, { schemaScoped = false
     `ALTER DEFAULT PRIVILEGES FOR ROLE ${deploymentRole}${scope} REVOKE ALL ON SEQUENCES FROM ${grantee};`,
     `ALTER DEFAULT PRIVILEGES FOR ROLE ${deploymentRole}${scope} REVOKE EXECUTE ON ROUTINES FROM ${grantee};`
   ];
+}
+
+function columnPrivilegeRevokes(tableColumns, grantee) {
+  return tableColumns.map(({ tableName, columns }) => {
+    const quotedTable = quoteServerIdentifier(tableName, 'table');
+    const quotedColumns = columns.map((column) => quoteServerIdentifier(column, 'column')).join(', ');
+    return `REVOKE ALL PRIVILEGES (${quotedColumns}) ON TABLE mandate.${quotedTable} FROM ${grantee};`;
+  });
 }
 
 export function parseDatabaseRolePolicyConfig(env = process.env) {
@@ -114,11 +141,13 @@ export function buildDatabaseRolePolicyStatements({
   roles,
   databaseName,
   deploymentRoleName,
-  schemaNames = ['mandate', 'public']
+  schemaNames = ['mandate', 'public'],
+  tableColumns = []
 }) {
   const quotedDatabase = quoteServerIdentifier(databaseName, 'database');
   const quotedDeploymentRole = quoteServerIdentifier(deploymentRoleName, 'deployment role');
   const schemas = normalizedSchemaNames(schemaNames);
+  const columns = normalizedTableColumns(tableColumns);
   const statements = [
     `REVOKE CONNECT ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
     `REVOKE TEMPORARY ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
@@ -134,6 +163,7 @@ export function buildDatabaseRolePolicyStatements({
     'REVOKE ALL ON ALL TABLES IN SCHEMA mandate FROM PUBLIC;',
     'REVOKE ALL ON ALL SEQUENCES IN SCHEMA mandate FROM PUBLIC;',
     'REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mandate FROM PUBLIC;',
+    ...columnPrivilegeRevokes(columns, 'PUBLIC'),
     ...defaultPrivilegeRevokes(quotedDeploymentRole, 'PUBLIC'),
     ...defaultPrivilegeRevokes(quotedDeploymentRole, 'PUBLIC', { schemaScoped: true })
   );
@@ -150,6 +180,7 @@ export function buildDatabaseRolePolicyStatements({
     statements.push(`REVOKE ALL ON ALL TABLES IN SCHEMA mandate FROM ${quotedRole};`);
     statements.push(`REVOKE ALL ON ALL SEQUENCES IN SCHEMA mandate FROM ${quotedRole};`);
     statements.push(`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mandate FROM ${quotedRole};`);
+    statements.push(...columnPrivilegeRevokes(columns, quotedRole));
     statements.push(...defaultPrivilegeRevokes(quotedDeploymentRole, quotedRole));
     statements.push(...defaultPrivilegeRevokes(quotedDeploymentRole, quotedRole, { schemaScoped: true }));
   }
@@ -194,6 +225,17 @@ export async function applyDatabaseRolePolicy(client, config) {
       ORDER BY nspname`
   );
   const schemaNames = normalizedSchemaNames(schemaResult.rows.map((row) => row.nspname));
+
+  const columnResult = await client.query(
+    `SELECT table_name, column_name
+       FROM information_schema.columns
+      WHERE table_schema = 'mandate'
+      ORDER BY table_name, ordinal_position`
+  );
+  const tableColumns = normalizedTableColumns(columnResult.rows.map((row) => ({
+    tableName: row.table_name,
+    columnName: row.column_name
+  })));
 
   const memberships = await client.query(
     `SELECT member.rolname AS member_name, parent.rolname AS granted_role
@@ -258,7 +300,11 @@ export async function applyDatabaseRolePolicy(client, config) {
     roles: config.roles,
     databaseName,
     deploymentRoleName,
-    schemaNames
+    schemaNames,
+    tableColumns: columnResult.rows.map((row) => ({
+      tableName: row.table_name,
+      columnName: row.column_name
+    }))
   });
   await client.query('BEGIN');
   try {
@@ -273,6 +319,7 @@ export async function applyDatabaseRolePolicy(client, config) {
     databaseName,
     deploymentRoleName,
     schemaNames: Object.freeze(schemaNames),
+    tableCount: tableColumns.length,
     roles: config.roles,
     statementCount: statements.length
   });
