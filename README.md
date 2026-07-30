@@ -21,13 +21,15 @@ It answers three questions ordinary application authorization does not answer we
 2. Which caller acquired and completed the one execution opportunity represented by an authorization decision?
 3. What verifiable evidence records the authority, execution, outcome, and any later append-only correction?
 
-## Architecture at a glance
+## Target architecture concept
+
+> **Directional concept, not a literal map of the current runtime.** The implemented service issues a root receipt only after an `ALLOW` decision has been reserved and its action attempt reaches `COMPLETED`. Audit logs and observability never mint receipts. Rate limiting, RBAC/ABAC administration, broad integration clients, and full dashboards shown below remain future controls unless described as implemented elsewhere in this README.
 
 <p align="center">
-  <img src="./assets/mandate-architecture.svg" alt="Mandate-API control flow from principal and AI agent through policy evaluation, optional human approval, execution, and a signed action receipt" width="100%" />
+  <img src="./assets/mandate-architecture.png" alt="Conceptual Mandate target architecture showing clients, policy evaluation, approval and deny outcomes, execution evidence, and signed receipts" width="100%" />
 </p>
 
-Mandate-API sits between agents and tools. It allows permitted actions, pauses sensitive actions for human approval, blocks prohibited actions, and records completed execution as independently verifiable evidence.
+Mandate-API sits between agents and tools. It allows permitted actions, pauses sensitive actions for human approval, blocks prohibited actions, and records completed execution as independently verifiable evidence. The exact implemented lifecycle is documented in **Core flow** below.
 
 ## Current milestone: durable execution and receipt lifecycle
 
