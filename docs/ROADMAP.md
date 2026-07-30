@@ -16,7 +16,7 @@ Delivered payload-bound idempotency, single-use approval consumption, canonical 
 
 ## Phase 2 — durable multi-tenant core
 
-Status: core runtime merged; operational hardening continues.
+Status: runtime and operational hardening merged through controlled dead-letter replay.
 
 ### Phase 2A — persistence contract
 
@@ -50,7 +50,7 @@ Delivered tenant/environment-scoped Ed25519 public keys, active/retired/revoked 
 
 ### Phase 2F — idempotency retention operations
 
-Status: implemented.
+Status: merged.
 
 Delivered:
 
@@ -65,11 +65,45 @@ Delivered:
 - bounded expired and eligible backlog sampling after the batch budget is exhausted;
 - configuration, migration, source-posture, and real PostgreSQL multi-worker tests.
 
-Remaining operational hardening:
+### Phase 2G — supervised outbox worker
 
-- deployment migration-role separation and production runbook;
-- outbox worker-process composition, metrics, alerting, and operator dead-letter replay;
-- backup/restore and recovery drills.
+Status: merged.
+
+Delivered:
+
+- a standalone, signal-aware outbox worker process;
+- exact trusted local handler modules with no wildcard or remote-module loading;
+- PostgreSQL-time claims, leases, retry scheduling, and stale-work recovery;
+- bounded `FOR UPDATE SKIP LOCKED` processing across workers;
+- append-only attempts and late-owner rejection;
+- dead-letter transitions without automatic replay;
+- cached bounded backlog samples and low-cardinality metrics;
+- loopback-default liveness and readiness endpoints;
+- migration 009 and configuration, process, HTTP, and real-PostgreSQL tests.
+
+### Phase 2H — controlled dead-letter replay
+
+Status: completed.
+
+Delivered:
+
+- bounded read-only dead-letter inspection with tenant identity on every result;
+- no payload, replay-key hash, request fingerprint, or audit-body disclosure;
+- deliberate operator replay with expected-attempt optimistic control;
+- payload-bound hashed replay idempotency keys;
+- a fresh `PENDING` replacement instead of resetting failed history;
+- one direct replacement per source and linear non-forking replay chains;
+- immutable replay records and operator audit evidence;
+- preserved business-event provenance on replacement messages;
+- separate `operator_audit_event_id` provenance on replay records;
+- migration 010 and unit, migration, concurrency, and real-PostgreSQL tests.
+
+Remaining Phase 2 operational hardening:
+
+- deployment migration-role separation and production runbooks;
+- restricted runtime and operator database roles;
+- approval policy and alert thresholds for live replay;
+- backup, restore, and recovery drills.
 
 ## Phase 3 — execution and receipt lifecycle
 
