@@ -105,14 +105,20 @@ test('outbox worker migration adds status-specific scope and event indexes only'
   assert.doesNotMatch(sql, /UPDATE mandate\.outbox_messages|DELETE FROM mandate\.outbox_messages/);
 });
 
-test('dead-letter replay migration creates immutable linear replay links', async () => {
+test('dead-letter replay migration separates business and operator provenance', async () => {
   const sql = await readFile(replayUpPath, 'utf8');
   assert.match(sql, /^BEGIN;/);
   assert.match(sql, /COMMIT;\s*$/);
   assert.match(sql, /CREATE TABLE mandate\.outbox_dead_letter_replays/);
+  assert.match(sql, /operator_audit_event_id text NOT NULL/);
   assert.match(sql, /UNIQUE \(tenant_id, environment, source_message_id\)/);
   assert.match(sql, /UNIQUE \(tenant_id, environment, replay_message_id\)/);
+  assert.match(sql, /UNIQUE \(tenant_id, environment, operator_audit_event_id\)/);
   assert.match(sql, /UNIQUE \(tenant_id, environment, idempotency_key_hash\)/);
+  assert.match(
+    sql,
+    /FOREIGN KEY \(tenant_id, environment, operator_audit_event_id\)[\s\S]*REFERENCES mandate\.audit_events/
+  );
   assert.match(sql, /outbox_dead_letter_replays_immutable/);
   assert.match(sql, /reject_immutable_change/);
   assert.match(sql, /010_outbox_dead_letter_replays/);
