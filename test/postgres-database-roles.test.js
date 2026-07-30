@@ -97,7 +97,7 @@ postgresTest('database role policy removes inherited, current and future runtime
 
     const result = await applyDatabaseRolePolicy(client, { roles });
     assert.equal(result.roles.api, roles.api);
-    assert.equal(result.policyVersion, '2026-07-30.4');
+    assert.equal(result.policyVersion, '2026-07-30.5');
     assert.ok(result.schemaNames.includes('mandate'));
     assert.ok(result.schemaNames.includes('public'));
     assert.ok(result.schemaNames.includes(customSchema));
