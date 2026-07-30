@@ -140,7 +140,7 @@ integration('dead-letter replay preserves history and creates one idempotent rep
          WHERE tenant_id = $1 AND environment = 'test' AND id = $2`,
         [tenantId, first.id]
       ),
-      /IMMUTABLE_TABLE/
+      /immutable table outbox_dead_letter_replays cannot be updated or deleted/
     );
   } finally {
     await pool.end();
