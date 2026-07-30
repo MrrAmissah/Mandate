@@ -59,9 +59,14 @@ test('database roles are distinct and identifiers fail closed', () => {
 
 test('runtime role policy grants no DDL and keeps delete authority maintenance-only', () => {
   const roles = parseDatabaseRolePolicyConfig({}).roles;
-  const statements = buildDatabaseRolePolicyStatements({ roles, databaseName: 'mandate' });
+  const statements = buildDatabaseRolePolicyStatements({
+    roles,
+    databaseName: 'mandate',
+    deploymentRoleName: 'mandate_migrator'
+  });
   const joined = statements.join('\n');
   assert.match(joined, /REVOKE ALL ON SCHEMA mandate FROM PUBLIC/);
+  assert.match(joined, /GRANT CONNECT ON DATABASE "mandate" TO "mandate_migrator"/);
   assert.match(joined, /REVOKE CREATE ON SCHEMA mandate FROM "mandate_api"/);
   assert.match(joined, /GRANT SELECT, DELETE ON TABLE mandate\.idempotency_records TO "mandate_maintenance"/);
   assert.doesNotMatch(joined, /GRANT [^;]*DELETE[^;]*TO "mandate_api"/);
