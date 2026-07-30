@@ -65,6 +65,7 @@ const SESSION_TERMINATION_TIMEOUT_MS = 5_000;
 
 function quoteRuntimeRole(value) {
   if (!RUNTIME_ROLE_IDENTIFIER.test(value)) throw new Error(`Unsafe PostgreSQL role identifier: ${value}`);
+  if (value.startsWith('pg_')) throw new Error(`Reserved PostgreSQL role identifier: ${value}`);
   return `"${value}"`;
 }
 
@@ -313,8 +314,6 @@ async function terminateRuntimeSessions(client, roleNames) {
         AND pid <> pg_backend_pid()`,
     [roleNames, SESSION_TERMINATION_TIMEOUT_MS]
   );
-  const failed = result.rows.find((row) => row.terminated !== true);
-  if (failed) throw new Error(`Unable to terminate runtime PostgreSQL session: ${failed.pid}`);
   const remaining = await client.query(
     `SELECT pid
        FROM pg_stat_activity
@@ -327,7 +326,7 @@ async function terminateRuntimeSessions(client, roleNames) {
   if (remaining.rowCount > 0) {
     throw new Error(`Runtime PostgreSQL session remained active after termination: ${remaining.rows[0].pid}`);
   }
-  return result.rowCount;
+  return result.rows.filter((row) => row.terminated === true).length;
 }
 
 async function loadSchemaNames(client) {
