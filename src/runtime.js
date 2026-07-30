@@ -5,6 +5,7 @@ import { createStaticSigningKeyRegistry, PostgresSigningKeyRegistry } from './cr
 import { createApiHealth, parseApiHealthConfig } from './application/api-health.js';
 import { MemoryStore } from './store/memory-store.js';
 import { ensurePostgresBootstrap } from './store/postgres-bootstrap.js';
+import { createPostgresHealthPool } from './store/postgres-health-pool.js';
 import { createPostgresPool, PostgresStore } from './store/postgres-store.js';
 
 function booleanValue(value, fallback = false) {
@@ -76,9 +77,8 @@ export async function createRuntime({ env = process.env } = {}) {
     max: positiveInteger(env.MANDATE_DATABASE_POOL_MAX, 10),
     ssl
   });
-  const readinessPool = await createPostgresPool({
+  const readinessPool = await createPostgresHealthPool({
     connectionString: env.DATABASE_URL,
-    max: 1,
     ssl,
     connectionTimeoutMillis: healthConfig.queryTimeoutMs
   });
