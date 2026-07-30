@@ -43,12 +43,30 @@ function environment(value) {
   return value;
 }
 
-function eventTypes(value) {
+function normalizeEventTypes(values) {
+  if (values === undefined) return undefined;
+  if (!Array.isArray(values)) throw new Error('Event type filters must be an array.');
+  const normalized = [...new Set(values)];
+  if (normalized.length === 0 || normalized.length > 100) {
+    throw new Error('Event type filters must contain between 1 and 100 values.');
+  }
+  for (const eventType of normalized) text(eventType, 'event type', 255);
+  return normalized;
+}
+
+function eventTypesFromEnvironment(value) {
   if (!value) return undefined;
-  const values = [...new Set(value.split(',').map((entry) => entry.trim()).filter(Boolean))];
-  if (values.length === 0 || values.length > 100) throw new Error('Event type filters must contain between 1 and 100 values.');
-  for (const eventType of values) text(eventType, 'event type', 255);
-  return values;
+  const trimmed = value.trim();
+  if (trimmed.startsWith('[')) {
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      throw new Error('MANDATE_OUTBOX_EVENT_TYPES must be a comma-separated list or JSON string array.');
+    }
+    return normalizeEventTypes(parsed);
+  }
+  return normalizeEventTypes(value.split(',').map((entry) => entry.trim()).filter(Boolean));
 }
 
 function digest(value) {
@@ -111,7 +129,7 @@ export function parseDeadLetterListConfig(env = process.env) {
     }),
     environment: environment(env.MANDATE_ENVIRONMENT),
     tenantId: tenantId(env.MANDATE_TENANT_ID, { optional: true }),
-    eventTypes: eventTypes(env.MANDATE_OUTBOX_EVENT_TYPES),
+    eventTypes: eventTypesFromEnvironment(env.MANDATE_OUTBOX_EVENT_TYPES),
     limit: integer(env.MANDATE_OUTBOX_DEAD_LETTER_LIMIT, 100, {
       name: 'MANDATE_OUTBOX_DEAD_LETTER_LIMIT', minimum: 1, maximum: 500
     })
@@ -178,24 +196,54 @@ export async function listDeadLetterMessages(pool, {
   environment(scopeEnvironment);
   tenantId(scopeTenantId, { optional: true });
   integer(limit, 100, { name: 'limit', minimum: 1, maximum: 500 });
-  const normalizedTypes = types === undefined ? null : eventTypes(types.join(','));
+  const normalizedTypes = normalizeEventTypes(types) ?? null;
   const result = await pool.query(
-    `SELECT messages.tenant_id, messages.id, messages.event_type,
-            messages.aggregate_type, messages.aggregate_id, messages.status,
-            messages.attempt_count, messages.processed_at, messages.last_error_code,
-            messages.created_at, replays.replay_message_id
-     FROM mandate.outbox_messages messages
-     LEFT JOIN mandate.outbox_dead_letter_replays replays
-       ON replays.tenant_id = messages.tenant_id
-      AND replays.environment = messages.environment
-      AND replays.source_message_id = messages.id
-     WHERE messages.environment = $1
-       AND ($2::text IS NULL OR messages.tenant_id = $2)
-       AND ($3::text[] IS NULL OR messages.event_type = ANY($3::text[]))
-       AND messages.status = 'DEAD_LETTER'
-     ORDER BY (replays.replay_message_id IS NOT NULL), messages.tenant_id,
-              messages.event_type, messages.processed_at, messages.created_at, messages.id
-     LIMIT $4`,
+    `WITH unreplayed AS MATERIALIZED (
+       SELECT 0 AS replay_priority, messages.tenant_id, messages.id,
+              messages.event_type, messages.aggregate_type, messages.aggregate_id,
+              messages.status, messages.attempt_count, messages.processed_at,
+              messages.last_error_code, messages.created_at,
+              NULL::text AS replay_message_id
+       FROM mandate.outbox_messages messages
+       WHERE messages.environment = $1
+         AND ($2::text IS NULL OR messages.tenant_id = $2)
+         AND ($3::text[] IS NULL OR messages.event_type = ANY($3::text[]))
+         AND messages.status = 'DEAD_LETTER'
+         AND NOT EXISTS (
+           SELECT 1 FROM mandate.outbox_dead_letter_replays replay
+           WHERE replay.tenant_id = messages.tenant_id
+             AND replay.environment = messages.environment
+             AND replay.source_message_id = messages.id
+         )
+       ORDER BY messages.tenant_id, messages.event_type, messages.processed_at,
+                messages.created_at, messages.id
+       LIMIT $4
+     ), replayed AS MATERIALIZED (
+       SELECT 1 AS replay_priority, messages.tenant_id, messages.id,
+              messages.event_type, messages.aggregate_type, messages.aggregate_id,
+              messages.status, messages.attempt_count, messages.processed_at,
+              messages.last_error_code, messages.created_at, replay.replay_message_id
+       FROM mandate.outbox_messages messages
+       JOIN mandate.outbox_dead_letter_replays replay
+         ON replay.tenant_id = messages.tenant_id
+        AND replay.environment = messages.environment
+        AND replay.source_message_id = messages.id
+       WHERE messages.environment = $1
+         AND ($2::text IS NULL OR messages.tenant_id = $2)
+         AND ($3::text[] IS NULL OR messages.event_type = ANY($3::text[]))
+         AND messages.status = 'DEAD_LETTER'
+       ORDER BY messages.tenant_id, messages.event_type, messages.processed_at,
+                messages.created_at, messages.id
+       LIMIT GREATEST($4 - (SELECT count(*) FROM unreplayed), 0)
+     ), sample AS (
+       SELECT * FROM unreplayed
+       UNION ALL
+       SELECT * FROM replayed
+     )
+     SELECT tenant_id, id, event_type, aggregate_type, aggregate_id, status,
+            attempt_count, processed_at, last_error_code, created_at, replay_message_id
+     FROM sample
+     ORDER BY replay_priority, tenant_id, event_type, processed_at, created_at, id`,
     [scopeEnvironment, scopeTenantId ?? null, normalizedTypes, limit]
   );
   return Object.freeze(result.rows.map(safeMessage));
