@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   buildDatabaseRolePolicyStatements,
+  buildDatabaseRoleQuiesceStatements,
   databaseRolePolicy,
   parseDatabaseRolePolicyConfig
 } from '../src/deployment/database-role-policy.js';
@@ -46,6 +47,15 @@ test('production compose separates migration, API, expiry and outbox identities'
   assert.doesNotMatch(outboxBlock, /MANDATE_API_KEY/);
 });
 
+
+test('database role command reports fail-closed quiescence without leaking driver errors', async () => {
+  const script = await read('scripts/configure-database-roles.js');
+  assert.match(script, /rolesRemainQuiesced: error\?\.databaseRolesRemainQuiesced === true/);
+  assert.match(script, /DATABASE_ROLE_CONFIGURATION_FAILED/);
+  assert.doesNotMatch(script, /error\.message/);
+  assert.doesNotMatch(script, /error\.stack/);
+});
+
 test('database roles are distinct and identifiers fail closed', () => {
   const config = parseDatabaseRolePolicyConfig({});
   assert.equal(new Set(Object.values(config.roles)).size, 5);
@@ -82,29 +92,63 @@ test('managed database, deployment-role and schema identifiers are quoted safely
   );
 });
 
-test('runtime role policy removes database, schema, column and future-object authority', () => {
+test('runtime roles are quiesced before ownership is audited and exact grants are restored', async () => {
+  const roles = parseDatabaseRolePolicyConfig({}).roles;
+  const quiesce = buildDatabaseRoleQuiesceStatements({
+    roles,
+    databaseName: 'mandate',
+    schemaNames: ['mandate', 'public', 'partner_data'],
+    tableColumns: [
+      { schemaName: 'partner_data', tableName: 'external_events', columnName: 'payload' }
+    ]
+  }).join('\n');
+  assert.match(quiesce, /REVOKE CONNECT ON DATABASE "mandate" FROM "mandate_api"/);
+  assert.match(quiesce, /REVOKE CREATE ON DATABASE "mandate" FROM "mandate_api"/);
+  assert.match(quiesce, /REVOKE TEMPORARY ON DATABASE "mandate" FROM "mandate_api"/);
+  assert.match(quiesce, /REVOKE CREATE ON SCHEMA "partner_data" FROM "mandate_api"/);
+  assert.match(quiesce, /REVOKE ALL ON ALL TABLES IN SCHEMA "partner_data" FROM "mandate_api"/);
+  assert.match(quiesce, /REVOKE ALL PRIVILEGES \("payload"\) ON TABLE "partner_data"\."external_events" FROM "mandate_api"/);
+
+  const source = await read('src/deployment/database-role-policy.js');
+  const applyPosition = source.indexOf('export async function applyDatabaseRolePolicy');
+  const quiescePosition = source.indexOf(
+    'const quiesceStatements = buildDatabaseRoleQuiesceStatements({',
+    applyPosition
+  );
+  const terminatePosition = source.indexOf('terminateRuntimeSessions(client, roleNames)', quiescePosition);
+  const finalOwnershipPosition = source.indexOf('findRuntimeOwnership(client, roleNames)', terminatePosition);
+  const finalPolicyPosition = source.indexOf('buildDatabaseRolePolicyStatements({', finalOwnershipPosition);
+  assert.ok(applyPosition > 0);
+  assert.ok(quiescePosition > applyPosition);
+  assert.ok(terminatePosition > quiescePosition);
+  assert.ok(finalOwnershipPosition > terminatePosition);
+  assert.ok(finalPolicyPosition > finalOwnershipPosition);
+});
+
+test('runtime role policy resets every inventoried schema and all routine kinds', () => {
   const roles = parseDatabaseRolePolicyConfig({}).roles;
   const statements = buildDatabaseRolePolicyStatements({
     roles,
     databaseName: 'mandate',
     deploymentRoleName: 'mandate_migrator',
-    schemaNames: ['mandate', 'public'],
+    schemaNames: ['mandate', 'public', 'partner_data'],
     tableColumns: [
-      { tableName: 'outbox_attempts', columnName: 'id' },
-      { tableName: 'outbox_attempts', columnName: 'error_code' }
+      { schemaName: 'mandate', tableName: 'outbox_attempts', columnName: 'id' },
+      { schemaName: 'mandate', tableName: 'outbox_attempts', columnName: 'error_code' },
+      { schemaName: 'partner_data', tableName: 'external_events', columnName: 'payload' }
     ]
   });
   const joined = statements.join('\n');
-  assert.match(joined, /REVOKE ALL ON SCHEMA mandate FROM PUBLIC/);
-  assert.match(joined, /REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mandate FROM PUBLIC/);
-  assert.match(joined, /REVOKE ALL PRIVILEGES \("error_code", "id"\) ON TABLE mandate\."outbox_attempts" FROM PUBLIC/);
-  assert.match(joined, /REVOKE ALL PRIVILEGES \("error_code", "id"\) ON TABLE mandate\."outbox_attempts" FROM "mandate_api"/);
+  assert.match(joined, /REVOKE ALL ON SCHEMA "partner_data" FROM PUBLIC/);
+  assert.match(joined, /REVOKE ALL ON ALL TABLES IN SCHEMA "partner_data" FROM "mandate_api"/);
+  assert.match(joined, /REVOKE ALL ON ALL SEQUENCES IN SCHEMA "partner_data" FROM "mandate_api"/);
+  assert.match(joined, /REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA "partner_data" FROM "mandate_api"/);
+  assert.match(joined, /REVOKE ALL PRIVILEGES \("payload"\) ON TABLE "partner_data"\."external_events" FROM PUBLIC/);
+  assert.match(joined, /ALTER DEFAULT PRIVILEGES FOR ROLE "mandate_migrator" IN SCHEMA "partner_data" REVOKE EXECUTE ON ROUTINES FROM "mandate_api"/);
   assert.match(joined, /REVOKE CREATE ON DATABASE "mandate" FROM "mandate_api"/);
   assert.match(joined, /REVOKE TEMPORARY ON DATABASE "mandate" FROM "mandate_api"/);
-  assert.match(joined, /REVOKE CREATE ON SCHEMA "public" FROM "mandate_api"/);
-  assert.match(joined, /ALTER DEFAULT PRIVILEGES FOR ROLE "mandate_migrator" REVOKE EXECUTE ON ROUTINES FROM PUBLIC/);
-  assert.match(joined, /ALTER DEFAULT PRIVILEGES FOR ROLE "mandate_migrator" IN SCHEMA mandate REVOKE ALL ON TABLES FROM "mandate_api"/);
   assert.match(joined, /GRANT SELECT, DELETE ON TABLE mandate\.idempotency_records TO "mandate_maintenance"/);
+  assert.doesNotMatch(joined, /ALL FUNCTIONS IN SCHEMA/);
   assert.doesNotMatch(joined, /GRANT EXECUTE/);
   assert.doesNotMatch(joined, /GRANT [^;]*DELETE[^;]*TO "mandate_api"/);
   assert.doesNotMatch(joined, /GRANT [^;]*DELETE[^;]*TO "mandate_expiry_worker"/);
