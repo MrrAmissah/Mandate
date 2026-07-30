@@ -43,6 +43,10 @@ function validateMaximumBatches(value) {
   return integer(value, 20, { name: 'maximumBatches', minimum: 1, maximum: 1000 });
 }
 
+function validateSampleLimit(value) {
+  return integer(value, 500, { name: 'sampleLimit', minimum: 1, maximum: 5000 });
+}
+
 function timestamp(value) {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -115,45 +119,59 @@ export async function assertIdempotencyRetentionSchema(pool) {
 export async function inspectIdempotencyRetentionBacklog(
   pool,
   scope,
-  { retentionSeconds = MINIMUM_RETENTION_SECONDS } = {}
+  {
+    retentionSeconds = MINIMUM_RETENTION_SECONDS,
+    sampleLimit = 500
+  } = {}
 ) {
   if (!pool?.query) throw new TypeError('A PostgreSQL pool is required.');
   const owner = validateScope(scope);
   const retention = validateRetentionSeconds(retentionSeconds);
+  const limit = validateSampleLimit(sampleLimit);
   const result = await pool.query(
     `WITH observed AS MATERIALIZED (
        SELECT clock_timestamp() AS observed_at
-     ), counts AS (
-       SELECT
-         count(*) FILTER (WHERE records.expires_at <= observed.observed_at) AS expired_count,
-         count(*) FILTER (
-           WHERE records.expires_at <= observed.observed_at
-             AND records.created_at <= observed.observed_at
-               - ($3::double precision * interval '1 second')
-         ) AS eligible_count,
-         min(records.expires_at) FILTER (
-           WHERE records.expires_at <= observed.observed_at
-             AND records.created_at <= observed.observed_at
-               - ($3::double precision * interval '1 second')
-         ) AS oldest_eligible_at
+     ), expired_sample AS MATERIALIZED (
+       SELECT records.expires_at
        FROM mandate.idempotency_records records
        CROSS JOIN observed
        WHERE records.environment = $1
          AND ($2::text IS NULL OR records.tenant_id = $2)
+         AND records.expires_at <= observed.observed_at
+       ORDER BY records.tenant_id, records.expires_at, records.created_at,
+                records.scope, records.idempotency_key
+       LIMIT $4
+     ), eligible_sample AS MATERIALIZED (
+       SELECT records.expires_at
+       FROM mandate.idempotency_records records
+       CROSS JOIN observed
+       WHERE records.environment = $1
+         AND ($2::text IS NULL OR records.tenant_id = $2)
+         AND records.expires_at <= observed.observed_at
+         AND records.created_at <= observed.observed_at
+           - ($3::double precision * interval '1 second')
+       ORDER BY records.tenant_id, records.expires_at, records.created_at,
+                records.scope, records.idempotency_key
+       LIMIT $4
      )
-     SELECT counts.expired_count, counts.eligible_count, counts.oldest_eligible_at,
-            observed.observed_at
-     FROM observed
-     CROSS JOIN counts`,
-    [owner.environment, owner.tenantId ?? null, retention]
+     SELECT
+       (SELECT count(*) FROM expired_sample) AS expired_sample_count,
+       (SELECT count(*) FROM eligible_sample) AS eligible_sample_count,
+       EXISTS (SELECT 1 FROM eligible_sample) AS has_eligible,
+       (SELECT min(expires_at) FROM eligible_sample) AS oldest_eligible_at,
+       observed.observed_at
+     FROM observed`,
+    [owner.environment, owner.tenantId ?? null, retention, limit]
   );
   const row = result.rows[0];
   return Object.freeze({
     environment: owner.environment,
     tenantId: owner.tenantId ?? null,
     retentionSeconds: retention,
-    expiredCount: Number(row?.expired_count ?? 0),
-    eligibleCount: Number(row?.eligible_count ?? 0),
+    sampleLimit: limit,
+    expiredSampleCount: Number(row?.expired_sample_count ?? 0),
+    eligibleSampleCount: Number(row?.eligible_sample_count ?? 0),
+    hasEligible: row?.has_eligible === true,
     oldestEligibleAt: timestamp(row?.oldest_eligible_at),
     observedAt: timestamp(row?.observed_at)
   });
@@ -234,12 +252,13 @@ export async function cleanupExpiredIdempotencyRecords({
   }
 
   const backlog = await inspectIdempotencyRetentionBacklog(pool, owner, {
-    retentionSeconds: retention
+    retentionSeconds: retention,
+    sampleLimit: limit
   });
   return Object.freeze({
     deletedCount,
     batches,
-    limitReached: backlog.eligibleCount > 0,
+    limitReached: backlog.hasEligible,
     backlog
   });
 }
