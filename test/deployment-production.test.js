@@ -79,7 +79,7 @@ test('managed database and deployment-role identifiers are quoted without weaken
   );
 });
 
-test('runtime role policy grants no DDL and keeps delete authority maintenance-only', () => {
+test('runtime role policy grants no DDL, function execution or non-maintenance deletes', () => {
   const roles = parseDatabaseRolePolicyConfig({}).roles;
   const statements = buildDatabaseRolePolicyStatements({
     roles,
@@ -88,14 +88,17 @@ test('runtime role policy grants no DDL and keeps delete authority maintenance-o
   });
   const joined = statements.join('\n');
   assert.match(joined, /REVOKE ALL ON SCHEMA mandate FROM PUBLIC/);
+  assert.match(joined, /REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mandate FROM PUBLIC/);
   assert.match(joined, /GRANT CONNECT ON DATABASE "mandate" TO "mandate_migrator"/);
   assert.match(joined, /REVOKE CREATE ON SCHEMA mandate FROM "mandate_api"/);
   assert.match(joined, /GRANT SELECT, DELETE ON TABLE mandate\.idempotency_records TO "mandate_maintenance"/);
+  assert.doesNotMatch(joined, /GRANT EXECUTE/);
   assert.doesNotMatch(joined, /GRANT [^;]*DELETE[^;]*TO "mandate_api"/);
   assert.doesNotMatch(joined, /GRANT [^;]*DELETE[^;]*TO "mandate_expiry_worker"/);
   assert.doesNotMatch(joined, /GRANT [^;]*DELETE[^;]*TO "mandate_outbox_worker"/);
   assert.doesNotMatch(joined, /GRANT [^;]*CREATE[^;]*TO "mandate_/);
   assert.equal(databaseRolePolicy.requiredMigration, '010_outbox_dead_letter_replays');
+  assert.deepEqual(databaseRolePolicy.functionRoles, []);
 });
 
 test('worker and operator table privileges remain narrowly separated', () => {
