@@ -1,5 +1,5 @@
 const RUNTIME_ROLE_IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
-export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.6';
+export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.7';
 
 const ROLE_ENVIRONMENT = Object.freeze({
   api: 'MANDATE_DATABASE_API_ROLE',
@@ -162,7 +162,7 @@ export function buildDatabaseRolePolicyStatements({
     'REVOKE ALL ON SCHEMA mandate FROM PUBLIC;',
     'REVOKE ALL ON ALL TABLES IN SCHEMA mandate FROM PUBLIC;',
     'REVOKE ALL ON ALL SEQUENCES IN SCHEMA mandate FROM PUBLIC;',
-    'REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mandate FROM PUBLIC;',
+    'REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA mandate FROM PUBLIC;',
     ...columnPrivilegeRevokes(columns, 'PUBLIC'),
     ...defaultPrivilegeRevokes(quotedDeploymentRole, 'PUBLIC'),
     ...defaultPrivilegeRevokes(quotedDeploymentRole, 'PUBLIC', { schemaScoped: true })
@@ -179,7 +179,7 @@ export function buildDatabaseRolePolicyStatements({
     statements.push(`GRANT USAGE ON SCHEMA mandate TO ${quotedRole};`);
     statements.push(`REVOKE ALL ON ALL TABLES IN SCHEMA mandate FROM ${quotedRole};`);
     statements.push(`REVOKE ALL ON ALL SEQUENCES IN SCHEMA mandate FROM ${quotedRole};`);
-    statements.push(`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mandate FROM ${quotedRole};`);
+    statements.push(`REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA mandate FROM ${quotedRole};`);
     statements.push(...columnPrivilegeRevokes(columns, quotedRole));
     statements.push(...defaultPrivilegeRevokes(quotedDeploymentRole, quotedRole));
     statements.push(...defaultPrivilegeRevokes(quotedDeploymentRole, quotedRole, { schemaScoped: true }));
@@ -251,33 +251,23 @@ export async function applyDatabaseRolePolicy(client, config) {
   }
 
   const ownership = await client.query(
-    `SELECT owner_name, object_name
-       FROM (
-         SELECT owner.rolname AS owner_name, 'database:' || database.datname AS object_name
-           FROM pg_database database
-           JOIN pg_roles owner ON owner.oid = database.datdba
-          WHERE database.datname = current_database()
-         UNION ALL
-         SELECT owner.rolname, 'schema:' || namespace.nspname
-           FROM pg_namespace namespace
-           JOIN pg_roles owner ON owner.oid = namespace.nspowner
-          WHERE namespace.nspname !~ '^pg_' AND namespace.nspname <> 'information_schema'
-         UNION ALL
-         SELECT owner.rolname, 'relation:' || namespace.nspname || '.' || relation.relname
-           FROM pg_class relation
-           JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
-           JOIN pg_roles owner ON owner.oid = relation.relowner
-          WHERE namespace.nspname !~ '^pg_' AND namespace.nspname <> 'information_schema'
-         UNION ALL
-         SELECT owner.rolname,
-                'function:' || namespace.nspname || '.' || procedure.proname ||
-                '(' || pg_get_function_identity_arguments(procedure.oid) || ')'
-           FROM pg_proc procedure
-           JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
-           JOIN pg_roles owner ON owner.oid = procedure.proowner
-          WHERE namespace.nspname !~ '^pg_' AND namespace.nspname <> 'information_schema'
-       ) owned
-      WHERE owner_name = ANY($1::text[])
+    `SELECT owner.rolname AS owner_name,
+            pg_describe_object(dependency.classid, dependency.objid, dependency.objsubid) AS object_name
+       FROM pg_shdepend dependency
+       JOIN pg_roles owner ON owner.oid = dependency.refobjid
+       JOIN pg_database current_database_entry ON current_database_entry.datname = current_database()
+      WHERE dependency.refclassid = 'pg_authid'::regclass
+        AND dependency.deptype = 'o'
+        AND owner.rolname = ANY($1::text[])
+        AND (
+          dependency.dbid = current_database_entry.oid
+          OR (
+            dependency.dbid = 0
+            AND dependency.classid = 'pg_database'::regclass
+            AND dependency.objid = current_database_entry.oid
+          )
+        )
+      ORDER BY owner.rolname, object_name
       LIMIT 1`,
     [roleNames]
   );
