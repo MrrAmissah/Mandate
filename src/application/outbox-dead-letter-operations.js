@@ -202,19 +202,13 @@ export async function listDeadLetterMessages(pool, {
        SELECT 0 AS replay_priority, messages.tenant_id, messages.id,
               messages.event_type, messages.aggregate_type, messages.aggregate_id,
               messages.status, messages.attempt_count, messages.processed_at,
-              messages.last_error_code, messages.created_at,
-              NULL::text AS replay_message_id
+              messages.last_error_code, messages.created_at, messages.replay_message_id
        FROM mandate.outbox_messages messages
        WHERE messages.environment = $1
          AND ($2::text IS NULL OR messages.tenant_id = $2)
          AND ($3::text[] IS NULL OR messages.event_type = ANY($3::text[]))
          AND messages.status = 'DEAD_LETTER'
-         AND NOT EXISTS (
-           SELECT 1 FROM mandate.outbox_dead_letter_replays replay
-           WHERE replay.tenant_id = messages.tenant_id
-             AND replay.environment = messages.environment
-             AND replay.source_message_id = messages.id
-         )
+         AND messages.replay_message_id IS NULL
        ORDER BY messages.tenant_id, messages.event_type, messages.processed_at,
                 messages.created_at, messages.id
        LIMIT $4
@@ -222,16 +216,13 @@ export async function listDeadLetterMessages(pool, {
        SELECT 1 AS replay_priority, messages.tenant_id, messages.id,
               messages.event_type, messages.aggregate_type, messages.aggregate_id,
               messages.status, messages.attempt_count, messages.processed_at,
-              messages.last_error_code, messages.created_at, replay.replay_message_id
+              messages.last_error_code, messages.created_at, messages.replay_message_id
        FROM mandate.outbox_messages messages
-       JOIN mandate.outbox_dead_letter_replays replay
-         ON replay.tenant_id = messages.tenant_id
-        AND replay.environment = messages.environment
-        AND replay.source_message_id = messages.id
        WHERE messages.environment = $1
          AND ($2::text IS NULL OR messages.tenant_id = $2)
          AND ($3::text[] IS NULL OR messages.event_type = ANY($3::text[]))
          AND messages.status = 'DEAD_LETTER'
+         AND messages.replay_message_id IS NOT NULL
        ORDER BY messages.tenant_id, messages.event_type, messages.processed_at,
                 messages.created_at, messages.id
        LIMIT GREATEST($4 - (SELECT count(*) FROM unreplayed), 0)
@@ -307,13 +298,7 @@ export async function replayDeadLetterMessage(pool, request) {
     if (source.attempt_count !== normalized.expectedAttemptCount) {
       throw operationalError('OUTBOX_ATTEMPT_COUNT_CONFLICT', 'The outbox attempt count changed before replay.');
     }
-
-    const priorReplay = await client.query(
-      `SELECT replay_message_id FROM mandate.outbox_dead_letter_replays
-       WHERE tenant_id = $1 AND environment = $2 AND source_message_id = $3`,
-      [normalized.tenantId, normalized.environment, normalized.sourceMessageId]
-    );
-    if (priorReplay.rowCount > 0) {
+    if (source.replay_message_id) {
       throw operationalError('OUTBOX_MESSAGE_ALREADY_REPLAYED', 'The dead-letter message already has a replacement.');
     }
 
@@ -370,6 +355,19 @@ export async function replayDeadLetterMessage(pool, request) {
         normalized.operatorId, normalized.reason, keyHash, requestFingerprint,
         normalized.requestId, createdAt]
     );
+
+    const linked = await client.query(
+      `UPDATE mandate.outbox_messages
+       SET replay_message_id = $4
+       WHERE tenant_id = $1 AND environment = $2 AND id = $3
+         AND replay_message_id IS NULL
+       RETURNING id`,
+      [normalized.tenantId, normalized.environment, normalized.sourceMessageId, replayMessageId]
+    );
+    if (linked.rowCount !== 1) {
+      throw operationalError('OUTBOX_MESSAGE_ALREADY_REPLAYED', 'The dead-letter message already has a replacement.');
+    }
+
     await client.query('COMMIT');
     return replayResult(replay.rows[0]);
   } catch (error) {
