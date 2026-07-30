@@ -63,6 +63,7 @@ services:
       MANDATE_API_SCOPES: ${MANDATE_API_SCOPES:?Set explicit non-wildcard scopes}
       MANDATE_KEY_ID: ${MANDATE_KEY_ID:?Set MANDATE_KEY_ID}
       MANDATE_DATABASE_SSL: ${MANDATE_DATABASE_SSL:-true}
+      MANDATE_API_READINESS_TIMEOUT_MS: ${MANDATE_API_READINESS_TIMEOUT_MS:-2000}
       DATABASE_URL_FILE: /run/secrets/api_database_url
       MANDATE_API_KEY_FILE: /run/secrets/api_key
       MANDATE_PRIVATE_KEY_PEM_FILE: /run/secrets/receipt_private_key
@@ -75,7 +76,7 @@ services:
     ports:
       - "${MANDATE_BIND_ADDRESS:-127.0.0.1}:${MANDATE_API_PORT:-8787}:8787"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
       retries: 4
