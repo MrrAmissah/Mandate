@@ -24,6 +24,9 @@ The core remains handler-neutral. It does not register webhook, email, Slack, or
 14. **Attempt history is append-only.** PostgreSQL rejects update or deletion of `outbox_attempts` rows.
 15. **Backlog observation is bounded.** Due, stale, and dead-letter samples are each capped by the cycle limit and use status-specific indexes.
 16. **The worker has no API or migration authority.** It uses no `MANDATE_API_KEY`, checks migrations 002 and 009, and never applies migrations.
+17. **Dead letters are never reset in place.** Controlled replay creates a fresh pending message and an immutable source→replacement record.
+18. **One replacement per source.** A dead-letter message may produce at most one direct replacement, creating a linear replay chain rather than a fork.
+19. **Replay is optimistic and idempotent.** Operators must supply the observed attempt count and a payload-bound replay key.
 
 ## Message lifecycle
 
@@ -40,7 +43,7 @@ PENDING (future available_at)
    |
    | handler fails at limit or stale final attempt
    v
-DEAD_LETTER
+DEAD_LETTER -- controlled replay --> new PENDING message
 ```
 
 A stale `PROCESSING` lease may be reclaimed. The prior attempt receives `LEASE_EXPIRED`; the new worker receives the next attempt number.
@@ -113,17 +116,59 @@ The health listener is loopback-bound by default:
 
 Health probes read cached state and do not query PostgreSQL per request. Binding beyond loopback requires deployment network controls.
 
+## Inspect dead letters
+
+Inspection is bounded, read-only, and omits payloads, audit-event bodies, request fingerprints, and replay-key hashes:
+
+```bash
+MANDATE_ENVIRONMENT=live \
+MANDATE_TENANT_ID=ten_example \
+MANDATE_OUTBOX_EVENT_TYPES=receipt.issued,mandate.created \
+npm run outbox:dead-letter:list
+```
+
+`MANDATE_TENANT_ID` and `MANDATE_OUTBOX_EVENT_TYPES` are optional for inspection. `MANDATE_OUTBOX_DEAD_LETTER_LIMIT` defaults to 100 and is capped at 500.
+
+## Replay one dead letter
+
+Replay is a deliberate operator mutation and requires every control below:
+
+```bash
+MANDATE_ENVIRONMENT=live \
+MANDATE_TENANT_ID=ten_example \
+MANDATE_OUTBOX_MESSAGE_ID=out_... \
+MANDATE_OUTBOX_EXPECTED_ATTEMPT_COUNT=5 \
+MANDATE_OPERATOR_ID=operator@example.com \
+MANDATE_OUTBOX_REPLAY_REASON='Downstream outage resolved and delivery approved.' \
+MANDATE_OUTBOX_REPLAY_IDEMPOTENCY_KEY='random-high-entropy-value' \
+npm run outbox:dead-letter:replay
+```
+
+Replay behavior:
+
+- locks the exact source row;
+- requires `DEAD_LETTER` status and the observed attempt count;
+- serializes the hashed replay key with a PostgreSQL advisory transaction lock;
+- rejects key reuse with different source/operator/reason input;
+- creates an immutable `outbox.dead_letter_replayed` operator audit event;
+- copies the original event type, aggregate identity, and exact JSON payload into a new message;
+- starts the replacement as `PENDING` with attempt count zero;
+- leaves the source status, payload, timestamps, error code, and attempt history unchanged;
+- permits no second direct replacement for the same source;
+- permits replaying the replacement later only if that replacement itself reaches `DEAD_LETTER`.
+
+The raw replay idempotency key is never stored. Migration 010 stores only its SHA-256 hash and the request fingerprint.
+
 ## Operational interpretation
 
 - `hasDue=1` after a cycle indicates more registered work may remain.
 - `hasStale=1` indicates at least one expired lease remains recoverable.
-- `hasDeadLetter=1` is an operator signal; the worker does not replay dead letters automatically.
+- `hasDeadLetter=1` is an operator signal; the worker never replays dead letters automatically.
 - sample gauges are capped and must not be interpreted as exact global counts.
 - repeated cycle failures or stale success timestamps make readiness fail closed.
 
 ## Remaining work
 
-- controlled dead-letter inspection and replay;
 - reference webhook/delivery handlers with their own idempotency contracts;
-- platform-specific service manifest and restricted runtime database role;
-- alert thresholds, operator runbook, and supervisor restart policy.
+- platform-specific service manifest and restricted runtime/operator database roles;
+- alert thresholds, approval policy for live replay, and supervisor restart policy.
