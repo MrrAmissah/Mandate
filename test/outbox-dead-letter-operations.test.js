@@ -118,6 +118,7 @@ test('dead-letter inspection returns safe metadata without payload or replay sec
     replayMessageId: null
   }]);
   assert.match(calls[0].text, /messages\.tenant_id/);
+  assert.match(calls[0].text, /ORDER BY \(replays\.replay_message_id IS NOT NULL\)/);
   assert.doesNotMatch(calls[0].text, /payload|idempotency_key_hash|request_fingerprint/);
   assert.deepEqual(calls[0].parameters, ['test', 'ten_inspect', ['mandate.created'], 10]);
 });
