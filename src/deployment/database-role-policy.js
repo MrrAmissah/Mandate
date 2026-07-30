@@ -1,5 +1,5 @@
 const RUNTIME_ROLE_IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
-export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.2';
+export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.3';
 
 const ROLE_ENVIRONMENT = Object.freeze({
   api: 'MANDATE_DATABASE_API_ROLE',
@@ -178,6 +178,14 @@ export async function applyDatabaseRolePolicy(client, config) {
            FROM pg_class relation
            JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
            JOIN pg_roles owner ON owner.oid = relation.relowner
+          WHERE namespace.nspname = 'mandate'
+         UNION ALL
+         SELECT owner.rolname,
+                'function:' || namespace.nspname || '.' || procedure.proname ||
+                '(' || pg_get_function_identity_arguments(procedure.oid) || ')'
+           FROM pg_proc procedure
+           JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+           JOIN pg_roles owner ON owner.oid = procedure.proowner
           WHERE namespace.nspname = 'mandate'
        ) owned
       WHERE owner_name = ANY($1::text[])
