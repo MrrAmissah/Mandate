@@ -101,6 +101,9 @@ test('outbox worker migration adds status-specific scope and event indexes only'
   assert.match(sql, /CREATE INDEX outbox_worker_pending_idx/);
   assert.match(sql, /CREATE INDEX outbox_worker_processing_idx/);
   assert.match(sql, /CREATE INDEX outbox_worker_dead_letter_idx/);
+  assert.match(sql, /environment, tenant_id, event_type, available_at, created_at, id/);
+  assert.match(sql, /environment, tenant_id, event_type, lock_expires_at, created_at, id/);
+  assert.match(sql, /environment, tenant_id, event_type, processed_at, created_at, id/);
   assert.match(sql, /009_outbox_worker_operations/);
   assert.doesNotMatch(sql, /UPDATE mandate\.outbox_messages|DELETE FROM mandate\.outbox_messages/);
 });
@@ -152,14 +155,17 @@ test('development down migrations remove only their owned objects', async () => 
   const idempotency = await readFile(idempotencyDownPath, 'utf8');
   assert.match(idempotency, /DROP TRIGGER IF EXISTS idempotency_http_metadata/);
   assert.match(idempotency, /DROP FUNCTION IF EXISTS mandate\.assign_idempotency_http_metadata/);
+  assert.match(idempotency, /DELETE FROM mandate\.schema_migrations WHERE version = '003_idempotency_http_metadata'/);
   assert.doesNotMatch(idempotency, /DROP TABLE|DROP SCHEMA/);
   const retention = await readFile(retentionDownPath, 'utf8');
   assert.match(retention, /DROP INDEX IF EXISTS mandate\.idempotency_retention_scope_idx/);
+  assert.match(retention, /DELETE FROM mandate\.schema_migrations WHERE version = '008_idempotency_retention'/);
   assert.doesNotMatch(retention, /DROP TABLE|DROP SCHEMA/);
   const outboxWorker = await readFile(outboxWorkerDownPath, 'utf8');
   assert.match(outboxWorker, /DROP INDEX IF EXISTS mandate\.outbox_worker_pending_idx/);
   assert.match(outboxWorker, /DROP INDEX IF EXISTS mandate\.outbox_worker_processing_idx/);
   assert.match(outboxWorker, /DROP INDEX IF EXISTS mandate\.outbox_worker_dead_letter_idx/);
+  assert.match(outboxWorker, /DELETE FROM mandate\.schema_migrations WHERE version = '009_outbox_worker_operations'/);
   assert.doesNotMatch(outboxWorker, /DROP TABLE|DROP SCHEMA/);
   const replay = await readFile(replayDownPath, 'utf8');
   assert.match(replay, /DROP TABLE IF EXISTS mandate\.outbox_dead_letter_replays/);
