@@ -8,19 +8,19 @@ The core remains handler-neutral. A deployment starts the worker only with an ex
 
 ## Safety rules
 
-1. **No handler means no startup.** The standalone worker refuses an absent or empty handler module.
+1. **No handler means no startup.** The standalone worker refuses an absent or empty handler module. The dispatcher itself still returns `NO_HANDLERS` when used as a library with no handlers.
 2. **Handlers are exact.** Wildcard event types are rejected. Unregistered event types remain `PENDING`.
-3. **Handler code is local and trusted.** `MANDATE_OUTBOX_HANDLER_MODULE` must resolve to a local `file:` URL or filesystem path.
-4. **Workers are environment-partitioned.** Every worker declares one `test` or `live` environment and may narrow claims to one tenant.
+3. **Handler code is local and trusted.** `MANDATE_OUTBOX_HANDLER_MODULE` must resolve to a local `file:` URL or filesystem path. Remote URL schemes are rejected.
+4. **Workers are environment-partitioned.** Every worker declares exactly one `test` or `live` environment and may optionally narrow claims to one tenant.
 5. **PostgreSQL is the time authority.** Claims, completion, retries, and stale-lease recovery use `clock_timestamp()`.
 6. **Claim commits before handler I/O.** PostgreSQL leases the message and commits before the handler runs.
 7. **Claims use `FOR UPDATE SKIP LOCKED`.** Multiple workers can claim different due messages without blocking.
 8. **Stale work is prioritized.** A bounded stale-lease scan runs before pending-message claims.
-9. **One exact lease owner may complete.** Completion verifies scope, message, worker, attempt, status, and lease.
+9. **One exact lease owner may complete.** Completion verifies tenant, environment, message ID, worker ID, attempt number, status, and unexpired lease.
 10. **Late workers cannot overwrite.** A late worker records `LEASE_LOST` without changing current state.
 11. **Stale leases are recoverable.** Recovery records immutable `LEASE_EXPIRED` evidence.
 12. **Retries are bounded.** Failures return to `PENDING` with backoff until the maximum, then become `DEAD_LETTER`.
-13. **Errors are sanitized.** Attempts store only a machine-safe error code.
+13. **Errors are sanitized.** Attempts store only an uppercase machine-safe code. Exception messages, provider bodies, secrets, and stack traces are not persisted.
 14. **Attempt history is append-only.** PostgreSQL rejects updates and deletion of `outbox_attempts`.
 15. **Backlog observation is bounded.** Due, stale, and dead-letter samples use capped indexed queries.
 16. **The worker has no API or migration authority.** It uses no API credential, checks migrations 002 and 009, and never applies migrations.
@@ -59,7 +59,11 @@ A stale `PROCESSING` lease may be reclaimed. The prior attempt receives `LEASE_E
 | `LEASE_EXPIRED` | A later worker recovered an expired processing lease. |
 | `LEASE_LOST` | A previous worker returned after it no longer owned the attempt. |
 
+More than one evidence outcome may reference one attempt number. For example, a stale attempt can receive `LEASE_EXPIRED` when recovered and later `LEASE_LOST` when its original worker returns.
+
 ## Handler module contract
+
+The deployment-owned module exports either `handlers` or a default object/Map:
 
 ```js
 export const handlers = {
@@ -72,11 +76,13 @@ export const handlers = {
 };
 ```
 
-Handlers must be idempotent. A lease can expire after an external side effect succeeds but before Mandate records completion. The outbox provides at-least-once execution, not exactly-once effects across a network boundary.
+Handlers must be idempotent. A lease can expire after an external side effect succeeds but before Mandate-API records completion. The outbox provides at-least-once execution, not exactly-once effects across a network boundary.
+
+The module is trusted deployment code and receives the committed payload plus safe message metadata. It must not log secrets or raw provider responses.
 
 ## Run the worker
 
-Apply migrations with a deployment role, then start the process separately from the API:
+Apply migrations with a dedicated deployment role, then start the process separately from the API:
 
 ```bash
 MANDATE_STORE=postgres \
@@ -109,7 +115,7 @@ The loopback-default health listener exposes:
 | `/health/ready` | Recent successful-cycle readiness |
 | `/metrics` | Low-cardinality Prometheus counters and capped backlog samples |
 
-Health probes read cached state and do not query PostgreSQL per request.
+Health probes read cached state and do not query PostgreSQL per request. Binding beyond loopback requires deployment network controls.
 
 ## Inspect dead letters
 
