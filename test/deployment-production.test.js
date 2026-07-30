@@ -82,20 +82,27 @@ test('managed database, deployment-role and schema identifiers are quoted safely
   );
 });
 
-test('runtime role policy removes database, schema and future-object DDL authority', () => {
+test('runtime role policy removes database, schema, column and future-object authority', () => {
   const roles = parseDatabaseRolePolicyConfig({}).roles;
   const statements = buildDatabaseRolePolicyStatements({
     roles,
     databaseName: 'mandate',
     deploymentRoleName: 'mandate_migrator',
-    schemaNames: ['mandate', 'public']
+    schemaNames: ['mandate', 'public'],
+    tableColumns: [
+      { tableName: 'outbox_attempts', columnName: 'id' },
+      { tableName: 'outbox_attempts', columnName: 'error_code' }
+    ]
   });
   const joined = statements.join('\n');
   assert.match(joined, /REVOKE ALL ON SCHEMA mandate FROM PUBLIC/);
   assert.match(joined, /REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mandate FROM PUBLIC/);
+  assert.match(joined, /REVOKE ALL PRIVILEGES \("error_code", "id"\) ON TABLE mandate\."outbox_attempts" FROM PUBLIC/);
+  assert.match(joined, /REVOKE ALL PRIVILEGES \("error_code", "id"\) ON TABLE mandate\."outbox_attempts" FROM "mandate_api"/);
   assert.match(joined, /REVOKE CREATE ON DATABASE "mandate" FROM "mandate_api"/);
   assert.match(joined, /REVOKE TEMPORARY ON DATABASE "mandate" FROM "mandate_api"/);
   assert.match(joined, /REVOKE CREATE ON SCHEMA "public" FROM "mandate_api"/);
+  assert.match(joined, /ALTER DEFAULT PRIVILEGES FOR ROLE "mandate_migrator" REVOKE EXECUTE ON ROUTINES FROM PUBLIC/);
   assert.match(joined, /ALTER DEFAULT PRIVILEGES FOR ROLE "mandate_migrator" IN SCHEMA mandate REVOKE ALL ON TABLES FROM "mandate_api"/);
   assert.match(joined, /GRANT SELECT, DELETE ON TABLE mandate\.idempotency_records TO "mandate_maintenance"/);
   assert.doesNotMatch(joined, /GRANT EXECUTE/);
