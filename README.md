@@ -24,7 +24,7 @@ It answers three questions ordinary application authorization does not answer we
 ## Architecture at a glance
 
 <p align="center">
-  <img src="./assets/mandate-architecture.svg" alt="Mandate-API control flow from principal and AI agent through policy evaluation, optional human approval, execution, and a signed action receipt" width="100%" />
+  <img src="./assets/mandate-architecture.png" alt="Mandate-API control flow from principal and AI agent through policy evaluation, optional human approval, execution, and a signed action receipt" width="100%" />
 </p>
 
 Mandate-API sits between agents and tools. It allows permitted actions, pauses sensitive actions for human approval, blocks prohibited actions, and records completed execution as independently verifiable evidence.
@@ -39,7 +39,7 @@ Implemented now:
 - deterministic `ALLOW`, `DENY`, and `REQUIRE_APPROVAL` decisions;
 - exact, single-use human approvals;
 - one action-attempt reservation per allowed decision;
-- bounded reservation windows and dedicated attempt scopes;
+- bounded reservation windows and dedicated action-attempt scopes;
 - controlled attempt completion and cancellation by the reserving credential;
 - database-time materialization of overdue reservations as `EXPIRED`;
 - a dedicated, signal-aware expiry-worker process with migration-readiness checks;
