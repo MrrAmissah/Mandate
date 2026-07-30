@@ -47,7 +47,6 @@ test('production compose separates migration, API, expiry and outbox identities'
   assert.doesNotMatch(outboxBlock, /MANDATE_API_KEY/);
 });
 
-
 test('database role command reports fail-closed quiescence without leaking driver errors', async () => {
   const script = await read('scripts/configure-database-roles.js');
   assert.match(script, /rolesRemainQuiesced: error\?\.databaseRolesRemainQuiesced === true/);
@@ -62,6 +61,10 @@ test('database roles are distinct and identifiers fail closed', () => {
   assert.throws(
     () => parseDatabaseRolePolicyConfig({ MANDATE_DATABASE_API_ROLE: 'unsafe-role' }),
     /Unsafe PostgreSQL role identifier/
+  );
+  assert.throws(
+    () => parseDatabaseRolePolicyConfig({ MANDATE_DATABASE_API_ROLE: 'pg_read_all_data' }),
+    /Reserved PostgreSQL role identifier/
   );
   assert.throws(
     () => parseDatabaseRolePolicyConfig({ MANDATE_DATABASE_API_ROLE: 'same', MANDATE_DATABASE_EXPIRY_ROLE: 'same' }),
@@ -123,6 +126,12 @@ test('runtime roles are quiesced before ownership is audited and exact grants ar
   assert.ok(terminatePosition > quiescePosition);
   assert.ok(finalOwnershipPosition > terminatePosition);
   assert.ok(finalPolicyPosition > finalOwnershipPosition);
+  const terminateFunctionPosition = source.indexOf('async function terminateRuntimeSessions');
+  const remainingSessionPosition = source.indexOf('const remaining = await client.query', terminateFunctionPosition);
+  const terminationCountPosition = source.indexOf("result.rows.filter((row) => row.terminated === true).length", terminateFunctionPosition);
+  assert.ok(remainingSessionPosition > terminateFunctionPosition);
+  assert.ok(terminationCountPosition > remainingSessionPosition);
+  assert.doesNotMatch(source.slice(terminateFunctionPosition, terminationCountPosition), /Unable to terminate runtime PostgreSQL session/);
 });
 
 test('runtime role policy resets every inventoried schema and all routine kinds', () => {
