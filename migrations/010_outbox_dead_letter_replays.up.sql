@@ -6,6 +6,7 @@ CREATE TABLE mandate.outbox_dead_letter_replays (
   id text NOT NULL CHECK (id ~ '^odr_[A-Za-z0-9_-]+$'),
   source_message_id text NOT NULL,
   replay_message_id text NOT NULL,
+  operator_audit_event_id text NOT NULL,
   operator_id text NOT NULL CHECK (char_length(operator_id) BETWEEN 1 AND 200),
   reason text NOT NULL CHECK (char_length(reason) BETWEEN 1 AND 500),
   idempotency_key_hash text NOT NULL CHECK (idempotency_key_hash ~ '^sha256:[0-9a-f]{64}$'),
@@ -15,11 +16,14 @@ CREATE TABLE mandate.outbox_dead_letter_replays (
   PRIMARY KEY (tenant_id, environment, id),
   UNIQUE (tenant_id, environment, source_message_id),
   UNIQUE (tenant_id, environment, replay_message_id),
+  UNIQUE (tenant_id, environment, operator_audit_event_id),
   UNIQUE (tenant_id, environment, idempotency_key_hash),
   FOREIGN KEY (tenant_id, environment, source_message_id)
     REFERENCES mandate.outbox_messages (tenant_id, environment, id) ON DELETE RESTRICT,
   FOREIGN KEY (tenant_id, environment, replay_message_id)
     REFERENCES mandate.outbox_messages (tenant_id, environment, id) ON DELETE RESTRICT,
+  FOREIGN KEY (tenant_id, environment, operator_audit_event_id)
+    REFERENCES mandate.audit_events (tenant_id, environment, id) ON DELETE RESTRICT,
   CHECK (source_message_id <> replay_message_id)
 );
 
