@@ -80,7 +80,8 @@ function approvalFromRow(row) {
     agentId: row.agent_id,
     action: row.action,
     resource: row.resource,
-    summary: row.summary,
+    inputHash: row.input_hash,
+    reason: row.reason,
     status: row.status,
     requestedAt: timestamp(row.requested_at),
     expiresAt: timestamp(row.expires_at),
@@ -96,22 +97,21 @@ function decisionFromRow(row) {
   return row && {
     id: row.id,
     mandateId: row.mandate_id,
+    principalId: row.principal_id,
     agentId: row.agent_id,
     action: row.action,
     resource: row.resource,
+    inputHash: row.input_hash,
     context: row.context,
-    outcome: row.outcome,
-    reasonCode: row.reason_code,
-    reason: row.reason,
+    result: row.result,
+    reasonCodes: row.reason_codes,
     approvalId: row.approval_id,
-    evaluatedAt: timestamp(row.evaluated_at),
-    requestId: row.request_id
+    evaluatedAt: timestamp(row.evaluated_at)
   };
 }
 
 function receiptFromRow(row) {
-  if (!row) return null;
-  return { ...row.payload, signature: row.signature };
+  return row && { ...row.payload, signature: row.signature };
 }
 
 function auditFromRow(row) {
@@ -149,7 +149,7 @@ function outboxFromRow(row) {
   };
 }
 
-const MAPPERS = {
+const MAPPERS = Object.freeze({
   apiCredentials: credentialFromRow,
   mandates: mandateFromRow,
   approvals: approvalFromRow,
@@ -157,9 +157,9 @@ const MAPPERS = {
   receipts: receiptFromRow,
   auditEvents: auditFromRow,
   outboxMessages: outboxFromRow
-};
+});
 
-const TABLES = {
+const TABLES = Object.freeze({
   apiCredentials: 'api_credentials',
   mandates: 'mandates',
   approvals: 'approvals',
@@ -167,66 +167,49 @@ const TABLES = {
   receipts: 'receipts',
   auditEvents: 'audit_events',
   outboxMessages: 'outbox_messages'
-};
+});
 
-const ORDER_COLUMNS = {
-  apiCredentials: 'created_at',
-  mandates: 'created_at',
-  approvals: 'requested_at',
-  decisions: 'evaluated_at',
-  receipts: 'issued_at',
-  auditEvents: 'sequence',
-  outboxMessages: 'created_at'
-};
-
-class PostgresView {
+export class PostgresView {
   constructor(queryable, { lockReads = false } = {}) {
     this.queryable = queryable;
     this.lockReads = lockReads;
   }
 
-  async get(kind, owner, id) {
+  async query(sql, params = []) {
+    return this.queryable.query(sql, params);
+  }
+
+  async list(kind, owner, { limit = 100, afterSequence } = {}) {
     if (!ENTITY_KINDS.has(kind)) throw new TypeError(`Unknown entity kind: ${kind}`);
     const scope = ownership(owner);
-    const lock = this.lockReads && ['mandates', 'approvals'].includes(kind) ? ' FOR UPDATE' : '';
+    const bounded = Math.min(Math.max(Number(limit) || 100, 1), 1000);
+    const table = TABLES[kind];
+    let statement = `SELECT * FROM mandate.${table} WHERE tenant_id = $1 AND environment = $2`;
+    const values = [scope.tenantId, scope.environment];
+    if (kind === 'auditEvents' && afterSequence !== undefined) {
+      values.push(afterSequence);
+      statement += ` AND sequence > $${values.length}`;
+    }
+    statement += kind === 'auditEvents' ? ' ORDER BY sequence ASC' : ' ORDER BY created_at ASC, id ASC';
+    values.push(bounded);
+    statement += ` LIMIT $${values.length}`;
+    const result = await this.queryable.query(statement, values);
+    return result.rows.map(MAPPERS[kind]);
+  }
+
+  async find(kind, id, owner) {
+    if (!ENTITY_KINDS.has(kind)) throw new TypeError(`Unknown entity kind: ${kind}`);
+    const scope = ownership(owner);
     const result = await this.queryable.query(
-      `SELECT * FROM mandate.${TABLES[kind]} WHERE tenant_id = $1 AND environment = $2 AND id = $3${lock}`,
+      `SELECT * FROM mandate.${TABLES[kind]}
+       WHERE tenant_id = $1 AND environment = $2 AND id = $3${this.lockReads ? ' FOR UPDATE' : ''}`,
       [scope.tenantId, scope.environment, id]
     );
     return MAPPERS[kind](result.rows[0]);
   }
 
-  async list(kind, owner) {
-    if (!ENTITY_KINDS.has(kind)) throw new TypeError(`Unknown entity kind: ${kind}`);
-    const scope = ownership(owner);
-    const result = await this.queryable.query(
-      `SELECT * FROM mandate.${TABLES[kind]} WHERE tenant_id = $1 AND environment = $2 ORDER BY ${ORDER_COLUMNS[kind]}, id`,
-      [scope.tenantId, scope.environment]
-    );
-    return result.rows.map(MAPPERS[kind]);
-  }
-
-  async findCredentialBySecretHash(secretHash) {
-    const result = await this.queryable.query(
-      'SELECT * FROM mandate.api_credentials WHERE secret_hash = $1',
-      [secretHash]
-    );
-    return credentialFromRow(result.rows[0]);
-  }
-
-  async markCredentialUsed(credential, now = new Date()) {
-    const result = await this.queryable.query(
-      `UPDATE mandate.api_credentials
-       SET last_used_at = GREATEST(COALESCE(last_used_at, '-infinity'::timestamptz), $4::timestamptz)
-       WHERE tenant_id = $1 AND environment = $2 AND id = $3
-         AND status = 'ACTIVE'
-         AND (expires_at IS NULL OR expires_at > $4::timestamptz)`,
-      [credential.tenantId, credential.environment, credential.id, now.toISOString()]
-    );
-    return result.rowCount === 1;
-  }
-
   async save(kind, owner, entity) {
+    if (!ENTITY_KINDS.has(kind)) throw new TypeError(`Unknown entity kind: ${kind}`);
     const scope = ownership(owner);
     switch (kind) {
       case 'apiCredentials':
@@ -240,62 +223,55 @@ class PostgresView {
              last_four = EXCLUDED.last_four, scopes = EXCLUDED.scopes, status = EXCLUDED.status,
              expires_at = EXCLUDED.expires_at, revoked_at = EXCLUDED.revoked_at,
              revocation_reason = EXCLUDED.revocation_reason, last_used_at = EXCLUDED.last_used_at`,
-          [scope.tenantId, scope.environment, entity.id, entity.name, entity.secretHash, entity.prefix,
-            entity.lastFour, entity.scopes, entity.status, entity.createdAt, entity.expiresAt,
-            entity.revokedAt, entity.revocationReason, entity.lastUsedAt]
+          [scope.tenantId, scope.environment, entity.id, entity.name, entity.secretHash,
+            entity.prefix, entity.lastFour, entity.scopes, entity.status, entity.createdAt,
+            entity.expiresAt, entity.revokedAt, entity.revocationReason, entity.lastUsedAt]
         );
         break;
       case 'mandates':
         await this.queryable.query(
           `INSERT INTO mandate.mandates
-            (tenant_id, environment, id, status, principal_id, agent_id, purpose, resources,
-             allowed_actions, denied_actions, approval_required_actions, constraints, valid_from,
-             valid_until, max_uses, uses, version, created_at, revoked_at, revocation_reason)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0,$17,$18,$19)
+            (tenant_id, environment, id, principal_id, agent_id, purpose, resources, allowed_actions,
+             denied_actions, approval_required_actions, constraints, valid_from, valid_until,
+             max_uses, uses, status, created_at, revoked_at, revocation_reason)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
            ON CONFLICT (tenant_id, environment, id) DO UPDATE SET
-             status = EXCLUDED.status, resources = EXCLUDED.resources,
-             allowed_actions = EXCLUDED.allowed_actions, denied_actions = EXCLUDED.denied_actions,
-             approval_required_actions = EXCLUDED.approval_required_actions,
-             constraints = EXCLUDED.constraints, valid_until = EXCLUDED.valid_until,
-             max_uses = EXCLUDED.max_uses, uses = EXCLUDED.uses,
-             version = mandate.mandates.version + 1, revoked_at = EXCLUDED.revoked_at,
-             revocation_reason = EXCLUDED.revocation_reason`,
-          [scope.tenantId, scope.environment, entity.id, entity.status, entity.principalId,
-            entity.agentId, entity.purpose, json(entity.resources), json(entity.allowedActions),
-            json(entity.deniedActions), json(entity.approvalRequiredActions), json(entity.constraints),
-            entity.validFrom, entity.validUntil, entity.maxUses, entity.uses, entity.createdAt,
+             uses = EXCLUDED.uses, status = EXCLUDED.status,
+             revoked_at = EXCLUDED.revoked_at, revocation_reason = EXCLUDED.revocation_reason`,
+          [scope.tenantId, scope.environment, entity.id, entity.principalId, entity.agentId,
+            entity.purpose, entity.resources, entity.allowedActions, entity.deniedActions,
+            entity.approvalRequiredActions, json(entity.constraints), entity.validFrom,
+            entity.validUntil, entity.maxUses, entity.uses, entity.status, entity.createdAt,
             entity.revokedAt, entity.revocationReason]
         );
         break;
       case 'approvals':
         await this.queryable.query(
           `INSERT INTO mandate.approvals
-            (tenant_id, environment, id, mandate_id, agent_id, action, resource, summary, status,
-             requested_at, expires_at, decided_at, decided_by, decision_reason, consumed_at,
-             consumed_by_decision_id, version)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0)
+            (tenant_id, environment, id, mandate_id, agent_id, action, resource, input_hash, reason,
+             status, requested_at, expires_at, decided_at, decided_by, decision_reason,
+             consumed_at, consumed_by_decision_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
            ON CONFLICT (tenant_id, environment, id) DO UPDATE SET
              status = EXCLUDED.status, decided_at = EXCLUDED.decided_at,
              decided_by = EXCLUDED.decided_by, decision_reason = EXCLUDED.decision_reason,
              consumed_at = EXCLUDED.consumed_at,
-             consumed_by_decision_id = EXCLUDED.consumed_by_decision_id,
-             version = mandate.approvals.version + 1`,
+             consumed_by_decision_id = EXCLUDED.consumed_by_decision_id`,
           [scope.tenantId, scope.environment, entity.id, entity.mandateId, entity.agentId,
-            entity.action, entity.resource, entity.summary, entity.status, entity.requestedAt,
-            entity.expiresAt, entity.decidedAt, entity.decidedBy, entity.decisionReason,
-            entity.consumedAt, entity.consumedByDecisionId]
+            entity.action, entity.resource, entity.inputHash, entity.reason, entity.status,
+            entity.requestedAt, entity.expiresAt, entity.decidedAt, entity.decidedBy,
+            entity.decisionReason, entity.consumedAt, entity.consumedByDecisionId]
         );
         break;
       case 'decisions':
         await this.queryable.query(
           `INSERT INTO mandate.authorization_decisions
-            (tenant_id, environment, id, mandate_id, agent_id, action, resource, context, outcome,
-             reason_code, reason, approval_id, evaluated_at, request_id)
+            (tenant_id, environment, id, mandate_id, principal_id, agent_id, action, resource,
+             input_hash, context, result, reason_codes, approval_id, evaluated_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-          [scope.tenantId, scope.environment, entity.id, entity.mandateId, entity.agentId,
-            entity.action, entity.resource, json(entity.context ?? {}), entity.outcome,
-            entity.reasonCode, entity.reason, entity.approvalId, entity.evaluatedAt,
-            entity.requestId]
+          [scope.tenantId, scope.environment, entity.id, entity.mandateId, entity.principalId,
+            entity.agentId, entity.action, entity.resource, entity.inputHash, json(entity.context),
+            entity.result, entity.reasonCodes, entity.approvalId, entity.evaluatedAt]
         );
         break;
       case 'receipts': {
@@ -449,10 +425,20 @@ export class PostgresStore extends PostgresView {
   }
 }
 
-export async function createPostgresPool({ connectionString, max = 10, ssl = false } = {}) {
+export async function createPostgresPool({
+  connectionString,
+  max = 10,
+  ssl = false,
+  connectionTimeoutMillis
+} = {}) {
   if (!connectionString) throw new Error('DATABASE_URL is required for PostgreSQL mode.');
+  if (connectionTimeoutMillis !== undefined && (
+    !Number.isInteger(connectionTimeoutMillis) || connectionTimeoutMillis < 1
+  )) {
+    throw new TypeError('connectionTimeoutMillis must be a positive integer.');
+  }
   const module = await import('pg');
   const Pool = module.Pool ?? module.default?.Pool;
   if (!Pool) throw new Error('The pg package did not expose Pool.');
-  return new Pool({ connectionString, max, ssl });
+  return new Pool({ connectionString, max, ssl, connectionTimeoutMillis });
 }
