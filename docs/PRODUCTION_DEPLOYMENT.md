@@ -60,13 +60,13 @@ npm run database:roles
 
 The policy fails closed unless migration 010 is present and every runtime role already exists with safe attributes. Runtime roles may not inherit another role or own the database, any non-system schema, any non-system relation or any non-system function.
 
-The policy removes all known DDL escape paths for runtime identities:
+The policy removes all known DDL and stale-access escape paths for runtime identities:
 
 - `CREATE` and `TEMPORARY` are revoked at database level;
 - `TEMPORARY` is revoked from `PUBLIC`;
 - `CREATE` is revoked from `PUBLIC` and every runtime role across every existing non-system schema;
-- direct Mandate table, sequence and function privileges are reset before exact grants are applied;
-- migration-owner default privileges for tables, sequences and functions are revoked from `PUBLIC` and every runtime role.
+- direct Mandate table, **column**, sequence and function privileges are reset before exact table grants are applied;
+- migration-owner defaults are scrubbed both globally and inside the Mandate schema for tables, sequences and routines, for `PUBLIC` and every runtime role.
 
 A future migration therefore receives no runtime access through stale default grants. Re-run the policy after every migration and deliberately extend its exact grant map when a process genuinely needs a new object.
 
