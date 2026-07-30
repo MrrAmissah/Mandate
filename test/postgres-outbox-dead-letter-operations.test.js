@@ -166,6 +166,27 @@ integration('dead-letter replay preserves business provenance and creates one id
   }
 });
 
+integration('bounded dead-letter inspection prioritizes unreplayed messages', async () => {
+  const pool = await createPostgresPool({ connectionString, max: 4 });
+  const tenantId = unique('ten_dead_priority');
+  const eventType = unique('test.dead.priority');
+  try {
+    await createTenant(pool, tenantId);
+    const { messageId: replayedSourceId } = await createDeadLetter(pool, tenantId, { eventType });
+    await replayDeadLetterMessage(pool, replayRequest(tenantId, replayedSourceId));
+    const { messageId: actionableSourceId } = await createDeadLetter(pool, tenantId, { eventType });
+
+    const listed = await listDeadLetterMessages(pool, {
+      environment: 'test', tenantId, eventTypes: [eventType], limit: 1
+    });
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].id, actionableSourceId);
+    assert.equal(listed[0].replayMessageId, null);
+  } finally {
+    await pool.end();
+  }
+});
+
 integration('dead-letter replay preserves JSONB numbers beyond JavaScript safe integer range', async () => {
   const pool = await createPostgresPool({ connectionString, max: 4 });
   const tenantId = unique('ten_dead_jsonb');
