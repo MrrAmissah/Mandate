@@ -120,7 +120,7 @@ test('cleanup batch uses database time, index-aligned locking, and returns count
   assert.deepEqual(mutation.parameters, ['live', 'ten_cleanup', 604800, 25]);
 });
 
-test('cleanup is bounded and reports remaining eligible backlog instead of guessing', async () => {
+test('cleanup is bounded and uses capped backlog samples instead of full counts', async () => {
   const batchCounts = [2, 2];
   const pool = {
     async connect() {
@@ -134,13 +134,17 @@ test('cleanup is bounded and reports remaining eligible backlog instead of guess
         release() {}
       };
     },
-    async query(text) {
-      assert.match(text, /eligible_count/);
+    async query(text, parameters) {
+      assert.match(text, /expired_sample AS MATERIALIZED/);
+      assert.match(text, /eligible_sample AS MATERIALIZED/);
+      assert.equal((text.match(/LIMIT \$4/g) ?? []).length, 2);
+      assert.deepEqual(parameters, ['test', null, 604800, 2]);
       return {
         rowCount: 1,
         rows: [{
-          expired_count: '3',
-          eligible_count: '1',
+          expired_sample_count: '2',
+          eligible_sample_count: '1',
+          has_eligible: true,
           oldest_eligible_at: new Date('2026-01-01T00:00:00.000Z'),
           observed_at: new Date('2026-01-10T00:00:00.000Z')
         }]
@@ -158,8 +162,10 @@ test('cleanup is bounded and reports remaining eligible backlog instead of guess
   assert.equal(result.deletedCount, 4);
   assert.equal(result.batches, 2);
   assert.equal(result.limitReached, true);
-  assert.equal(result.backlog.eligibleCount, 1);
-  assert.equal(result.backlog.expiredCount, 3);
+  assert.equal(result.backlog.sampleLimit, 2);
+  assert.equal(result.backlog.eligibleSampleCount, 1);
+  assert.equal(result.backlog.expiredSampleCount, 2);
+  assert.equal(result.backlog.hasEligible, true);
 });
 
 test('cleanup entry point has no API credential or migration authority', async () => {
