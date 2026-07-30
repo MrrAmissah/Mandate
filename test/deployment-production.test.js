@@ -59,16 +59,19 @@ test('database roles are distinct and identifiers fail closed', () => {
   );
 });
 
-test('managed database and deployment-role identifiers are quoted without weakening runtime names', () => {
+test('managed database, deployment-role and schema identifiers are quoted safely', () => {
   const roles = parseDatabaseRolePolicyConfig({}).roles;
   const statements = buildDatabaseRolePolicyStatements({
     roles,
     databaseName: 'Mandate-Prod.EU',
-    deploymentRoleName: 'migration-user"blue'
+    deploymentRoleName: 'migration-user"blue',
+    schemaNames: ['mandate', 'public', 'Partner-Data']
   });
   const joined = statements.join('\n');
   assert.match(joined, /REVOKE CONNECT ON DATABASE "Mandate-Prod\.EU" FROM PUBLIC/);
+  assert.match(joined, /REVOKE TEMPORARY ON DATABASE "Mandate-Prod\.EU" FROM PUBLIC/);
   assert.match(joined, /GRANT CONNECT ON DATABASE "Mandate-Prod\.EU" TO "migration-user""blue"/);
+  assert.match(joined, /REVOKE CREATE ON SCHEMA "Partner-Data" FROM PUBLIC/);
   assert.throws(
     () => buildDatabaseRolePolicyStatements({
       roles,
@@ -79,18 +82,21 @@ test('managed database and deployment-role identifiers are quoted without weaken
   );
 });
 
-test('runtime role policy grants no DDL, function execution or non-maintenance deletes', () => {
+test('runtime role policy removes database, schema and future-object DDL authority', () => {
   const roles = parseDatabaseRolePolicyConfig({}).roles;
   const statements = buildDatabaseRolePolicyStatements({
     roles,
     databaseName: 'mandate',
-    deploymentRoleName: 'mandate_migrator'
+    deploymentRoleName: 'mandate_migrator',
+    schemaNames: ['mandate', 'public']
   });
   const joined = statements.join('\n');
   assert.match(joined, /REVOKE ALL ON SCHEMA mandate FROM PUBLIC/);
   assert.match(joined, /REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mandate FROM PUBLIC/);
-  assert.match(joined, /GRANT CONNECT ON DATABASE "mandate" TO "mandate_migrator"/);
-  assert.match(joined, /REVOKE CREATE ON SCHEMA mandate FROM "mandate_api"/);
+  assert.match(joined, /REVOKE CREATE ON DATABASE "mandate" FROM "mandate_api"/);
+  assert.match(joined, /REVOKE TEMPORARY ON DATABASE "mandate" FROM "mandate_api"/);
+  assert.match(joined, /REVOKE CREATE ON SCHEMA "public" FROM "mandate_api"/);
+  assert.match(joined, /ALTER DEFAULT PRIVILEGES FOR ROLE "mandate_migrator" IN SCHEMA mandate REVOKE ALL ON TABLES FROM "mandate_api"/);
   assert.match(joined, /GRANT SELECT, DELETE ON TABLE mandate\.idempotency_records TO "mandate_maintenance"/);
   assert.doesNotMatch(joined, /GRANT EXECUTE/);
   assert.doesNotMatch(joined, /GRANT [^;]*DELETE[^;]*TO "mandate_api"/);
