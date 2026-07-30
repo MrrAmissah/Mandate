@@ -81,6 +81,7 @@ test('dead-letter inspection returns safe metadata without payload or replay sec
       calls.push({ text, parameters });
       return {
         rows: [{
+          tenant_id: 'ten_inspect',
           id: 'out_failed',
           event_type: 'mandate.created',
           aggregate_type: 'mandate',
@@ -104,6 +105,7 @@ test('dead-letter inspection returns safe metadata without payload or replay sec
     limit: 10
   });
   assert.deepEqual(messages, [{
+    tenantId: 'ten_inspect',
     id: 'out_failed',
     eventType: 'mandate.created',
     aggregateType: 'mandate',
@@ -115,6 +117,7 @@ test('dead-letter inspection returns safe metadata without payload or replay sec
     createdAt: '2026-07-30T02:00:00.000Z',
     replayMessageId: null
   }]);
+  assert.match(calls[0].text, /messages\.tenant_id/);
   assert.doesNotMatch(calls[0].text, /payload|idempotency_key_hash|request_fingerprint/);
   assert.deepEqual(calls[0].parameters, ['test', 'ten_inspect', ['mandate.created'], 10]);
 });
