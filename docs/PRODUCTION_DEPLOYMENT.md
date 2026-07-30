@@ -60,7 +60,7 @@ npm run database:roles
 
 The migration/configuration identity must own or be able to alter every application object in the dedicated database, revoke database/schema/object/default privileges and terminate sessions authenticated as a Mandate runtime role. Configuration is deliberately disruptive and must run before API and worker services start.
 
-The policy fails closed unless migration 010 is present and every runtime role already exists with safe attributes. Runtime roles may neither inherit another role nor be inherited by another role. They may not own the database or any object in the dedicated database, including schemas, relations, routines, enums, domains or other user-defined types. Prepared transactions owned by a runtime identity also block configuration.
+The policy fails closed unless migration 010 is present and every runtime role already exists with safe attributes. Runtime identities may not use PostgreSQL's reserved `pg_` predefined-role namespace. Runtime roles may neither inherit another role nor be inherited by another role. They may not own the database or any object in the dedicated database, including schemas, relations, routines, enums, domains or other user-defined types. Prepared transactions owned by a runtime identity also block configuration.
 
 ### Quiesced policy application
 
@@ -68,7 +68,7 @@ Role configuration is serialized by a PostgreSQL advisory lock and applies in tw
 
 1. validate role attributes, migration state, role memberships, ownership and prepared transactions;
 2. revoke runtime `CONNECT`, database `CREATE`/`TEMPORARY` and schema `CREATE`, then commit that quiescence boundary;
-3. terminate every existing runtime-role session and repeat the prepared-transaction and ownership audits;
+3. terminate every existing runtime-role session and repeat the prepared-transaction and ownership audits; a backend that exits naturally during termination is accepted only when the authoritative follow-up query confirms no runtime session remains;
 4. reset stale object and default privileges across every existing non-system schema;
 5. grant only the exact Mandate schema/table privileges and restore runtime `CONNECT`.
 
