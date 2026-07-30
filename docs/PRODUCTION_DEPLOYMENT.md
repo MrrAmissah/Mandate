@@ -1,6 +1,6 @@
 # Production deployment foundation
 
-This document defines the repository's production deployment contract. It is a hardened single-host reference, not a claim of high availability. Production operators must use a **dedicated Mandate PostgreSQL database** with backups, point-in-time recovery, TLS verification, network controls and distinct credentials for each Mandate process. Do not apply the database-role policy to a database shared with another application.
+This document defines the repository's production deployment contract. It is a hardened single-host reference, not a claim of high availability. Production operators must use a **dedicated PostgreSQL 16 Mandate database** with backups, point-in-time recovery, TLS verification, network controls and distinct credentials for each Mandate process. Do not apply the database-role policy to a database shared with another application.
 
 ## Trust boundaries
 
@@ -58,15 +58,30 @@ DATABASE_URL_FILE=/run/secrets/migration_database_url \
 npm run database:roles
 ```
 
-The policy fails closed unless migration 010 is present and every runtime role already exists with safe attributes. Runtime roles may not inherit another role or own the database, any non-system schema, any non-system relation or any non-system function.
+The migration/configuration identity must own or be able to alter every application object in the dedicated database, revoke database/schema/object/default privileges and terminate sessions authenticated as a Mandate runtime role. Configuration is deliberately disruptive and must run before API and worker services start.
 
-The policy removes all known DDL and stale-access escape paths for runtime identities:
+The policy fails closed unless migration 010 is present and every runtime role already exists with safe attributes. Runtime roles may neither inherit another role nor be inherited by another role. They may not own the database or any object in the dedicated database, including schemas, relations, routines, enums, domains or other user-defined types. Prepared transactions owned by a runtime identity also block configuration.
+
+### Quiesced policy application
+
+Role configuration is serialized by a PostgreSQL advisory lock and applies in two committed stages:
+
+1. validate role attributes, migration state, role memberships, ownership and prepared transactions;
+2. revoke runtime `CONNECT`, database `CREATE`/`TEMPORARY` and schema `CREATE`, then commit that quiescence boundary;
+3. terminate every existing runtime-role session and repeat the prepared-transaction and ownership audits;
+4. reset stale object and default privileges across every existing non-system schema;
+5. grant only the exact Mandate schema/table privileges and restore runtime `CONNECT`.
+
+This ordering closes the create-after-audit race: no runtime session can remain connected or reconnect between the final ownership audit and exact grants. If a later policy step fails, runtime roles intentionally remain quiesced rather than being restored with a partially applied policy. The failure log sets `rolesRemainQuiesced: true`; correct the database state and rerun the configuration job before starting services.
+
+The policy removes known DDL and stale-access escape paths for runtime identities:
 
 - `CREATE` and `TEMPORARY` are revoked at database level;
-- `TEMPORARY` is revoked from `PUBLIC`;
+- `TEMPORARY` and `CONNECT` are revoked from `PUBLIC`;
 - `CREATE` is revoked from `PUBLIC` and every runtime role across every existing non-system schema;
-- direct Mandate table, **column**, sequence and function privileges are reset before exact table grants are applied;
-- migration-owner defaults are scrubbed both globally and inside the Mandate schema for tables, sequences and routines, for `PUBLIC` and every runtime role.
+- schema, table, **column**, sequence and **all routine** privileges are reset for `PUBLIC` and runtime roles across every existing non-system schema—procedures are included;
+- only `USAGE` on the `mandate` schema is restored to runtime roles;
+- migration-owner defaults are scrubbed globally and in every inventoried schema for tables, sequences and routines, for `PUBLIC` and every runtime role.
 
 A future migration therefore receives no runtime access through stale default grants. Re-run the policy after every migration and deliberately extend its exact grant map when a process genuinely needs a new object.
 
