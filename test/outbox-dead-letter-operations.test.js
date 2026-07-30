@@ -123,9 +123,10 @@ test('dead-letter inspection returns safe metadata without payload or replay sec
 });
 
 test('dead-letter operator entry points have no API or migration authority', async () => {
-  const [listSource, replaySource] = await Promise.all([
+  const [listSource, replaySource, applicationSource] = await Promise.all([
     readFile(new URL('../scripts/list-outbox-dead-letters.js', import.meta.url), 'utf8'),
-    readFile(new URL('../scripts/replay-outbox-dead-letter.js', import.meta.url), 'utf8')
+    readFile(new URL('../scripts/replay-outbox-dead-letter.js', import.meta.url), 'utf8'),
+    readFile(new URL('../src/application/outbox-dead-letter-operations.js', import.meta.url), 'utf8')
   ]);
   for (const source of [listSource, replaySource]) {
     assert.doesNotMatch(source, /MANDATE_API_KEY/);
@@ -134,4 +135,6 @@ test('dead-letter operator entry points have no API or migration authority', asy
   }
   assert.match(listSource, /assertDeadLetterOperationsSchema/);
   assert.match(replaySource, /assertDeadLetterOperationsSchema/);
+  assert.match(applicationSource, /INSERT INTO mandate\.outbox_messages[\s\S]*SELECT source\.tenant_id/);
+  assert.doesNotMatch(applicationSource, /JSON\.stringify\(source\.payload\)/);
 });
