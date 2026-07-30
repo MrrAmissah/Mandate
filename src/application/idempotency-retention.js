@@ -70,7 +70,7 @@ export function parseIdempotencyRetentionConfig(env = process.env) {
     databaseUrl: env.DATABASE_URL,
     databaseSsl: booleanValue(env.MANDATE_DATABASE_SSL, false),
     databasePoolMax: integer(env.MANDATE_DATABASE_POOL_MAX, 2, {
-      name: 'MANDATE_DATABASE_POOL_MAX', minimum: 1, maximum: 20
+      name: 'MANDATE_DATABASE_POOL_MAX', minimum: 1, maximum: 100
     }),
     scope: Object.freeze({ environment, tenantId }),
     retentionSeconds: integer(
@@ -186,7 +186,8 @@ export async function deleteExpiredIdempotencyBatch(
            AND records.expires_at <= observed.observed_at
            AND records.created_at <= observed.observed_at
              - ($3::double precision * interval '1 second')
-         ORDER BY records.expires_at, records.tenant_id, records.scope, records.idempotency_key
+         ORDER BY records.tenant_id, records.expires_at, records.created_at,
+                  records.scope, records.idempotency_key
          FOR UPDATE OF records SKIP LOCKED
          LIMIT $4
        )
