@@ -1,5 +1,5 @@
 const RUNTIME_ROLE_IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
-export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.1';
+export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.2';
 
 const ROLE_ENVIRONMENT = Object.freeze({
   api: 'MANDATE_DATABASE_API_ROLE',
@@ -59,7 +59,6 @@ const TABLE_GRANTS = Object.freeze({
   })
 });
 
-const FUNCTION_ROLES = Object.freeze(['api', 'expiry', 'operator']);
 const REQUIRED_MIGRATION = '010_outbox_dead_letter_replays';
 
 function quoteRuntimeRole(value) {
@@ -121,10 +120,6 @@ export function buildDatabaseRolePolicyStatements({ roles, databaseName, deploym
     for (const [table, privileges] of Object.entries(tables)) {
       statements.push(grantStatement(roles[roleKey], table, privileges));
     }
-  }
-
-  for (const roleKey of FUNCTION_ROLES) {
-    statements.push(`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA mandate TO ${quoteRuntimeRole(roles[roleKey])};`);
   }
   return Object.freeze(statements);
 }
@@ -226,5 +221,5 @@ export const databaseRolePolicy = Object.freeze({
   requiredMigration: REQUIRED_MIGRATION,
   roles: DEFAULT_ROLES,
   tableGrants: TABLE_GRANTS,
-  functionRoles: FUNCTION_ROLES
+  functionRoles: Object.freeze([])
 });
