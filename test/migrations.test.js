@@ -108,10 +108,18 @@ test('outbox worker migration adds status-specific scope and event indexes only'
   assert.doesNotMatch(sql, /UPDATE mandate\.outbox_messages|DELETE FROM mandate\.outbox_messages/);
 });
 
-test('dead-letter replay migration separates business and operator provenance', async () => {
+test('dead-letter replay migration indexes immutable replay state and separates provenance', async () => {
   const sql = await readFile(replayUpPath, 'utf8');
   assert.match(sql, /^BEGIN;/);
   assert.match(sql, /COMMIT;\s*$/);
+  assert.match(sql, /ADD COLUMN replay_message_id text/);
+  assert.match(sql, /outbox_messages_replay_target_fk/);
+  assert.match(sql, /outbox_messages_replay_shape/);
+  assert.match(sql, /CREATE UNIQUE INDEX outbox_messages_replay_target_unique/);
+  assert.match(sql, /CREATE INDEX outbox_dead_letter_unreplayed_idx/);
+  assert.match(sql, /status = 'DEAD_LETTER' AND replay_message_id IS NULL/);
+  assert.match(sql, /CREATE INDEX outbox_dead_letter_replayed_idx/);
+  assert.match(sql, /status = 'DEAD_LETTER' AND replay_message_id IS NOT NULL/);
   assert.match(sql, /CREATE TABLE mandate\.outbox_dead_letter_replays/);
   assert.match(sql, /operator_audit_event_id text NOT NULL/);
   assert.match(sql, /UNIQUE \(tenant_id, environment, source_message_id\)/);
@@ -122,10 +130,12 @@ test('dead-letter replay migration separates business and operator provenance', 
     sql,
     /FOREIGN KEY \(tenant_id, environment, operator_audit_event_id\)[\s\S]*REFERENCES mandate\.audit_events/
   );
+  assert.match(sql, /guard_outbox_replay_link/);
+  assert.match(sql, /outbox_messages_replay_link_guard/);
   assert.match(sql, /outbox_dead_letter_replays_immutable/);
   assert.match(sql, /reject_immutable_change/);
   assert.match(sql, /010_outbox_dead_letter_replays/);
-  assert.doesNotMatch(sql, /UPDATE mandate\.outbox_messages|DELETE FROM mandate\.outbox_messages/);
+  assert.doesNotMatch(sql, /DELETE FROM mandate\.outbox_messages/);
 });
 
 test('migration runner applies all migrations in order under one advisory lock', async () => {
@@ -168,7 +178,12 @@ test('development down migrations remove only their owned objects', async () => 
   assert.match(outboxWorker, /DELETE FROM mandate\.schema_migrations WHERE version = '009_outbox_worker_operations'/);
   assert.doesNotMatch(outboxWorker, /DROP TABLE|DROP SCHEMA/);
   const replay = await readFile(replayDownPath, 'utf8');
+  assert.match(replay, /DROP TRIGGER IF EXISTS outbox_messages_replay_link_guard/);
+  assert.match(replay, /DROP FUNCTION IF EXISTS mandate\.guard_outbox_replay_link/);
   assert.match(replay, /DROP TABLE IF EXISTS mandate\.outbox_dead_letter_replays/);
+  assert.match(replay, /DROP INDEX IF EXISTS mandate\.outbox_dead_letter_unreplayed_idx/);
+  assert.match(replay, /DROP INDEX IF EXISTS mandate\.outbox_dead_letter_replayed_idx/);
+  assert.match(replay, /DROP COLUMN IF EXISTS replay_message_id/);
   assert.match(replay, /DELETE FROM mandate\.schema_migrations WHERE version = '010_outbox_dead_letter_replays'/);
   assert.doesNotMatch(replay, /DROP SCHEMA/);
 });
