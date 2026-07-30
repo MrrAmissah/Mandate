@@ -1,0 +1,156 @@
+name: mandate
+
+x-service-security: &service-security
+  image: ${MANDATE_IMAGE:?Set MANDATE_IMAGE to an immutable image reference}
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  user: "10001:10001"
+  pids_limit: 256
+  restart: unless-stopped
+  stop_grace_period: 30s
+  networks:
+    - backend
+
+services:
+  migrate:
+    <<: *service-security
+    restart: "no"
+    command: ["npm", "run", "migrate"]
+    environment:
+      DATABASE_URL_FILE: /run/secrets/migration_database_url
+      MANDATE_DATABASE_SSL: ${MANDATE_DATABASE_SSL:-true}
+    secrets:
+      - migration_database_url
+
+  configure-database-roles:
+    <<: *service-security
+    restart: "no"
+    command: ["npm", "run", "database:roles"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL_FILE: /run/secrets/migration_database_url
+      MANDATE_DATABASE_SSL: ${MANDATE_DATABASE_SSL:-true}
+      MANDATE_DATABASE_API_ROLE: ${MANDATE_DATABASE_API_ROLE:-mandate_api}
+      MANDATE_DATABASE_EXPIRY_ROLE: ${MANDATE_DATABASE_EXPIRY_ROLE:-mandate_expiry_worker}
+      MANDATE_DATABASE_OUTBOX_ROLE: ${MANDATE_DATABASE_OUTBOX_ROLE:-mandate_outbox_worker}
+      MANDATE_DATABASE_MAINTENANCE_ROLE: ${MANDATE_DATABASE_MAINTENANCE_ROLE:-mandate_maintenance}
+      MANDATE_DATABASE_OPERATOR_ROLE: ${MANDATE_DATABASE_OPERATOR_ROLE:-mandate_operator}
+    secrets:
+      - migration_database_url
+
+  api:
+    <<: *service-security
+    command: ["node", "src/server.js"]
+    depends_on:
+      configure-database-roles:
+        condition: service_completed_successfully
+    environment:
+      PORT: 8787
+      MANDATE_STORE: postgres
+      MANDATE_ENVIRONMENT: live
+      MANDATE_TENANT_ID: ${MANDATE_TENANT_ID:?Set MANDATE_TENANT_ID}
+      MANDATE_TENANT_NAME: ${MANDATE_TENANT_NAME:?Set MANDATE_TENANT_NAME}
+      MANDATE_API_CREDENTIAL_ID: ${MANDATE_API_CREDENTIAL_ID:?Set MANDATE_API_CREDENTIAL_ID}
+      MANDATE_API_CREDENTIAL_NAME: ${MANDATE_API_CREDENTIAL_NAME:-Production API credential}
+      MANDATE_API_SCOPES: ${MANDATE_API_SCOPES:?Set explicit non-wildcard scopes}
+      MANDATE_KEY_ID: ${MANDATE_KEY_ID:?Set MANDATE_KEY_ID}
+      MANDATE_DATABASE_SSL: ${MANDATE_DATABASE_SSL:-true}
+      DATABASE_URL_FILE: /run/secrets/api_database_url
+      MANDATE_API_KEY_FILE: /run/secrets/api_key
+      MANDATE_PRIVATE_KEY_PEM_FILE: /run/secrets/receipt_private_key
+      MANDATE_PUBLIC_KEY_PEM_FILE: /run/secrets/receipt_public_key
+    secrets:
+      - api_database_url
+      - api_key
+      - receipt_private_key
+      - receipt_public_key
+    ports:
+      - "${MANDATE_BIND_ADDRESS:-127.0.0.1}:${MANDATE_API_PORT:-8787}:8787"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
+
+  attempt-expiry:
+    <<: *service-security
+    command: ["npm", "run", "worker:attempt-expiry"]
+    depends_on:
+      configure-database-roles:
+        condition: service_completed_successfully
+    environment:
+      MANDATE_ENVIRONMENT: live
+      MANDATE_TENANT_ID: ${MANDATE_TENANT_ID:-}
+      MANDATE_EXPIRY_WORKER_ID: ${MANDATE_EXPIRY_WORKER_ID:?Set MANDATE_EXPIRY_WORKER_ID}
+      MANDATE_DATABASE_SSL: ${MANDATE_DATABASE_SSL:-true}
+      MANDATE_EXPIRY_HEALTH_HOST: 0.0.0.0
+      DATABASE_URL_FILE: /run/secrets/expiry_database_url
+    secrets:
+      - expiry_database_url
+    expose:
+      - "8788"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8788/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
+
+  outbox:
+    <<: *service-security
+    command: ["npm", "run", "worker:outbox"]
+    depends_on:
+      configure-database-roles:
+        condition: service_completed_successfully
+    environment:
+      MANDATE_ENVIRONMENT: live
+      MANDATE_TENANT_ID: ${MANDATE_TENANT_ID:-}
+      MANDATE_OUTBOX_WORKER_ID: ${MANDATE_OUTBOX_WORKER_ID:?Set MANDATE_OUTBOX_WORKER_ID}
+      MANDATE_OUTBOX_HANDLER_MODULE: /run/mandate/outbox-handlers.js
+      MANDATE_DATABASE_SSL: ${MANDATE_DATABASE_SSL:-true}
+      MANDATE_OUTBOX_HEALTH_HOST: 0.0.0.0
+      DATABASE_URL_FILE: /run/secrets/outbox_database_url
+    secrets:
+      - outbox_database_url
+    volumes:
+      - type: bind
+        source: ${MANDATE_OUTBOX_HANDLER_FILE:?Set MANDATE_OUTBOX_HANDLER_FILE}
+        target: /run/mandate/outbox-handlers.js
+        read_only: true
+    expose:
+      - "8789"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8789/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
+
+networks:
+  backend:
+    driver: bridge
+
+secrets:
+  migration_database_url:
+    file: ${MANDATE_MIGRATION_DATABASE_URL_FILE:?Set MANDATE_MIGRATION_DATABASE_URL_FILE}
+  api_database_url:
+    file: ${MANDATE_API_DATABASE_URL_FILE:?Set MANDATE_API_DATABASE_URL_FILE}
+  expiry_database_url:
+    file: ${MANDATE_EXPIRY_DATABASE_URL_FILE:?Set MANDATE_EXPIRY_DATABASE_URL_FILE}
+  outbox_database_url:
+    file: ${MANDATE_OUTBOX_DATABASE_URL_FILE:?Set MANDATE_OUTBOX_DATABASE_URL_FILE}
+  api_key:
+    file: ${MANDATE_API_KEY_SECRET_FILE:?Set MANDATE_API_KEY_SECRET_FILE}
+  receipt_private_key:
+    file: ${MANDATE_PRIVATE_KEY_SECRET_FILE:?Set MANDATE_PRIVATE_KEY_SECRET_FILE}
+  receipt_public_key:
+    file: ${MANDATE_PUBLIC_KEY_SECRET_FILE:?Set MANDATE_PUBLIC_KEY_SECRET_FILE}
