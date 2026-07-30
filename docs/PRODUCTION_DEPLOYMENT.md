@@ -56,7 +56,7 @@ DATABASE_URL_FILE=/run/secrets/migration_database_url \
 npm run database:roles
 ```
 
-The policy fails closed unless migration 010 is present and every runtime role already exists with safe attributes. It revokes public schema/table/function access, grants only the documented table operations and removes schema creation from runtime roles. Re-run it after every migration; a new table receives no runtime access until the policy is deliberately updated.
+The policy fails closed unless migration 010 is present and every runtime role already exists with safe attributes. Runtime roles may not inherit another role or own the database, Mandate schema or Mandate relations. The policy revokes public schema/table/function access, grants only the documented table operations and removes schema creation from runtime roles. Re-run it after every migration; a new table receives no runtime access until the policy is deliberately updated.
 
 Role intent:
 
@@ -65,6 +65,20 @@ Role intent:
 - Outbox: outbox claims/completion and immutable attempt inserts only.
 - Maintenance: idempotency inspection/deletion only.
 - Operator: bounded dead-letter inspection/replay and its audit evidence only.
+
+## Health contract
+
+The API exposes separate unauthenticated operational probes:
+
+| Route | Meaning |
+|---|---|
+| `/health` | Compatibility alias for liveness. |
+| `/health/live` | The Node.js process can serve HTTP. It does not claim PostgreSQL is usable. |
+| `/health/ready` | PostgreSQL answered within the configured timeout and migration 010 is present. Returns `503` while the process is shutting down. |
+
+`MANDATE_API_READINESS_TIMEOUT_MS` defaults to 2,000 ms and is bounded between 100 and 10,000 ms. Database failures return only the stable reason `DATABASE_UNAVAILABLE`; SQL and driver messages are never returned. Supervisors and load balancers must use `/health/ready`, not `/health`, before routing traffic.
+
+Expiry and outbox workers retain their own `/health/live`, `/health/ready` and `/metrics` listeners. Worker ports are not host-published by the reference topology.
 
 ## Compose start order
 
