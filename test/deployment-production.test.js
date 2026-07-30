@@ -57,6 +57,26 @@ test('database roles are distinct and identifiers fail closed', () => {
   );
 });
 
+test('managed database and deployment-role identifiers are quoted without weakening runtime names', () => {
+  const roles = parseDatabaseRolePolicyConfig({}).roles;
+  const statements = buildDatabaseRolePolicyStatements({
+    roles,
+    databaseName: 'Mandate-Prod.EU',
+    deploymentRoleName: 'migration-user"blue'
+  });
+  const joined = statements.join('\n');
+  assert.match(joined, /REVOKE CONNECT ON DATABASE "Mandate-Prod\.EU" FROM PUBLIC/);
+  assert.match(joined, /GRANT CONNECT ON DATABASE "Mandate-Prod\.EU" TO "migration-user""blue"/);
+  assert.throws(
+    () => buildDatabaseRolePolicyStatements({
+      roles,
+      databaseName: `bad\0database`,
+      deploymentRoleName: 'migration-user'
+    }),
+    /database identifier is unavailable or invalid/
+  );
+});
+
 test('runtime role policy grants no DDL and keeps delete authority maintenance-only', () => {
   const roles = parseDatabaseRolePolicyConfig({}).roles;
   const statements = buildDatabaseRolePolicyStatements({
