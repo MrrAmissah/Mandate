@@ -1,4 +1,4 @@
-const IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
+const RUNTIME_ROLE_IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
 export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.1';
 
 const ROLE_ENVIRONMENT = Object.freeze({
@@ -62,16 +62,25 @@ const TABLE_GRANTS = Object.freeze({
 const FUNCTION_ROLES = Object.freeze(['api', 'expiry', 'operator']);
 const REQUIRED_MIGRATION = '010_outbox_dead_letter_replays';
 
-function quoteIdentifier(value) {
-  if (!IDENTIFIER.test(value)) throw new Error(`Unsafe PostgreSQL role identifier: ${value}`);
+function quoteRuntimeRole(value) {
+  if (!RUNTIME_ROLE_IDENTIFIER.test(value)) throw new Error(`Unsafe PostgreSQL role identifier: ${value}`);
   return `"${value}"`;
+}
+
+function quoteServerIdentifier(value, label) {
+  if (typeof value !== 'string' || value.length < 1 || value.includes('\0')) {
+    throw new Error(`PostgreSQL ${label} identifier is unavailable or invalid.`);
+  }
+  const byteLength = Buffer.byteLength(value, 'utf8');
+  if (byteLength > 63) throw new Error(`PostgreSQL ${label} identifier exceeds 63 bytes.`);
+  return `"${value.replaceAll('"', '""')}"`;
 }
 
 export function parseDatabaseRolePolicyConfig(env = process.env) {
   const roles = {};
   for (const [key, environmentName] of Object.entries(ROLE_ENVIRONMENT)) {
     roles[key] = env[environmentName] ?? DEFAULT_ROLES[key];
-    quoteIdentifier(roles[key]);
+    quoteRuntimeRole(roles[key]);
   }
   if (new Set(Object.values(roles)).size !== Object.values(roles).length) {
     throw new Error('Every Mandate database role must have a distinct name.');
@@ -80,12 +89,12 @@ export function parseDatabaseRolePolicyConfig(env = process.env) {
 }
 
 function grantStatement(role, table, privileges) {
-  return `GRANT ${privileges.join(', ')} ON TABLE mandate.${table} TO ${quoteIdentifier(role)};`;
+  return `GRANT ${privileges.join(', ')} ON TABLE mandate.${table} TO ${quoteRuntimeRole(role)};`;
 }
 
 export function buildDatabaseRolePolicyStatements({ roles, databaseName, deploymentRoleName }) {
-  const quotedDatabase = quoteIdentifier(databaseName);
-  const quotedDeploymentRole = quoteIdentifier(deploymentRoleName);
+  const quotedDatabase = quoteServerIdentifier(databaseName, 'database');
+  const quotedDeploymentRole = quoteServerIdentifier(deploymentRoleName, 'deployment role');
   const statements = [
     `REVOKE CONNECT ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
     `GRANT CONNECT ON DATABASE ${quotedDatabase} TO ${quotedDeploymentRole};`,
@@ -99,7 +108,7 @@ export function buildDatabaseRolePolicyStatements({ roles, databaseName, deploym
   ];
 
   for (const role of Object.values(roles)) {
-    const quotedRole = quoteIdentifier(role);
+    const quotedRole = quoteRuntimeRole(role);
     statements.push(`GRANT CONNECT ON DATABASE ${quotedDatabase} TO ${quotedRole};`);
     statements.push(`GRANT USAGE ON SCHEMA mandate TO ${quotedRole};`);
     statements.push(`REVOKE CREATE ON SCHEMA mandate FROM ${quotedRole};`);
@@ -115,7 +124,7 @@ export function buildDatabaseRolePolicyStatements({ roles, databaseName, deploym
   }
 
   for (const roleKey of FUNCTION_ROLES) {
-    statements.push(`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA mandate TO ${quoteIdentifier(roles[roleKey])};`);
+    statements.push(`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA mandate TO ${quoteRuntimeRole(roles[roleKey])};`);
   }
   return Object.freeze(statements);
 }
@@ -140,8 +149,8 @@ export async function applyDatabaseRolePolicy(client, config) {
   const databaseResult = await client.query('SELECT current_database() AS database_name, current_user AS deployment_role_name');
   const databaseName = databaseResult.rows[0]?.database_name;
   const deploymentRoleName = databaseResult.rows[0]?.deployment_role_name;
-  quoteIdentifier(databaseName);
-  quoteIdentifier(deploymentRoleName);
+  quoteServerIdentifier(databaseName, 'database');
+  quoteServerIdentifier(deploymentRoleName, 'deployment role');
   if (roleNames.includes(deploymentRoleName)) throw new Error('The deployment role must be separate from every runtime role.');
 
   const memberships = await client.query(
