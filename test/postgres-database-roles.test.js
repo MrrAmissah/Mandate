@@ -28,6 +28,14 @@ async function tablePrivilege(client, role, table, action) {
   return result.rows[0].allowed;
 }
 
+async function columnPrivilege(client, role, table, column, action) {
+  const result = await client.query(
+    'SELECT has_column_privilege($1, $2, $3, $4) AS allowed',
+    [role, table, column, action]
+  );
+  return result.rows[0].allowed;
+}
+
 async function databasePrivilege(client, role, database, action) {
   const result = await client.query(
     'SELECT has_database_privilege($1, $2, $3) AS allowed',
@@ -44,7 +52,7 @@ async function schemaPrivilege(client, role, schema, action) {
   return result.rows[0].allowed;
 }
 
-postgresTest('database role policy removes inherited, current and future runtime DDL authority', async (t) => {
+postgresTest('database role policy removes inherited, current, column and future runtime authority', async (t) => {
   const pool = new Pool({ connectionString: databaseUrl, max: 2 });
   const suffix = randomUUID().replaceAll('-', '').slice(0, 8);
   const roles = {
@@ -84,6 +92,8 @@ postgresTest('database role policy removes inherited, current and future runtime
     await client.query(`GRANT TEMPORARY ON DATABASE ${quoteServerIdentifier(databaseName)} TO ${quoteIdentifier(roles.api)}`);
     await client.query(`GRANT CREATE ON SCHEMA public TO ${quoteIdentifier(roles.api)}`);
     await client.query(`GRANT CREATE ON SCHEMA ${quoteIdentifier(customSchema)} TO PUBLIC`);
+    await client.query('GRANT SELECT (id) ON mandate.outbox_dead_letter_replays TO PUBLIC');
+    await client.query(`GRANT UPDATE (error_code) ON mandate.outbox_attempts TO ${quoteIdentifier(roles.api)}`);
     await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA mandate GRANT SELECT ON TABLES TO ${quoteIdentifier(roles.api)}`);
     await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA mandate GRANT USAGE ON SEQUENCES TO ${quoteIdentifier(roles.api)}`);
     await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA mandate GRANT EXECUTE ON FUNCTIONS TO ${quoteIdentifier(roles.api)}`);
@@ -97,15 +107,24 @@ postgresTest('database role policy removes inherited, current and future runtime
 
     const result = await applyDatabaseRolePolicy(client, { roles });
     assert.equal(result.roles.api, roles.api);
-    assert.equal(result.policyVersion, '2026-07-30.5');
+    assert.equal(result.policyVersion, '2026-07-30.6');
     assert.ok(result.schemaNames.includes('mandate'));
     assert.ok(result.schemaNames.includes('public'));
     assert.ok(result.schemaNames.includes(customSchema));
+    assert.ok(result.tableCount > 0);
 
     assert.equal(await tablePrivilege(client, roles.api, 'mandate.mandates', 'SELECT'), true);
     assert.equal(await tablePrivilege(client, roles.api, 'mandate.mandates', 'INSERT'), true);
     assert.equal(await tablePrivilege(client, roles.api, 'mandate.mandates', 'DELETE'), false);
     assert.equal(await tablePrivilege(client, roles.api, 'mandate.outbox_dead_letter_replays', 'INSERT'), false);
+    assert.equal(
+      await columnPrivilege(client, roles.api, 'mandate.outbox_dead_letter_replays', 'id', 'SELECT'),
+      false
+    );
+    assert.equal(
+      await columnPrivilege(client, roles.api, 'mandate.outbox_attempts', 'error_code', 'UPDATE'),
+      false
+    );
 
     assert.equal(await tablePrivilege(client, roles.expiry, 'mandate.action_attempts', 'UPDATE'), true);
     assert.equal(await tablePrivilege(client, roles.expiry, 'mandate.action_attempts', 'INSERT'), false);
