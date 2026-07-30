@@ -175,6 +175,7 @@ export function buildDatabaseRoleQuiesceStatements({
   const columns = normalizedTableColumns(tableColumns);
   const statements = [
     `REVOKE CONNECT ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
+    `REVOKE CREATE ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
     `REVOKE TEMPORARY ON DATABASE ${quotedDatabase} FROM PUBLIC;`
   ];
   for (const schemaName of schemas) {
@@ -209,6 +210,7 @@ export function buildDatabaseRolePolicyStatements({
   const columns = normalizedTableColumns(tableColumns);
   const statements = [
     `REVOKE CONNECT ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
+    `REVOKE CREATE ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
     `REVOKE TEMPORARY ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
     `GRANT CONNECT ON DATABASE ${quotedDatabase} TO ${quotedDeploymentRole};`,
     ...schemas.map((schemaName) =>
