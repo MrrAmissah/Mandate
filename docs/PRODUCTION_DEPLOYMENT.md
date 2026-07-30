@@ -1,6 +1,6 @@
 # Production deployment foundation
 
-This document defines the repository's production deployment contract. It is a hardened single-host reference, not a claim of high availability. Production operators must use a managed or independently operated PostgreSQL service with backups, point-in-time recovery, TLS verification, network controls, and distinct credentials for each Mandate process.
+This document defines the repository's production deployment contract. It is a hardened single-host reference, not a claim of high availability. Production operators must use a **dedicated Mandate PostgreSQL database** with backups, point-in-time recovery, TLS verification, network controls and distinct credentials for each Mandate process. Do not apply the database-role policy to a database shared with another application.
 
 ## Trust boundaries
 
@@ -25,6 +25,8 @@ Idempotency cleanup and dead-letter inspection/replay use separate maintenance/o
 - contains no test tree, Git history, environment file or local secret;
 - uses a secret-aware entry point;
 - supports a read-only root filesystem and a small no-exec `/tmp` tmpfs.
+
+Container commands invoke Node directly rather than `npm run`, so a read-only runtime does not depend on npm cache or error-log writes. CI builds the image, verifies its configured user, runs the Node binary from the image and renders the complete Compose topology.
 
 Deployments should promote the same image digest between environments. Do not rebuild separately for test and live.
 
@@ -56,7 +58,17 @@ DATABASE_URL_FILE=/run/secrets/migration_database_url \
 npm run database:roles
 ```
 
-The policy fails closed unless migration 010 is present and every runtime role already exists with safe attributes. Runtime roles may not inherit another role or own the database, Mandate schema, Mandate relations or Mandate functions. The policy revokes public schema/table/function access, grants only the documented table operations and removes schema creation from runtime roles. Re-run it after every migration; a new table receives no runtime access until the policy is deliberately updated.
+The policy fails closed unless migration 010 is present and every runtime role already exists with safe attributes. Runtime roles may not inherit another role or own the database, any non-system schema, any non-system relation or any non-system function.
+
+The policy removes all known DDL escape paths for runtime identities:
+
+- `CREATE` and `TEMPORARY` are revoked at database level;
+- `TEMPORARY` is revoked from `PUBLIC`;
+- `CREATE` is revoked from `PUBLIC` and every runtime role across every existing non-system schema;
+- direct Mandate table, sequence and function privileges are reset before exact grants are applied;
+- migration-owner default privileges for tables, sequences and functions are revoked from `PUBLIC` and every runtime role.
+
+A future migration therefore receives no runtime access through stale default grants. Re-run the policy after every migration and deliberately extend its exact grant map when a process genuinely needs a new object.
 
 Role intent:
 
@@ -76,7 +88,7 @@ The API exposes separate unauthenticated operational probes:
 | `/health/live` | The Node.js process can serve HTTP. It does not claim PostgreSQL is usable. |
 | `/health/ready` | PostgreSQL answered within the configured timeout and migration 010 is present. Returns `503` while the process is shutting down. |
 
-`MANDATE_API_READINESS_TIMEOUT_MS` defaults to 2,000 ms and is bounded between 100 and 10,000 ms. Database failures return only the stable reason `DATABASE_UNAVAILABLE`; SQL and driver messages are never returned. Supervisors and load balancers must use `/health/ready`, not `/health`, before routing traffic.
+`MANDATE_API_READINESS_TIMEOUT_MS` defaults to 2,000 ms and is bounded between 100 and 10,000 ms. Readiness uses a dedicated one-connection pool whose **client acquisition** and SQL execution are both bounded by this value, so an exhausted application pool cannot accumulate unbounded probes. Database failures return only the stable reason `DATABASE_UNAVAILABLE`; SQL and driver messages are never returned. Supervisors and load balancers must use `/health/ready`, not `/health`, before routing traffic.
 
 Expiry and outbox workers retain their own `/health/live`, `/health/ready` and `/metrics` listeners. Worker ports are not host-published by the reference topology.
 
