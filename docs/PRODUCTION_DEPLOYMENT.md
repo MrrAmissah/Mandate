@@ -56,7 +56,7 @@ DATABASE_URL_FILE=/run/secrets/migration_database_url \
 npm run database:roles
 ```
 
-The policy fails closed unless migration 010 is present and every runtime role already exists with safe attributes. Runtime roles may not inherit another role or own the database, Mandate schema or Mandate relations. The policy revokes public schema/table/function access, grants only the documented table operations and removes schema creation from runtime roles. Re-run it after every migration; a new table receives no runtime access until the policy is deliberately updated.
+The policy fails closed unless migration 010 is present and every runtime role already exists with safe attributes. Runtime roles may not inherit another role or own the database, Mandate schema, Mandate relations or Mandate functions. The policy revokes public schema/table/function access, grants only the documented table operations and removes schema creation from runtime roles. Re-run it after every migration; a new table receives no runtime access until the policy is deliberately updated.
 
 Role intent:
 
