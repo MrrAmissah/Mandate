@@ -1,5 +1,5 @@
 const RUNTIME_ROLE_IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
-export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.4';
+export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.5';
 
 const ROLE_ENVIRONMENT = Object.freeze({
   api: 'MANDATE_DATABASE_API_ROLE',
@@ -85,6 +85,15 @@ function normalizedSchemaNames(schemaNames) {
   return names;
 }
 
+function defaultPrivilegeRevokes(deploymentRole, grantee, { schemaScoped = false } = {}) {
+  const scope = schemaScoped ? ' IN SCHEMA mandate' : '';
+  return [
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${deploymentRole}${scope} REVOKE ALL ON TABLES FROM ${grantee};`,
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${deploymentRole}${scope} REVOKE ALL ON SEQUENCES FROM ${grantee};`,
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${deploymentRole}${scope} REVOKE EXECUTE ON ROUTINES FROM ${grantee};`
+  ];
+}
+
 export function parseDatabaseRolePolicyConfig(env = process.env) {
   const roles = {};
   for (const [key, environmentName] of Object.entries(ROLE_ENVIRONMENT)) {
@@ -125,9 +134,8 @@ export function buildDatabaseRolePolicyStatements({
     'REVOKE ALL ON ALL TABLES IN SCHEMA mandate FROM PUBLIC;',
     'REVOKE ALL ON ALL SEQUENCES IN SCHEMA mandate FROM PUBLIC;',
     'REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mandate FROM PUBLIC;',
-    `ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedDeploymentRole} IN SCHEMA mandate REVOKE ALL ON TABLES FROM PUBLIC;`,
-    `ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedDeploymentRole} IN SCHEMA mandate REVOKE ALL ON SEQUENCES FROM PUBLIC;`,
-    `ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedDeploymentRole} IN SCHEMA mandate REVOKE ALL ON FUNCTIONS FROM PUBLIC;`
+    ...defaultPrivilegeRevokes(quotedDeploymentRole, 'PUBLIC'),
+    ...defaultPrivilegeRevokes(quotedDeploymentRole, 'PUBLIC', { schemaScoped: true })
   );
 
   for (const role of Object.values(roles)) {
@@ -142,9 +150,8 @@ export function buildDatabaseRolePolicyStatements({
     statements.push(`REVOKE ALL ON ALL TABLES IN SCHEMA mandate FROM ${quotedRole};`);
     statements.push(`REVOKE ALL ON ALL SEQUENCES IN SCHEMA mandate FROM ${quotedRole};`);
     statements.push(`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA mandate FROM ${quotedRole};`);
-    statements.push(`ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedDeploymentRole} IN SCHEMA mandate REVOKE ALL ON TABLES FROM ${quotedRole};`);
-    statements.push(`ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedDeploymentRole} IN SCHEMA mandate REVOKE ALL ON SEQUENCES FROM ${quotedRole};`);
-    statements.push(`ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedDeploymentRole} IN SCHEMA mandate REVOKE ALL ON FUNCTIONS FROM ${quotedRole};`);
+    statements.push(...defaultPrivilegeRevokes(quotedDeploymentRole, quotedRole));
+    statements.push(...defaultPrivilegeRevokes(quotedDeploymentRole, quotedRole, { schemaScoped: true }));
   }
 
   for (const [roleKey, tables] of Object.entries(TABLE_GRANTS)) {
