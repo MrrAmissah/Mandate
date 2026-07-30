@@ -19,14 +19,14 @@ Idempotency cleanup and dead-letter inspection/replay use separate maintenance/o
 
 `Dockerfile` produces one non-root runtime image for every process. The final image:
 
-- uses the exact Node.js 22.23.1 Bookworm-slim tag;
+- pins Node.js 22.23.1 Bookworm-slim by both tag and immutable SHA-256 digest in every stage;
 - installs production dependencies with `npm ci --omit=dev --ignore-scripts`;
 - runs as UID/GID `10001`;
 - contains no test tree, Git history, environment file or local secret;
 - uses a secret-aware entry point;
 - supports a read-only root filesystem and a small no-exec `/tmp` tmpfs.
 
-Container commands invoke Node directly rather than `npm run`, so a read-only runtime does not depend on npm cache or error-log writes. CI builds the image, verifies its configured user, runs the Node binary from the image and renders the complete Compose topology.
+Container commands invoke Node directly rather than `npm run`, so a read-only runtime does not depend on npm cache or error-log writes. CI pins its PostgreSQL service by digest, builds the real image, verifies its configured user, runs the Node binary from the image and renders the complete Compose topology.
 
 Deployments should promote the same image digest between environments. Do not rebuild separately for test and live.
 
