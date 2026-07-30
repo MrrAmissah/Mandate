@@ -70,16 +70,23 @@ export async function createRuntime({ env = process.env } = {}) {
     };
   }
 
+  const ssl = booleanValue(env.MANDATE_DATABASE_SSL, false);
   const pool = await createPostgresPool({
     connectionString: env.DATABASE_URL,
     max: positiveInteger(env.MANDATE_DATABASE_POOL_MAX, 10),
-    ssl: booleanValue(env.MANDATE_DATABASE_SSL, false)
+    ssl
+  });
+  const readinessPool = await createPostgresPool({
+    connectionString: env.DATABASE_URL,
+    max: 1,
+    ssl,
+    connectionTimeoutMillis: healthConfig.queryTimeoutMs
   });
   const store = new PostgresStore(pool, { maximumTransactionAttempts: positiveInteger(env.MANDATE_TRANSACTION_ATTEMPTS, 4) });
   const signingKeys = new PostgresSigningKeyRegistry(pool, ownership);
   const health = createApiHealth({
     mode,
-    pool,
+    pool: readinessPool,
     queryTimeoutMs: healthConfig.queryTimeoutMs
   });
 
@@ -96,13 +103,15 @@ export async function createRuntime({ env = process.env } = {}) {
       activatedAt: new Date()
     });
   } catch (error) {
-    await store.close();
+    await Promise.allSettled([store.close(), readinessPool.end()]);
     throw error;
   }
 
   return {
     mode, store, signer, signingKeys, health,
     authenticator: createStoredApiKeyAuthenticator({ store, hashApiKey, verifyApiKey, assertCredentialUsable }),
-    close: () => store.close()
+    async close() {
+      await Promise.all([store.close(), readinessPool.end()]);
+    }
   };
 }
