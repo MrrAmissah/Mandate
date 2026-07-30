@@ -8,6 +8,8 @@ const outboxUpPath = new URL('../migrations/002_outbox_attempts.up.sql', import.
 const outboxDownPath = new URL('../migrations/002_outbox_attempts.down.sql', import.meta.url);
 const idempotencyUpPath = new URL('../migrations/003_idempotency_http_metadata.up.sql', import.meta.url);
 const idempotencyDownPath = new URL('../migrations/003_idempotency_http_metadata.down.sql', import.meta.url);
+const retentionUpPath = new URL('../migrations/008_idempotency_retention.up.sql', import.meta.url);
+const retentionDownPath = new URL('../migrations/008_idempotency_retention.down.sql', import.meta.url);
 const runnerPath = new URL('../src/store/postgres-migrations.js', import.meta.url);
 
 async function baselineMigration() {
@@ -86,12 +88,31 @@ test('idempotency metadata migration maps known scopes and rejects unknown scope
   assert.match(sql, /003_idempotency_http_metadata/);
 });
 
+test('idempotency retention migration adds only the scoped cleanup index', async () => {
+  const sql = await readFile(retentionUpPath, 'utf8');
+  assert.match(sql, /^BEGIN;/);
+  assert.match(sql, /COMMIT;\s*$/);
+  assert.match(sql, /CREATE INDEX idempotency_retention_scope_idx/);
+  assert.match(sql, /environment, tenant_id, expires_at, created_at, scope, idempotency_key/);
+  assert.match(sql, /008_idempotency_retention/);
+  assert.doesNotMatch(sql, /DELETE FROM mandate\.idempotency_records|UPDATE mandate\.idempotency_records/);
+});
+
 test('migration runner applies all migrations in order under one advisory lock', async () => {
   const source = await readFile(runnerPath, 'utf8');
-  const baselineIndex = source.indexOf("version: '001_durable_core'");
-  const outboxIndex = source.indexOf("version: '002_outbox_attempts'");
-  const idempotencyIndex = source.indexOf("version: '003_idempotency_http_metadata'");
-  assert.ok(baselineIndex < outboxIndex && outboxIndex < idempotencyIndex);
+  const versions = [
+    '001_durable_core',
+    '002_outbox_attempts',
+    '003_idempotency_http_metadata',
+    '004_signing_key_lifecycle',
+    '005_action_attempt_reservations',
+    '006_attempt_completion_receipts',
+    '007_receipt_supersession',
+    '008_idempotency_retention'
+  ];
+  const positions = versions.map((version) => source.indexOf(`version: '${version}'`));
+  assert.ok(positions.every((position) => position >= 0));
+  assert.deepEqual([...positions].sort((left, right) => left - right), positions);
   assert.match(source, /pg_advisory_lock\(hashtextextended/);
   assert.match(source, /pg_advisory_unlock\(hashtextextended/);
   assert.match(source, /mandate:migrations/);
@@ -111,4 +132,9 @@ test('development down migrations remove only their owned objects', async () => 
   assert.match(idempotency, /DROP FUNCTION IF EXISTS mandate\.assign_idempotency_http_metadata/);
   assert.match(idempotency, /DELETE FROM mandate\.schema_migrations WHERE version = '003_idempotency_http_metadata'/);
   assert.doesNotMatch(idempotency, /DROP TABLE|DROP SCHEMA/);
+
+  const retention = await readFile(retentionDownPath, 'utf8');
+  assert.match(retention, /DROP INDEX IF EXISTS mandate\.idempotency_retention_scope_idx/);
+  assert.match(retention, /DELETE FROM mandate\.schema_migrations WHERE version = '008_idempotency_retention'/);
+  assert.doesNotMatch(retention, /DROP TABLE|DROP SCHEMA/);
 });
