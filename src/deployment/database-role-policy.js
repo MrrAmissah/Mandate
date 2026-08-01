@@ -1,5 +1,5 @@
 const RUNTIME_ROLE_IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
-export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.8';
+export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.9';
 
 const ROLE_ENVIRONMENT = Object.freeze({
   api: 'MANDATE_DATABASE_API_ROLE',
@@ -175,6 +175,7 @@ export function buildDatabaseRoleQuiesceStatements({
   const columns = normalizedTableColumns(tableColumns);
   const statements = [
     `REVOKE CONNECT ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
+    `REVOKE CREATE ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
     `REVOKE TEMPORARY ON DATABASE ${quotedDatabase} FROM PUBLIC;`
   ];
   for (const schemaName of schemas) {
@@ -209,6 +210,7 @@ export function buildDatabaseRolePolicyStatements({
   const columns = normalizedTableColumns(tableColumns);
   const statements = [
     `REVOKE CONNECT ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
+    `REVOKE CREATE ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
     `REVOKE TEMPORARY ON DATABASE ${quotedDatabase} FROM PUBLIC;`,
     `GRANT CONNECT ON DATABASE ${quotedDatabase} TO ${quotedDeploymentRole};`,
     ...schemas.map((schemaName) =>
