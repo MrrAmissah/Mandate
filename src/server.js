@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { createRuntimeHandler } from './http/runtime-handler.js';
+import { createServerHandler } from './http/server-handler.js';
 import { createRuntime } from './runtime.js';
 
 const port = Number(process.env.PORT ?? 8787);
@@ -8,12 +8,13 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 }
 
 const runtime = await createRuntime();
-const server = createServer(createRuntimeHandler(runtime));
+const server = createServer(createServerHandler(runtime));
 let closing = false;
 
 async function shutdown(signal) {
   if (closing) return;
   closing = true;
+  runtime.health.beginShutdown();
   console.log(`Received ${signal}; shutting down Mandate-API.`);
   await new Promise((resolve) => server.close(resolve));
   await runtime.close();

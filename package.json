@@ -15,6 +15,7 @@
     "outbox:dead-letter:list": "node scripts/list-outbox-dead-letters.js",
     "outbox:dead-letter:replay": "node scripts/replay-outbox-dead-letter.js",
     "idempotency:cleanup": "node scripts/cleanup-idempotency.js",
+    "database:roles": "node scripts/configure-database-roles.js",
     "package:receipt-verifier": "node scripts/package-receipt-verifier.js",
     "test": "node --test",
     "check": "npm run check:syntax && node --test",
