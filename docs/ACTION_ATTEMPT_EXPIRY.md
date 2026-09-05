@@ -22,7 +22,7 @@ The process uses the same PostgreSQL schema but has a narrower operational respo
 6. publish cached liveness, readiness, and metrics for a supervisor;
 7. continue polling until it receives `SIGINT` or `SIGTERM`.
 
-Deployment must run `npm run migrate` with a separate migration role before starting the API or worker.
+Deployment must run `npm run migrate` with a separate migration role before starting the API or worker. The production reference also applies a restricted `mandate_expiry_worker` database role after migrations; see [`PRODUCTION_DEPLOYMENT.md`](./PRODUCTION_DEPLOYMENT.md).
 
 ## Required configuration
 
@@ -170,18 +170,23 @@ action_attempt_expiry.stopped
 
 Failure logs persist only a safe error code, never raw database messages or connection details.
 
-## Graceful shutdown
+Exact metric names and the initial deployment-neutral alert baseline are maintained in [`PRODUCTION_OPERATIONS.md`](./PRODUCTION_OPERATIONS.md). In particular, oldest-overdue age and repeated batch saturation are operator signals; they do not redefine when a reservation is legally expired inside Mandate.
+
+## Graceful shutdown and supervision
 
 The executable listens for `SIGINT` and `SIGTERM`, marks readiness as `SHUTTING_DOWN`, aborts the polling loop, waits for the active cycle to finish, logs the final metrics snapshot, closes the health listener, and then closes the PostgreSQL pool.
 
-## Remaining deployment work
+The reference production topology supervises the worker with `restart: unless-stopped`, explicit CPU/memory/PID/log bounds, `SIGTERM`, and a 30-second stop grace. Migration and database-role jobs are deliberately not auto-restarted. If infrastructure force-kills an active cycle, PostgreSQL state remains authoritative and a later process may safely continue bounded expiry work.
 
-The process, cached health surface, and metrics are composed and tested, but a production deployment still requires:
+## Remaining deployment-specific work
 
-- a platform-specific service manifest;
-- a restricted runtime database role;
-- network policy for any non-loopback health binding;
-- alert thresholds for consecutive failures, oldest overdue reservation, and repeated batch saturation;
-- a supervisor restart policy;
-- backup/restore procedures;
-- an operator runbook for overdue backlog and database outages.
+The worker process, restricted database role, cached health surface, reference restart policy, resource bounds and alert baseline are implemented. A real deployment must still provide and verify:
+
+- firewall/network enforcement for any non-loopback health/metrics path;
+- a paging backend wired to the documented metrics/health conditions;
+- durable centralized log retention/SIEM policy;
+- production backup schedule/PITR and measured RPO/RTO;
+- platform-specific service/HA manifests where the chosen environment requires them;
+- operator ownership for overdue-backlog and database-outage incidents.
+
+See [`PRODUCTION_OPERATIONS.md`](./PRODUCTION_OPERATIONS.md) for the provider-neutral incident and escalation contract.
