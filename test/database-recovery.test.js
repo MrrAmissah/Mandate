@@ -134,7 +134,7 @@ test('backup uses one exported snapshot and keeps the destination reserved until
       queries.push(sql);
       if (sql === 'SELECT pg_export_snapshot() AS snapshot_id') return { rows: [{ snapshot_id: '00000003-0000001b-1' }] };
       if (sql.includes('FROM mandate.schema_migrations')) {
-        return { rows: [{ version: '010_outbox_dead_letter_replays' }] };
+        return { rows: [{ version: '011_approval_assignments' }] };
       }
       if (sql.includes('SELECT count(*)::bigint')) return { rows: [{ count: '0' }] };
       return { rows: [] };
@@ -170,8 +170,12 @@ test('backup uses one exported snapshot and keeps the destination reserved until
     );
     assert.equal(toolArgs.options.databaseSsl, true);
     const manifest = JSON.parse(await readFile(result.manifestPath, 'utf8'));
+    assert.equal(manifest.requiredMigration, '011_approval_assignments');
     assert.equal(manifest.counts.idempotency_records, '0');
     assert.equal(manifest.counts.outbox_dead_letter_replays, '0');
+    assert.equal(manifest.counts.approver_identities, '0');
+    assert.equal(manifest.counts.approval_assignments, '0');
+    assert.equal(manifest.counts.approval_assignment_eligibility, '0');
     await assert.rejects(
       createDatabaseBackup(config, { poolFactory, toolRunner }),
       (error) => error?.code === 'DATABASE_BACKUP_EXISTS'
@@ -182,7 +186,7 @@ test('backup uses one exported snapshot and keeps the destination reserved until
 });
 
 test('restore verification requires exact migration and critical-table counts', () => {
-  const migrations = ['001_initial', '010_outbox_dead_letter_replays'];
+  const migrations = ['001_initial', '011_approval_assignments'];
   const counts = Object.fromEntries(databaseRecovery.criticalTables.map((table, index) => [table, String(index + 1)]));
   assert.doesNotThrow(() => assertSnapshotMatchesManifest({ migrations, counts }, { migrations, counts }));
   assert.throws(
@@ -193,4 +197,18 @@ test('restore verification requires exact migration and critical-table counts', 
     () => assertSnapshotMatchesManifest({ migrations: ['001_initial'], counts }, { migrations, counts }),
     (error) => error?.code === 'DATABASE_RESTORE_MIGRATION_MISMATCH'
   );
+});
+
+test('approval authority and assignment evidence are critical recovery state', () => {
+  for (const table of [
+    'approver_identities',
+    'approver_credential_bindings',
+    'approver_groups',
+    'approver_group_memberships',
+    'approval_assignments',
+    'approval_assignment_eligibility'
+  ]) {
+    assert.ok(databaseRecovery.criticalTables.includes(table));
+  }
+  assert.equal(databaseRecovery.requiredMigration, '011_approval_assignments');
 });
