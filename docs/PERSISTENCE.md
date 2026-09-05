@@ -51,7 +51,7 @@ One pending approval may have at most one active assignment. Direct assignments 
 
 Reassignment terminates the old assignment and creates a fresh assignment plus eligibility snapshot. Cancellation records authenticated credential evidence on the approval and terminates the active assignment. Assignment and eligibility history is preserved rather than rewritten.
 
-For new decisions, the runtime derives the approver identity from the authenticated credential and writes `decided_by_approver_id`. The pre-existing free-text `decided_by` column remains readable only for historical compatibility; it is not authoritative for new v0.8 decisions.
+For new decisions, the runtime derives the approver identity from the authenticated credential and writes `decided_by_approver_id`. The pre-existing free-text `decided_by` column remains readable only for historical compatibility; it is not authoritative for new decisions.
 
 Migration `012_approval_decision_credential_evidence` makes PostgreSQL independently verify the complete decision proof at commit. A deferred constraint trigger rejects `PENDING → APPROVED|REJECTED` unless:
 
@@ -62,6 +62,33 @@ Migration `012_approval_decision_credential_evidence` makes PostgreSQL independe
 5. the referenced API credential is active, unrevoked, and unexpired at decision time.
 
 This makes the database the final arbiter even if application code attempts either the legacy free-text path or a superficially eligible decision that omits exact authenticated credential evidence.
+
+## Approval inbox read model
+
+The approval inbox does **not** introduce another durable inbox table or copy assignment ACLs into a second authority store. It is a derived read projection over the existing authority graph.
+
+In PostgreSQL mode, the list query joins:
+
+```text
+api credential binding
+  → approver identity
+  → immutable assignment eligibility
+  → current active approval assignment
+  → pending approval
+```
+
+Every join retains tenant/environment ownership. The exact authenticated credential ID is part of the query, so a caller cannot ask the database to render another approver's inbox by supplying an approver identifier.
+
+The list is ordered by `(approvals.requested_at, approvals.id)` and uses keyset pagination with a database-side `limit + 1` window. Migration `013_approval_inbox_indexes` adds:
+
+- `approval_assignment_eligibility_inbox_idx (tenant_id, environment, approver_id, assignment_id)` for current-authority lookup; and
+- `approvals_pending_inbox_order_idx (tenant_id, environment, requested_at, id) WHERE status = 'PENDING'` for bounded pending work ordering.
+
+Migration 013 changes no authority state; it is an operational read-path migration. API readiness nevertheless requires it because the v0.9 inbox should not be served in production on a schema without the intended bounded access path. Backup/recovery trust-state verification continues to require migration 012 because the 013 objects are reconstructable indexes rather than additional durable authority records.
+
+PostgreSQL `clock_timestamp()` determines whether a pending inbox item is actionable or overdue. The `ACTIONABLE` projection excludes overdue requests. `state=PENDING` can still expose an overdue request before the separate approval-expiry lifecycle materializes a terminal state, but the item is returned with `actionable=false`.
+
+An inbox response is never write authority. Reassignment, cancellation, decision, credential revocation, or identity disablement can invalidate a previously returned row before the client acts. The mutation path re-resolves the authority graph and PostgreSQL remains the final arbiter.
 
 ## JSONB encoding
 
@@ -76,6 +103,8 @@ All JSON responses use canonical serialization, so the first committed response 
 A restart test proves that replay after closing and recreating the connection pool returns the original status, canonical body bytes, and stable headers without duplicating state, audit events, or outbox messages. `X-Request-Id` intentionally identifies the current retry rather than replaying the first attempt's diagnostic ID.
 
 Migration `003_idempotency_http_metadata` derives status and stable header metadata from the exact supported mutation scope and rejects unknown scopes instead of guessing. Migration 011 extends that exact mapping for approver creation/binding, group membership, assignment/reassignment, decision, cancellation, and approver lifecycle operations.
+
+The approval inbox is read-only and does not create idempotency records.
 
 See [Idempotency and HTTP replay](./IDEMPOTENCY.md) for the complete contract.
 
@@ -112,6 +141,8 @@ Memory-mode runtime bootstrap also stores a real credential record so approval b
 ## Recovery-critical trust state
 
 Database backup manifests and restore verification require migration `012_approval_decision_credential_evidence` and include approver identities, credential bindings, groups, memberships, assignments, assignment eligibility, immutable audit evidence, and API-credential lifecycle state alongside mandates, approvals, decisions, receipts, idempotency, signing keys, and outbox state. The real PostgreSQL recovery drill creates and restores an actual pending group assignment to prove authority continuity rather than only verifying empty-table counts.
+
+Migration 013 adds only reconstructable indexes and therefore does not change the recovery-critical data manifest. After restore, the normal migration path recreates those index objects before API readiness can succeed.
 
 ## Outbox
 

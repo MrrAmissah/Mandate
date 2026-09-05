@@ -337,11 +337,11 @@ This phase must not weaken canonical JSON verification or the append-only correc
 
 ## Phase 4 — approval operations
 
-Status: Phase 4A implemented in the current approval-assignment tranche; Phase 4B is the next product-control dependency after merge.
+Status: Phase 4A assignment authority and Phase 4B authority-scoped inbox are implemented. Phase 4C approval expiry/cancellation processing is the next trust dependency.
 
 ### Phase 4A — approval assignment model
 
-Status: implemented in this tranche.
+Status: merged.
 
 Delivered:
 
@@ -374,18 +374,37 @@ Exit gate for 4A:
 
 ### Phase 4B — approval inbox API
 
-Next dependency.
+Status: implemented in the approval-inbox tranche.
 
-Scope:
+Delivered:
 
-- bounded list/read endpoints optimized for future UI and delivery adapters;
-- server-derived eligibility views for the authenticated approver;
-- filters for actionable/pending state without exposing unrelated tenant approval traffic;
-- safe pagination and tenant/environment isolation;
-- no connector-specific semantics in the core inbox resource;
-- explicit distinction between administrative approval listing and an approver's actionable inbox.
+- `GET /v1/approval-inbox` and `GET /v1/approval-inbox/{id}`;
+- a dedicated `approval_inbox:read` scope, separate from broad administrative `approvals:read`;
+- server-derived current approver identity from the exact authenticated credential binding;
+- visibility requiring the current active assignment and immutable assignment-time eligibility snapshot;
+- tenant/current-authority-safe not-found behavior for inaccessible inbox items;
+- `ACTIONABLE` as the default list state, excluding overdue requests;
+- `PENDING` inspection of all currently visible durable pending requests, including overdue-but-unmaterialized items marked `actionable=false` and `overdue=true`;
+- reassignment removing prior assignee visibility and terminal states disappearing from the inbox;
+- bounded keyset pagination over `(requested_at, id)` with a database-side `limit + 1` window;
+- migration 013 approver-first eligibility and pending-order indexes;
+- API readiness requiring migration 013 while recovery trust-state verification remains correctly anchored to migration 012 because 013 is index-only;
+- OpenAPI v0.9.0 and aligned API/security/persistence documentation;
+- memory adversarial tests and a real PostgreSQL authority/isolation/index proof.
+
+Exit gate for 4B:
+
+- a tenant-wide approval reader cannot use the inbox without the dedicated scope and live approver binding;
+- an unbound credential or ineligible approver cannot inspect another approver's work;
+- old assignment eligibility cannot survive reassignment as current inbox authority;
+- terminal approvals do not remain actionable inbox work;
+- overdue pending approvals are never represented as actionable;
+- pagination remains bounded and does not require loading unrelated tenant approval traffic;
+- the production API fails readiness until migration 013's intended read indexes are present.
 
 ### Phase 4C — approval expiry/cancellation process
+
+Next dependency.
 
 Scope:
 
@@ -393,7 +412,8 @@ Scope:
 - durable system evidence;
 - bounded claims and multi-worker safety;
 - notification/resumption events through the outbox;
-- precedence rules among decision, reassignment, cancellation, and expiry.
+- precedence rules among decision, reassignment, cancellation, and expiry;
+- explicit convergence between overdue inbox inspection and durable `EXPIRED` materialization.
 
 ### Phase 4D — approval evidence
 

@@ -1,3 +1,4 @@
+import { createApprovalInboxHandler } from './approval-inbox-handler.js';
 import { createRuntimeHandler } from './runtime-handler.js';
 import { resolveRequestId, sendJson } from './utils.js';
 
@@ -7,7 +8,7 @@ export function createServerHandler(runtime) {
   if (!runtime?.health?.liveness || !runtime?.health?.readiness) {
     throw new TypeError('API liveness and readiness are required.');
   }
-  const application = createRuntimeHandler(runtime);
+  const application = createApprovalInboxHandler(runtime, createRuntimeHandler(runtime));
 
   return async function serverHandler(request, response) {
     const method = request.method ?? 'GET';

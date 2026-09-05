@@ -1,12 +1,14 @@
 openapi: 3.1.0
 info:
   title: Mandate-API
-  version: 0.8.0
-  summary: Delegated authorization, assigned human approvals, single-use execution attempts, and append-only signed receipts for AI agents
+  version: 0.9.0
+  summary: Delegated authorization, assigned human approvals, authority-scoped approval inboxes, single-use execution attempts, and append-only signed receipts for AI agents
   description: |
     Mandate-API is a provider-independent trust layer for consequential agent actions.
     Sensitive actions can require an approval assigned to a durable approver identity or an
-    eligibility-snapshotted approver group. An ALLOW decision must be reserved by one
+    eligibility-snapshotted approver group. The approval inbox derives visibility from the
+    authenticated credential's active approver identity, current assignment, and immutable
+    assignment-time eligibility snapshot. An ALLOW decision must be reserved by one
     ActionAttempt and completed with execution evidence before one root Receipt is signed.
     Corrections append a linear signed successor chain; they never rewrite the original receipt
     or its execution evidence.
@@ -20,6 +22,7 @@ tags:
   - name: System
   - name: Mandates
   - name: Approvals
+  - name: Approval inbox
   - name: Approver administration
   - name: Authorizations
   - name: Action attempts
@@ -508,6 +511,53 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /v1/approval-inbox:
+    get:
+      tags: [Approval inbox]
+      operationId: listApprovalInbox
+      summary: List approvals currently visible to the authenticated approver
+      description: |
+        This is not an administrative approval list. Visibility is derived from the authenticated
+        credential's active approver identity, the current active assignment, and that assignment's
+        immutable eligibility snapshot. ACTIONABLE is the default and excludes overdue approvals.
+        PENDING also returns overdue approvals that have not yet been materialized into a terminal
+        expiry state; those items have actionable=false and overdue=true.
+      x-required-scope: approval_inbox:read
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/StartingAfter' }
+        - name: state
+          in: query
+          required: false
+          schema: { type: string, enum: [ACTIONABLE, PENDING], default: ACTIONABLE }
+      responses:
+        '200':
+          description: Authority-scoped approval inbox page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApprovalInboxListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/approval-inbox/{id}:
+    get:
+      tags: [Approval inbox]
+      operationId: getApprovalInboxItem
+      summary: Retrieve one currently visible pending approval inbox item
+      description: |
+        Returns 404 when the approval is not pending, has no current active assignment, or the
+        authenticated approver is not in the immutable eligibility snapshot. Overdue pending
+        approvals remain inspectable but are never marked actionable.
+      x-required-scope: approval_inbox:read
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/ApprovalId' }
+      responses:
+        '200': { $ref: '#/components/responses/ApprovalInboxItemResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /v1/authorize:
     post:
       tags: [Authorizations]
@@ -874,6 +924,11 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ReassignmentResult' }
+    ApprovalInboxItemResponse:
+      description: Approval currently visible to the authenticated approver
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApprovalInboxItem' }
     ApproverIdentityResponse:
       description: Approver identity
       content:
@@ -920,12 +975,12 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
     Forbidden:
-      description: Missing scope, action-attempt owner mismatch, or authenticated approver is not eligible for the assignment
+      description: Missing scope, action-attempt owner mismatch, authenticated approver is not eligible for the assignment, or the credential is not bound to an active approver identity
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
     NotFound:
-      description: Tenant-visible resource does not exist
+      description: Tenant-visible or current-authority-visible resource does not exist
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -1142,6 +1197,48 @@ components:
       required: [data]
       properties:
         data: { type: array, items: { $ref: '#/components/schemas/ApproverGroup' } }
+    ApprovalInboxAssignment:
+      type: object
+      additionalProperties: false
+      required: [id, sourceType, sourceId, assignedAt]
+      properties:
+        id: { type: string, pattern: '^apa_.+' }
+        sourceType: { type: string, enum: [APPROVER, GROUP] }
+        sourceId: { type: string }
+        assignedAt: { type: string, format: date-time }
+    ApprovalInboxApprover:
+      type: object
+      additionalProperties: false
+      required: [id, displayName]
+      properties:
+        id: { type: string, pattern: '^apv_.+' }
+        displayName: { type: string }
+    ApprovalInboxItem:
+      type: object
+      additionalProperties: false
+      required: [id, mandateId, agentId, action, resource, summary, status, requestedAt, expiresAt, actionable, overdue, assignment, approver]
+      properties:
+        id: { type: string, pattern: '^apr_.+' }
+        mandateId: { type: string, pattern: '^mnd_.+' }
+        agentId: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        summary: { type: string }
+        status: { type: string, const: PENDING }
+        requestedAt: { type: string, format: date-time }
+        expiresAt: { type: [string, 'null'], format: date-time }
+        actionable: { type: boolean }
+        overdue: { type: boolean }
+        assignment: { $ref: '#/components/schemas/ApprovalInboxAssignment' }
+        approver: { $ref: '#/components/schemas/ApprovalInboxApprover' }
+    ApprovalInboxListResponse:
+      allOf:
+        - { $ref: '#/components/schemas/PageBase' }
+        - type: object
+          required: [state]
+          properties:
+            data: { type: array, items: { $ref: '#/components/schemas/ApprovalInboxItem' } }
+            state: { type: string, enum: [ACTIONABLE, PENDING] }
     AuthorizationRequest:
       type: object
       additionalProperties: false

@@ -8,9 +8,9 @@ async function contract() {
   return readFile(contractUrl, 'utf8');
 }
 
-test('stable OpenAPI publishes the current execution and approval-assignment contract', async () => {
+test('stable OpenAPI publishes the current execution, approval-assignment, and inbox contract', async () => {
   const yaml = await contract();
-  assert.match(yaml, /version: 0\.8\.0/);
+  assert.match(yaml, /version: 0\.9\.0/);
   for (const route of [
     '/v1/mandates:',
     '/v1/approver-identities:',
@@ -23,6 +23,8 @@ test('stable OpenAPI publishes the current execution and approval-assignment con
     '/v1/approvals/{id}/decide:',
     '/v1/approvals/{id}/reassign:',
     '/v1/approvals/{id}/cancel:',
+    '/v1/approval-inbox:',
+    '/v1/approval-inbox/{id}:',
     '/v1/decisions:',
     '/v1/decisions/{id}:',
     '/v1/action-attempts:',
@@ -45,6 +47,7 @@ test('OpenAPI documents pagination, separated approval scopes, and tenant-safe a
   assert.match(yaml, /x-required-scope: approvers:read/);
   assert.match(yaml, /x-required-scope: approvals:write/);
   assert.match(yaml, /x-required-scope: approvals:decide/);
+  assert.match(yaml, /x-required-scope: approval_inbox:read/);
   assert.match(yaml, /x-required-scope: authorizations:write/);
   assert.match(yaml, /x-required-scope: action_attempts:write/);
   assert.match(yaml, /x-required-scope: receipts:write/);
@@ -67,6 +70,26 @@ test('approval contract requires assignment and forbids caller-supplied decision
   assert.doesNotMatch(decideOperation, /decidedBy:/);
   assert.match(yaml, /decidedByApproverId:/);
   assert.match(yaml, /Group assignments snapshot/);
+});
+
+test('approval inbox contract is current-authority scoped and distinguishes actionable from pending', async () => {
+  const yaml = await contract();
+  const inboxList = yaml.match(/\/v1\/approval-inbox:([\s\S]*?)\n  \/v1\/approval-inbox\/\{id\}:/)?.[1];
+  assert.ok(inboxList, 'missing approval inbox list operation');
+  assert.match(inboxList, /x-required-scope: approval_inbox:read/);
+  assert.match(inboxList, /name: state/);
+  assert.match(inboxList, /enum: \[ACTIONABLE, PENDING\]/);
+  assert.match(inboxList, /default: ACTIONABLE/);
+  assert.match(inboxList, /current active assignment/i);
+  assert.match(inboxList, /overdue/i);
+
+  const inboxItem = yaml.match(/\/v1\/approval-inbox\/\{id\}:([\s\S]*?)\n  \/v1\/authorize:/)?.[1];
+  assert.ok(inboxItem, 'missing approval inbox item operation');
+  assert.match(inboxItem, /x-required-scope: approval_inbox:read/);
+  assert.match(inboxItem, /'404': \{ \$ref: '#\/components\/responses\/NotFound' \}/);
+  assert.match(yaml, /ApprovalInboxItem:/);
+  assert.match(yaml, /actionable:/);
+  assert.match(yaml, /overdue:/);
 });
 
 test('stable receipt requests bind issuance to an attempt and corrections to a predecessor', async () => {
