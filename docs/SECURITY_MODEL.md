@@ -16,13 +16,19 @@ Controls: exact agent binding, canonical resources, explicit action allowlists, 
 
 A caller submits an arbitrary human identifier or uses a valid API credential that was never authorized to decide the approval.
 
-Controls: durable approver identities, explicit credential-to-approver bindings, a dedicated `approvals:decide` scope, active assignment ownership, immutable assignment-time eligibility snapshots, server-derived decision attribution, database-enforced eligibility, and immutable terminal decision evidence. Caller-supplied `decidedBy` is not accepted by the v0.8.0 approval decision contract.
+Controls: durable approver identities, explicit credential-to-approver bindings, a dedicated `approvals:decide` scope, active assignment ownership, immutable assignment-time eligibility snapshots, server-derived decision attribution, immutable `approval.decided` audit evidence, and PostgreSQL commit-time verification of the exact active credential binding. Caller-supplied `decidedBy` is not accepted by the v0.8.0 approval decision contract.
 
 ### Approval privilege expansion
 
 A group is changed after a sensitive request is assigned and a newly added member silently gains authority over that already-pending request.
 
 Controls: group eligibility is snapshotted when the assignment is created. Later membership additions affect future assignments only. Emergency authority removal is performed by disabling the approver identity or credential binding, or by explicitly cancelling/reassigning the pending approval.
+
+### Ambiguous authority input
+
+A request supplies both a current-credential selector and a different explicit credential ID, hoping one layer validates one field while another layer acts on the other.
+
+Controls: JSON ingress rejects requests that contain both `bindCurrentCredential` and `credentialId` before authority resolution or idempotency execution. The API never silently ignores one authority selector in favor of the other.
 
 ### Approval replay
 
@@ -102,7 +108,9 @@ An approver identity is tenant/environment scoped and may be disabled without re
 
 A direct assignment snapshots one approver. A group assignment snapshots the group's active members at assignment time. Eligibility rows are append-only/immutable. Reassignment terminates the previous assignment and creates a new snapshot rather than mutating the old one.
 
-Decision attribution is derived from authentication and persisted as `decided_by_approver_id`; the legacy free-text `decided_by` field is retained only for compatibility with pre-v0.8 historical rows and is not authoritative for new decisions. PostgreSQL uses a deferred constraint trigger to reject a `PENDING → APPROVED|REJECTED` commit unless the deciding approver is active and eligible under the active assignment.
+Decision attribution is derived from authentication and persisted as `decided_by_approver_id`; the legacy free-text `decided_by` field is retained only for compatibility with pre-v0.8 historical rows and is not authoritative for new decisions.
+
+Migration `011_approval_assignments` establishes the durable identity, binding, group, assignment, eligibility and cancellation model. Migration `012_approval_decision_credential_evidence` strengthens the PostgreSQL final arbiter: a deferred constraint trigger rejects `PENDING → APPROVED|REJECTED` unless the deciding approver is active and eligible under the active assignment **and** the same transaction contains an immutable `approval.decided` audit event whose credential ID resolves through an active credential-to-approver binding and an active, unrevoked, unexpired API credential at decision time. Application code therefore cannot make a terminal approval durable merely by writing an approver ID.
 
 ## 5. Data minimization
 
@@ -131,12 +139,14 @@ Before public preview, automated tests must cover:
 - last-use concurrency;
 - approval double-consumption;
 - caller inability to spoof approval decision identity;
+- ambiguous credential-binding selector rejection;
 - unassigned and ineligible approval decisions;
 - assignment-time group snapshots and late-member rejection;
 - approver/binding disable behavior;
 - cancellation and reassignment precedence;
 - concurrent approval decisions with exactly one terminal winner;
 - PostgreSQL rejection of legacy free-text decision commits without authenticated approver evidence;
+- PostgreSQL rejection of apparently eligible decisions that omit exact credential-backed audit evidence;
 - immutable assignment eligibility and terminal authority history;
 - authorization replay;
 - idempotency concurrency and substitution;
