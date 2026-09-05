@@ -12,7 +12,8 @@ const MIGRATIONS = Object.freeze([
   { version: '009_outbox_worker_operations', file: new URL('../../migrations/009_outbox_worker_operations.up.sql', import.meta.url) },
   { version: '010_outbox_dead_letter_replays', file: new URL('../../migrations/010_outbox_dead_letter_replays.up.sql', import.meta.url) },
   { version: '011_approval_assignments', file: new URL('../../migrations/011_approval_assignments.up.sql', import.meta.url) },
-  { version: '012_approval_decision_credential_evidence', file: new URL('../../migrations/012_approval_decision_credential_evidence.up.sql', import.meta.url) }
+  { version: '012_approval_decision_credential_evidence', file: new URL('../../migrations/012_approval_decision_credential_evidence.up.sql', import.meta.url) },
+  { version: '013_approval_inbox_indexes', file: new URL('../../migrations/013_approval_inbox_indexes.up.sql', import.meta.url) }
 ]);
 
 const MIGRATION_LOCK = 'mandate:migrations';
