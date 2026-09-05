@@ -72,8 +72,8 @@ test('operations runbook is tied to emitted metrics and does not turn samples in
 
   assert.match(operations, /capped samples, not exact global queue counts/i);
   assert.match(operations, /never be auto-replayed/i);
-  assert.match(operations, /starting engineering objectives/i);
-  assert.match(operations, /not.*customer-facing SLOs/i);
+  assert.match(operations, /engineering objectives rather than customer-facing SLOs/i);
+  assert.match(operations, /initial operational defaults/i);
 });
 
 test('operations contract preserves safe rollout and database authority boundaries', async () => {
@@ -85,4 +85,19 @@ test('operations contract preserves safe rollout and database authority boundari
   assert.match(operations, /do not change runtime services to use the migration owner/i);
   assert.match(operations, /live dead-letter replay should be treated as prohibited/i);
   assert.match(operations, /provider-neutral/i);
+});
+
+test('top-level documentation no longer reports completed operational controls as missing', async () => {
+  const readme = await read('README.md');
+  const roadmap = await read('docs/ROADMAP.md');
+  const deployment = await read('docs/PRODUCTION_DEPLOYMENT.md');
+
+  assert.match(readme, /snapshot-consistent PostgreSQL backup\/restore tooling/i);
+  assert.match(readme, /separate migration, API, expiry, outbox, maintenance and operator PostgreSQL authorities/i);
+  assert.match(readme, /controlled dead-letter inspection and replay/i);
+  assert.match(roadmap, /Phase 2I — database authority, recovery and production supervision/);
+  assert.match(roadmap, /Repository-controlled Phase 2 operational hardening is therefore closed/);
+  assert.match(deployment, /Backup and restore proof/);
+  assert.doesNotMatch(readme, /backup\/restore, dead-letter operations.*remain open/i);
+  assert.doesNotMatch(roadmap, /Remaining Phase 2 operational hardening:\s*\n\s*- deployment migration-role separation/i);
 });
