@@ -3,6 +3,7 @@ import { resolveAuthenticatedApprover } from './approval-operations.js';
 
 const INBOX_STATES = new Set(['ACTIONABLE', 'PENDING']);
 const APPROVAL_ID = /^apr_[A-Za-z0-9_-]+$/;
+const MAX_LIMIT = 100;
 
 function timestamp(value) {
   return value ? new Date(value).toISOString() : null;
@@ -28,6 +29,13 @@ function validateCursor(cursor) {
     throw new DomainError('INVALID_CURSOR', 'startingAfter is not a valid approval inbox cursor.');
   }
   return cursor;
+}
+
+function validateLimit(limit) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) {
+    throw new DomainError('INVALID_LIMIT', `limit must be an integer between 1 and ${MAX_LIMIT}.`);
+  }
+  return limit;
 }
 
 export function parseApprovalInboxState(value) {
@@ -58,6 +66,7 @@ function inboxItem({ approval, assignment, approver, now }) {
     assignment: Object.freeze({
       id: assignment.id,
       sourceType: assignment.sourceType,
+      sourceId: assignment.sourceId,
       assignedAt: assignment.assignedAt
     }),
     approver: Object.freeze({
@@ -84,6 +93,7 @@ function inboxItemFromRow(row) {
     assignment: Object.freeze({
       id: row.assignment_id,
       sourceType: row.assignment_source_type,
+      sourceId: row.assignment_source_id,
       assignedAt: timestamp(row.assignment_assigned_at)
     }),
     approver: Object.freeze({
@@ -115,6 +125,7 @@ export async function listApprovalInbox({
   now = new Date()
 }) {
   state = parseApprovalInboxState(state);
+  limit = validateLimit(limit);
   cursor = validateCursor(cursor);
   const approver = await requireAuthenticatedApprover(view, ownership, authentication);
 
@@ -126,6 +137,7 @@ export async function listApprovalInbox({
               approval.expires_at,
               assignment.id AS assignment_id,
               assignment.source_type AS assignment_source_type,
+              assignment.source_id AS assignment_source_id,
               assignment.assigned_at AS assignment_assigned_at,
               identity.id AS approver_id,
               identity.display_name AS approver_display_name,
@@ -213,6 +225,7 @@ export async function getApprovalInboxItem({ view, ownership, authentication, ap
               approval.expires_at,
               assignment.id AS assignment_id,
               assignment.source_type AS assignment_source_type,
+              assignment.source_id AS assignment_source_id,
               assignment.assigned_at AS assignment_assigned_at,
               identity.id AS approver_id,
               identity.display_name AS approver_display_name,
@@ -240,6 +253,7 @@ export async function getApprovalInboxItem({ view, ownership, authentication, ap
          AND binding.status='ACTIVE' AND identity.status='ACTIVE'
          AND identity.id=$4
          AND assignment.status='ACTIVE'
+         AND approval.status='PENDING'
          AND approval.id=$5
        LIMIT 1`,
       [ownership.tenantId, ownership.environment, authentication.credentialId, approver.id, approvalId]
@@ -269,6 +283,8 @@ export async function getApprovalInboxItem({ view, ownership, authentication, ap
   }
   if (!eligible) throw new DomainError('APPROVAL_INBOX_ITEM_NOT_FOUND', 'The approval inbox item does not exist.', 404);
   const approval = await view.get('approvals', ownership, approvalId);
-  if (!approval) throw new DomainError('APPROVAL_INBOX_ITEM_NOT_FOUND', 'The approval inbox item does not exist.', 404);
+  if (!approval || approval.status !== 'PENDING') {
+    throw new DomainError('APPROVAL_INBOX_ITEM_NOT_FOUND', 'The approval inbox item does not exist.', 404);
+  }
   return inboxItem({ approval, assignment, approver, now });
 }
