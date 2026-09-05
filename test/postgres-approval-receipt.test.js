@@ -9,6 +9,7 @@ import {
   createApproverIdentity,
   decideAssignedApproval
 } from '../src/application/approval-operations.js';
+import { recordSecurityEvent } from '../src/application/security-events.js';
 import {
   assertCredentialUsable,
   createApiCredentialRecord,
@@ -116,7 +117,7 @@ integration('consumed approvals and signed receipts survive PostgreSQL restart',
           now: fixedNow
         });
         approverId = approver.id;
-        await createApprovalAssignment({
+        const assignment = await createApprovalAssignment({
           view: transaction,
           ownership,
           approvalId,
@@ -125,7 +126,7 @@ integration('consumed approvals and signed receipts survive PostgreSQL restart',
           now: fixedNow
         });
         const approval = await transaction.get('approvals', ownership, approvalId);
-        return decideAssignedApproval({
+        const result = await decideAssignedApproval({
           view: transaction,
           ownership,
           approval,
@@ -134,6 +135,25 @@ integration('consumed approvals and signed receipts survive PostgreSQL restart',
           decide: decideApproval,
           now: fixedNow
         });
+        await recordSecurityEvent({
+          transaction,
+          ownership,
+          authentication,
+          actorType: 'APPROVER',
+          actorId: approver.id,
+          requestId: 'req_lifecycle_approval_decision',
+          type: 'approval.decided',
+          objectType: 'approval',
+          objectId: approvalId,
+          data: {
+            decision: 'APPROVED',
+            approverId: approver.id,
+            credentialId,
+            assignmentId: assignment.id
+          },
+          now: fixedNow
+        });
+        return result;
       });
       assert.equal(decided.approval.status, 'APPROVED');
       assert.equal(decided.approval.decidedByApproverId, approverId);
@@ -183,6 +203,17 @@ integration('consumed approvals and signed receipts survive PostgreSQL restart',
         [tenantId, approvalId]
       );
       assert.equal(persistedActor.rows[0].decided_by_approver_id, approverId);
+
+      const persistedAudit = await restartedStore.pool.query(
+        `SELECT actor_id, data
+         FROM mandate.audit_events
+         WHERE tenant_id=$1 AND environment='test'
+           AND type='approval.decided' AND object_type='approval' AND object_id=$2`,
+        [tenantId, approvalId]
+      );
+      assert.equal(persistedAudit.rowCount, 1);
+      assert.equal(persistedAudit.rows[0].actor_id, approverId);
+      assert.equal(persistedAudit.rows[0].data.credentialId, credentialId);
 
       const receiptResponse = await fetch(`${baseUrl}/v1/receipts/${receiptId}`, { headers: headers(secret) });
       assert.equal(receiptResponse.status, 200);
