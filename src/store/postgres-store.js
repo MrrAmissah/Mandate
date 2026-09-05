@@ -86,7 +86,11 @@ function approvalFromRow(row) {
     expiresAt: timestamp(row.expires_at),
     decidedAt: timestamp(row.decided_at),
     decidedBy: row.decided_by,
+    decidedByApproverId: row.decided_by_approver_id ?? null,
     decisionReason: row.decision_reason,
+    cancelledAt: timestamp(row.cancelled_at),
+    cancelledByCredentialId: row.cancelled_by_credential_id ?? null,
+    cancellationReason: row.cancellation_reason ?? null,
     consumedAt: timestamp(row.consumed_at),
     consumedByDecisionId: row.consumed_by_decision_id
   };
