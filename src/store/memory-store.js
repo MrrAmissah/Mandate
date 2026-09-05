@@ -11,6 +11,15 @@ const ENTITY_KINDS = Object.freeze([
   'outboxMessages'
 ]);
 
+const APPROVAL_OPERATION_MAPS = Object.freeze([
+  'approverIdentities',
+  'approverCredentialBindings',
+  'approverGroups',
+  'approverGroupMemberships',
+  'approvalAssignments',
+  'approvalAssignmentEligibility'
+]);
+
 function newState() {
   return {
     apiCredentials: new Map(),
@@ -21,6 +30,12 @@ function newState() {
     receipts: new Map(),
     auditEvents: new Map(),
     outboxMessages: new Map(),
+    approverIdentities: new Map(),
+    approverCredentialBindings: new Map(),
+    approverGroups: new Map(),
+    approverGroupMemberships: new Map(),
+    approvalAssignments: new Map(),
+    approvalAssignmentEligibility: new Map(),
     idempotency: new Map(),
     auditSequences: new Map()
   };
@@ -33,6 +48,7 @@ function cloneMap(map) {
 function cloneState(state) {
   return {
     ...Object.fromEntries(ENTITY_KINDS.map((kind) => [kind, cloneMap(state[kind])])),
+    ...Object.fromEntries(APPROVAL_OPERATION_MAPS.map((kind) => [kind, cloneMap(state[kind])])),
     idempotency: cloneMap(state.idempotency),
     auditSequences: cloneMap(state.auditSequences)
   };
