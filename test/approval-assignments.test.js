@@ -118,7 +118,7 @@ test('runtime approval decisions derive approver identity from authentication, n
       action: 'pull_request.merge',
       resource: 'github:owner/repo',
       summary: 'Approve merge after review',
-      expiresAt: '2026-09-05T21:00:00.000Z',
+      expiresAt: '2026-12-31T21:00:00.000Z',
       assignment: { type: 'APPROVER', id: approver.id }
     }, 'create-assigned-approval');
     assert.equal(approvalResult.response.status, 201);
