@@ -7,6 +7,7 @@ export const API_SCOPES = Object.freeze({
   APPROVALS_READ: 'approvals:read',
   APPROVALS_WRITE: 'approvals:write',
   APPROVALS_DECIDE: 'approvals:decide',
+  APPROVAL_INBOX_READ: 'approval_inbox:read',
   APPROVERS_READ: 'approvers:read',
   APPROVERS_WRITE: 'approvers:write',
   AUTHORIZATIONS_READ: 'authorizations:read',
