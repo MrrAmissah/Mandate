@@ -1,7 +1,9 @@
 BEGIN;
 
 DROP TRIGGER IF EXISTS approvals_operational_transition_guard ON mandate.approvals;
-DROP FUNCTION IF EXISTS mandate.guard_approval_operational_transition();
+DROP FUNCTION IF EXISTS mandate.validate_approval_operational_transition();
+DROP TRIGGER IF EXISTS approvals_evidence_immutability_guard ON mandate.approvals;
+DROP FUNCTION IF EXISTS mandate.guard_approval_evidence_immutability();
 DROP TRIGGER IF EXISTS approval_assignment_eligibility_immutable ON mandate.approval_assignment_eligibility;
 
 ALTER TABLE mandate.approvals
