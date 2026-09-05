@@ -163,14 +163,31 @@ test('runtime role policy resets every inventoried schema and all routine kinds'
   assert.match(joined, /REVOKE CREATE ON DATABASE "mandate" FROM "mandate_api"/);
   assert.match(joined, /REVOKE TEMPORARY ON DATABASE "mandate" FROM "mandate_api"/);
   assert.match(joined, /GRANT SELECT, DELETE ON TABLE mandate\.idempotency_records TO "mandate_maintenance"/);
+  assert.match(joined, /GRANT SELECT, INSERT, UPDATE ON TABLE mandate\.approval_assignments TO "mandate_api"/);
+  assert.match(joined, /GRANT SELECT, INSERT ON TABLE mandate\.approval_assignment_eligibility TO "mandate_api"/);
   assert.doesNotMatch(joined, /ALL FUNCTIONS IN SCHEMA/);
   assert.doesNotMatch(joined, /GRANT EXECUTE/);
   assert.doesNotMatch(joined, /GRANT [^;]*DELETE[^;]*TO "mandate_api"/);
   assert.doesNotMatch(joined, /GRANT [^;]*DELETE[^;]*TO "mandate_expiry_worker"/);
   assert.doesNotMatch(joined, /GRANT [^;]*DELETE[^;]*TO "mandate_outbox_worker"/);
   assert.doesNotMatch(joined, /GRANT [^;]*CREATE[^;]*TO "mandate_/);
-  assert.equal(databaseRolePolicy.requiredMigration, '010_outbox_dead_letter_replays');
+  assert.equal(databaseRolePolicy.requiredMigration, '011_approval_assignments');
   assert.deepEqual(databaseRolePolicy.functionRoles, []);
+});
+
+test('approval administration remains API-only and immutable eligibility is not updateable', () => {
+  const grants = databaseRolePolicy.tableGrants;
+  assert.deepEqual(grants.api.approver_identities, ['SELECT', 'INSERT', 'UPDATE']);
+  assert.deepEqual(grants.api.approver_credential_bindings, ['SELECT', 'INSERT', 'UPDATE']);
+  assert.deepEqual(grants.api.approver_groups, ['SELECT', 'INSERT', 'UPDATE']);
+  assert.deepEqual(grants.api.approver_group_memberships, ['SELECT', 'INSERT', 'UPDATE']);
+  assert.deepEqual(grants.api.approval_assignments, ['SELECT', 'INSERT', 'UPDATE']);
+  assert.deepEqual(grants.api.approval_assignment_eligibility, ['SELECT', 'INSERT']);
+  for (const role of ['expiry', 'outbox', 'maintenance', 'operator']) {
+    assert.equal(grants[role].approver_identities, undefined);
+    assert.equal(grants[role].approval_assignments, undefined);
+    assert.equal(grants[role].approval_assignment_eligibility, undefined);
+  }
 });
 
 test('worker and operator table privileges remain narrowly separated', () => {
