@@ -354,9 +354,10 @@ Delivered:
 - explicit cancellation with authenticated operator evidence and assignment termination;
 - separate `approvers:read`, `approvers:write`, `approvals:write`, and `approvals:decide` authorities;
 - server-derived decision identity instead of caller-supplied `decidedBy` authority;
-- database final-arbiter enforcement that a deciding approver is active and present in the active assignment snapshot;
-- immutable eligibility and terminal authority-history constraints;
-- recovery-critical backup/restore coverage for approver identities, bindings, groups, memberships, assignments, and eligibility;
+- fail-closed rejection of ambiguous current-vs-explicit credential binding selectors;
+- migration 011 database enforcement for active assignment eligibility and immutable authority history;
+- migration 012 database enforcement requiring matching immutable `approval.decided` audit evidence and the exact active credential-to-approver binding at commit;
+- recovery-critical backup/restore coverage for approver identities, bindings, groups, memberships, assignments, eligibility, credential lifecycle and immutable audit evidence;
 - OpenAPI v0.8.0;
 - memory adversarial tests and real PostgreSQL concurrency/database-bypass proofs.
 
@@ -366,8 +367,10 @@ Exit gate for 4A:
 - an unassigned or ineligible identity cannot decide;
 - a group member added after assignment cannot decide the old request;
 - disabling an approver or binding removes live decision authority without rewriting historical evidence;
+- ambiguous binding selectors are rejected before authority resolution;
 - concurrent eligible approvers produce one terminal winner;
-- legacy free-text decision attribution cannot commit through PostgreSQL after migration 011.
+- legacy free-text decision attribution cannot commit through PostgreSQL after migration 011;
+- an apparently eligible decision without matching immutable credential-backed audit evidence cannot commit after migration 012.
 
 ### Phase 4B — approval inbox API
 
