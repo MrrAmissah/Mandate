@@ -18,6 +18,8 @@ const approvalUpPath = new URL('../migrations/011_approval_assignments.up.sql', 
 const approvalDownPath = new URL('../migrations/011_approval_assignments.down.sql', import.meta.url);
 const approvalEvidenceUpPath = new URL('../migrations/012_approval_decision_credential_evidence.up.sql', import.meta.url);
 const approvalEvidenceDownPath = new URL('../migrations/012_approval_decision_credential_evidence.down.sql', import.meta.url);
+const approvalInboxUpPath = new URL('../migrations/013_approval_inbox_indexes.up.sql', import.meta.url);
+const approvalInboxDownPath = new URL('../migrations/013_approval_inbox_indexes.down.sql', import.meta.url);
 const runnerPath = new URL('../src/store/postgres-migrations.js', import.meta.url);
 
 async function baselineMigration() {
@@ -189,6 +191,19 @@ test('approval decision evidence migration requires immutable audit credential b
   assert.match(sql, /012_approval_decision_credential_evidence/);
 });
 
+test('approval inbox migration adds only bounded current-authority read indexes and records itself', async () => {
+  const sql = await readFile(approvalInboxUpPath, 'utf8');
+  assert.match(sql, /^BEGIN;/);
+  assert.match(sql, /COMMIT;\s*$/);
+  assert.match(sql, /CREATE INDEX approval_assignment_eligibility_inbox_idx/);
+  assert.match(sql, /tenant_id, environment, approver_id, assignment_id/);
+  assert.match(sql, /CREATE INDEX approvals_pending_inbox_order_idx/);
+  assert.match(sql, /tenant_id, environment, requested_at, id/);
+  assert.match(sql, /WHERE status = 'PENDING'/);
+  assert.match(sql, /013_approval_inbox_indexes/);
+  assert.doesNotMatch(sql, /CREATE TABLE|ALTER TABLE|UPDATE mandate\.|DELETE FROM mandate\.(?!schema_migrations)/);
+});
+
 test('migration runner applies all migrations in order under one advisory lock', async () => {
   const source = await readFile(runnerPath, 'utf8');
   const versions = [
@@ -197,7 +212,7 @@ test('migration runner applies all migrations in order under one advisory lock',
     '006_attempt_completion_receipts', '007_receipt_supersession',
     '008_idempotency_retention', '009_outbox_worker_operations',
     '010_outbox_dead_letter_replays', '011_approval_assignments',
-    '012_approval_decision_credential_evidence'
+    '012_approval_decision_credential_evidence', '013_approval_inbox_indexes'
   ];
   const positions = versions.map((version) => source.indexOf(`version: '${version}'`));
   assert.ok(positions.every((position) => position >= 0));
@@ -238,6 +253,12 @@ test('development down migrations remove only their owned objects', async () => 
   assert.match(replay, /DROP COLUMN IF EXISTS replay_message_id/);
   assert.match(replay, /DELETE FROM mandate\.schema_migrations WHERE version = '010_outbox_dead_letter_replays'/);
   assert.doesNotMatch(replay, /DROP SCHEMA/);
+  const approvalInbox = await readFile(approvalInboxDownPath, 'utf8');
+  assert.match(approvalInbox, /DROP INDEX IF EXISTS mandate\.approvals_pending_inbox_order_idx/);
+  assert.match(approvalInbox, /DROP INDEX IF EXISTS mandate\.approval_assignment_eligibility_inbox_idx/);
+  assert.match(approvalInbox, /DELETE FROM mandate\.schema_migrations/);
+  assert.match(approvalInbox, /013_approval_inbox_indexes/);
+  assert.doesNotMatch(approvalInbox, /DROP TABLE|ALTER TABLE|DROP SCHEMA/);
   const approvalEvidence = await readFile(approvalEvidenceDownPath, 'utf8');
   assert.match(approvalEvidence, /CREATE OR REPLACE FUNCTION mandate\.validate_approval_operational_transition/);
   assert.match(approvalEvidence, /DELETE FROM mandate\.schema_migrations/);
