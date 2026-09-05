@@ -14,9 +14,9 @@ Status: merged.
 
 Delivered payload-bound idempotency, single-use approval consumption, canonical JSON, request correlation, the expanded API contract, and the durable product/architecture/security blueprints.
 
-## Phase 2 — durable multi-tenant core
+## Phase 2 — durable multi-tenant and operational core
 
-Status: runtime and operational hardening merged through controlled dead-letter replay.
+Status: repository-controlled operational foundation merged through production supervision and recovery proof.
 
 ### Phase 2A — persistence contract
 
@@ -83,7 +83,7 @@ Delivered:
 
 ### Phase 2H — controlled dead-letter replay
 
-Status: completed.
+Status: merged.
 
 Delivered:
 
@@ -98,12 +98,35 @@ Delivered:
 - separate `operator_audit_event_id` provenance on replay records;
 - migration 010 and unit, migration, concurrency, and real-PostgreSQL tests.
 
-Remaining Phase 2 operational hardening:
+### Phase 2I — database authority, recovery and production supervision
 
-- deployment migration-role separation and production runbooks;
-- restricted runtime and operator database roles;
-- approval policy and alert thresholds for live replay;
-- backup, restore, and recovery drills.
+Status: merged when this tranche lands.
+
+Delivered across the production-hardening changes:
+
+- distinct migration, API, expiry-worker, outbox-worker, maintenance and operator database authorities;
+- quiesced least-privilege role application with session termination, ownership checks and exact grants;
+- a non-root, read-only production image and deployment-neutral Compose reference;
+- loopback-default API publication and private worker health/metrics exposure;
+- long-running service restart policy, `SIGTERM` shutdown and a 30-second grace period;
+- explicit CPU, memory, PID, temporary-storage and local-log bounds;
+- snapshot-consistent PostgreSQL custom-format backups using one exported snapshot for manifest and dump;
+- disposable `mandate_restore_*` restore drills with SHA-256 and exact migration/critical-state verification;
+- real PostgreSQL recovery proof for idempotent HTTP replay, signing-key/receipt verification and outbox/dead-letter continuity;
+- deployment-neutral alert baselines tied to emitted API/worker health and metrics;
+- incident escalation, rollout/rollback and database-recovery runbooks without choosing a cloud provider.
+
+Repository-controlled Phase 2 operational hardening is therefore closed. Remaining go-live work is deployment-specific rather than missing core machinery:
+
+- TLS termination, firewall/security-group and trusted-proxy enforcement;
+- alert/paging backend and centralized log/SIEM wiring;
+- production backup schedule, encrypted storage, PITR policy and measured RPO/RTO;
+- platform-specific HA/service manifests where required;
+- a live dead-letter replay approval/change-control policy;
+- external review and ownership of the real outbox delivery handler;
+- image vulnerability scanning, SBOM/provenance and release-promotion controls.
+
+These items must be completed for the chosen environment before consequential production use, but they do not justify coupling the core runtime to a vendor prematurely.
 
 ## Phase 3 — execution and receipt lifecycle
 
@@ -205,15 +228,10 @@ Delivered:
 - Prometheus-compatible low-cardinality metrics;
 - health listener startup after migration readiness and shutdown before pool closure;
 - malformed-target protection and completion-time freshness;
-- memory, HTTP, entry-point, and real-PostgreSQL backlog tests.
+- memory, HTTP, entry-point, and real-PostgreSQL backlog tests;
+- restricted production database authority, reference restart/resource/log supervision and initial alert thresholds through Phase 2I.
 
-Remaining deployment work:
-
-- platform-specific service manifest;
-- restricted runtime database role;
-- deployment network policy for non-loopback health binding;
-- alert thresholds and overdue-backlog runbook;
-- supervisor restart policy.
+Remaining deployment-specific work is limited to the chosen platform's service/HA manifest, network enforcement, paging backend, centralized log retention and measured capacity/availability objectives.
 
 ### Phase 3C.1 — offline verification and conformance
 
@@ -319,21 +337,54 @@ This phase must not weaken canonical JSON verification or the append-only correc
 
 ## Phase 4 — approval operations
 
-Scope:
+Status: next product-control tranche after the repository-controlled operational foundation.
 
-- approver policies and groups;
-- approval inbox and assignment endpoints;
-- cancellation and expiry worker;
-- Slack, email, and mobile-link delivery adapters;
-- approval comments and evidence links;
-- optional multi-party thresholds;
-- durable workflow-resumption callbacks.
+Build sequence:
+
+### Phase 4A — approval assignment model
+
+- approver identities and groups;
+- eligibility rules;
+- durable assignment ownership;
+- cancellation rules;
+- explicit authority separate from API credential ownership.
+
+### Phase 4B — approval inbox API
+
+- bounded list/read endpoints for future UI and delivery adapters;
+- server-derived ownership and eligibility;
+- safe pagination and tenant isolation;
+- no connector-specific semantics in the core resource.
+
+### Phase 4C — approval expiry/cancellation process
+
+- database-time expiry separate from action-attempt expiry;
+- durable system evidence;
+- bounded claims and multi-worker safety;
+- notification/resumption events through the outbox.
+
+### Phase 4D — approval evidence
+
+- decision comment;
+- optional evidence links with bounded validation;
+- immutable who/when/why history;
+- no secret or arbitrary provider-body persistence.
+
+### Phase 4E — multi-party approval
+
+Only after single-approver assignment is proven:
+
+- `1-of-N`;
+- `2-of-3` or general threshold;
+- unanimous;
+- concurrency-safe threshold completion and cancellation/expiry precedence.
 
 Exit gate:
 
 - approval notifications are retried through the outbox;
-- decision and consumption are fully auditable;
-- expired or cancelled approvals cannot authorize an action.
+- assignment, decision and consumption are fully auditable;
+- expired, cancelled or ineligible approvals cannot authorize an action;
+- connector/UI delivery cannot bypass canonical approval state.
 
 ## Phase 5 — webhooks and integrations
 
