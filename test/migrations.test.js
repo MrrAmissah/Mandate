@@ -14,6 +14,8 @@ const outboxWorkerUpPath = new URL('../migrations/009_outbox_worker_operations.u
 const outboxWorkerDownPath = new URL('../migrations/009_outbox_worker_operations.down.sql', import.meta.url);
 const replayUpPath = new URL('../migrations/010_outbox_dead_letter_replays.up.sql', import.meta.url);
 const replayDownPath = new URL('../migrations/010_outbox_dead_letter_replays.down.sql', import.meta.url);
+const approvalUpPath = new URL('../migrations/011_approval_assignments.up.sql', import.meta.url);
+const approvalDownPath = new URL('../migrations/011_approval_assignments.down.sql', import.meta.url);
 const runnerPath = new URL('../src/store/postgres-migrations.js', import.meta.url);
 
 async function baselineMigration() {
@@ -138,6 +140,35 @@ test('dead-letter replay migration indexes immutable replay state and separates 
   assert.doesNotMatch(sql, /DELETE FROM mandate\.outbox_messages/);
 });
 
+test('approval assignment migration binds decisions to authenticated identities and snapshots eligibility', async () => {
+  const sql = await readFile(approvalUpPath, 'utf8');
+  assert.match(sql, /^BEGIN;/);
+  assert.match(sql, /COMMIT;\s*$/);
+  for (const table of [
+    'approver_identities',
+    'approver_credential_bindings',
+    'approver_groups',
+    'approver_group_memberships',
+    'approval_assignments',
+    'approval_assignment_eligibility'
+  ]) {
+    assert.match(sql, new RegExp(`CREATE TABLE mandate\\.${table}`));
+  }
+  assert.match(sql, /approver_credential_bindings_active_credential_idx/);
+  assert.match(sql, /approval_assignments_one_active_idx/);
+  assert.match(sql, /approval_assignment_eligibility_immutable/);
+  assert.match(sql, /ADD COLUMN decided_by_approver_id text/);
+  assert.match(sql, /approvals_decided_by_approver_fk/);
+  assert.match(sql, /CREATE CONSTRAINT TRIGGER approvals_operational_transition_guard/);
+  assert.match(sql, /DEFERRABLE INITIALLY DEFERRED/);
+  assert.match(sql, /approval decision requires authenticated approver identity/);
+  assert.match(sql, /approval cancellation requires immutable operator evidence/);
+  assert.match(sql, /decided_by_approver_id IS DISTINCT FROM OLD\.decided_by_approver_id/);
+  assert.match(sql, /create-approver-identity/);
+  assert.match(sql, /reassign-approval:%/);
+  assert.match(sql, /011_approval_assignments/);
+});
+
 test('migration runner applies all migrations in order under one advisory lock', async () => {
   const source = await readFile(runnerPath, 'utf8');
   const versions = [
@@ -145,7 +176,7 @@ test('migration runner applies all migrations in order under one advisory lock',
     '004_signing_key_lifecycle', '005_action_attempt_reservations',
     '006_attempt_completion_receipts', '007_receipt_supersession',
     '008_idempotency_retention', '009_outbox_worker_operations',
-    '010_outbox_dead_letter_replays'
+    '010_outbox_dead_letter_replays', '011_approval_assignments'
   ];
   const positions = versions.map((version) => source.indexOf(`version: '${version}'`));
   assert.ok(positions.every((position) => position >= 0));
@@ -186,4 +217,13 @@ test('development down migrations remove only their owned objects', async () => 
   assert.match(replay, /DROP COLUMN IF EXISTS replay_message_id/);
   assert.match(replay, /DELETE FROM mandate\.schema_migrations WHERE version = '010_outbox_dead_letter_replays'/);
   assert.doesNotMatch(replay, /DROP SCHEMA/);
+  const approval = await readFile(approvalDownPath, 'utf8');
+  assert.match(approval, /DROP TRIGGER IF EXISTS approvals_operational_transition_guard/);
+  assert.match(approval, /DROP FUNCTION IF EXISTS mandate\.validate_approval_operational_transition/);
+  assert.match(approval, /DROP TABLE IF EXISTS mandate\.approval_assignment_eligibility/);
+  assert.match(approval, /DROP TABLE IF EXISTS mandate\.approval_assignments/);
+  assert.match(approval, /DROP TABLE IF EXISTS mandate\.approver_identities/);
+  assert.match(approval, /DROP COLUMN IF EXISTS decided_by_approver_id/);
+  assert.match(approval, /DELETE FROM mandate\.schema_migrations WHERE version = '011_approval_assignments'/);
+  assert.doesNotMatch(approval, /DROP SCHEMA/);
 });
