@@ -53,7 +53,15 @@ Reassignment terminates the old assignment and creates a fresh assignment plus e
 
 For new decisions, the runtime derives the approver identity from the authenticated credential and writes `decided_by_approver_id`. The pre-existing free-text `decided_by` column remains readable only for historical compatibility; it is not authoritative for new v0.8 decisions.
 
-PostgreSQL independently enforces the decision boundary. A deferred constraint trigger rejects commit of `PENDING → APPROVED|REJECTED` unless the recorded approver identity is active, an active assignment exists, and the approver appears in that assignment's immutable eligibility snapshot. This makes the database a final arbiter even if an application path attempts to write legacy free-text decision evidence.
+Migration `012_approval_decision_credential_evidence` makes PostgreSQL independently verify the complete decision proof at commit. A deferred constraint trigger rejects `PENDING → APPROVED|REJECTED` unless:
+
+1. the approval records an authenticated approver identity and decision timestamp;
+2. that approver is active and included in the active assignment's immutable eligibility snapshot;
+3. the same transaction contains an immutable `approval.decided` audit event for the same approval, approver, and assignment;
+4. the audit event's `credentialId` resolves through an active credential-to-approver binding for that approver; and
+5. the referenced API credential is active, unrevoked, and unexpired at decision time.
+
+This makes the database the final arbiter even if application code attempts either the legacy free-text path or a superficially eligible decision that omits exact authenticated credential evidence.
 
 ## JSONB encoding
 
@@ -75,6 +83,8 @@ See [Idempotency and HTTP replay](./IDEMPOTENCY.md) for the complete contract.
 
 Authorization decisions, signed receipts, audit events, outbox attempts, dead-letter replay records, and approval-assignment eligibility snapshots are insert-only. Terminal approver binding/membership/assignment history and approval decision/cancellation evidence cannot be rewritten after termination.
 
+The immutable `approval.decided` audit event is part of the credential-backed approval proof checked by migration 012. It is not merely an observability record.
+
 A decision preserves the requested `mandateId` even when policy returns `MANDATE_NOT_FOUND`; that field is therefore not a mandate foreign key, while receipt issuance still requires a real allowed decision and active mandate. PostgreSQL triggers reject protected update/delete attempts.
 
 ## Credential storage
@@ -91,6 +101,8 @@ Successful authentication advances `lastUsedAt` atomically. If revocation or exp
 
 An API credential may be bound to a durable approver identity, but that binding does not redefine the credential as the human identity. Future OIDC/SSO can add another binding mechanism without rewriting approval history.
 
+Authority-selector requests are also fail-closed: a JSON body containing both `bindCurrentCredential` and `credentialId` is rejected before authority resolution rather than silently choosing one field.
+
 ## Bootstrap behavior
 
 At startup in PostgreSQL mode, Mandate-API ensures the configured tenant and credential ID exist under a serialized bootstrap lock. Configuration can rotate the secret and scopes while the stored credential is active. A revoked bootstrap credential is not silently reactivated; recovery requires a deliberate new credential ID or database administration procedure.
@@ -99,7 +111,7 @@ Memory-mode runtime bootstrap also stores a real credential record so approval b
 
 ## Recovery-critical trust state
 
-Database backup manifests and restore verification include approver identities, credential bindings, groups, memberships, assignments, and assignment eligibility alongside mandates, approvals, decisions, receipts, audit, idempotency, signing keys, and outbox state. The real PostgreSQL recovery drill creates and restores an actual pending group assignment to prove authority continuity rather than only verifying empty-table counts.
+Database backup manifests and restore verification require migration `012_approval_decision_credential_evidence` and include approver identities, credential bindings, groups, memberships, assignments, assignment eligibility, immutable audit evidence, and API-credential lifecycle state alongside mandates, approvals, decisions, receipts, idempotency, signing keys, and outbox state. The real PostgreSQL recovery drill creates and restores an actual pending group assignment to prove authority continuity rather than only verifying empty-table counts.
 
 ## Outbox
 
