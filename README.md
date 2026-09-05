@@ -48,7 +48,8 @@ Implemented now:
 - explicit approval reassignment and cancellation with preserved history;
 - dedicated `approvals:decide` authority separate from approval administration;
 - server-derived approval decision attribution; caller-supplied `decidedBy` is not authoritative;
-- PostgreSQL final-arbiter checks requiring an active eligible approver before a pending approval can commit as approved/rejected;
+- fail-closed rejection of ambiguous credential-binding selectors;
+- PostgreSQL final-arbiter checks requiring an active eligible approver plus immutable `approval.decided` audit evidence tied to the exact active credential binding before a pending approval can commit as approved/rejected;
 - exact, single-use approval consumption by authorization;
 - one action-attempt reservation per allowed decision;
 - bounded reservation windows and dedicated attempt scopes;
@@ -71,7 +72,7 @@ Implemented now:
 - payload-bound idempotency with exact committed HTTP replay;
 - database-time, bounded idempotency replay cleanup with a seven-day safety floor;
 - atomic domain, audit-event, and outbox writes;
-- cursor-paginated resource collections;
+- cursor-paginated resource collections where documented by the contract;
 - tenant-aware PostgreSQL persistence;
 - serializable transactions and one-winner concurrency tests;
 - a standalone supervised outbox worker with trusted exact local handlers, bounded retries, stale-lease recovery, readiness and metrics;
@@ -79,7 +80,7 @@ Implemented now:
 - separate migration, API, expiry, outbox, maintenance and operator PostgreSQL authorities with fail-closed role policy;
 - a non-root/read-only production image and deployment-neutral Compose topology with health checks, restart/shutdown rules, CPU/memory/PID/log bounds and private worker operations surfaces;
 - snapshot-consistent PostgreSQL backup/restore tooling with SHA-256 manifests and disposable restore targets;
-- recovery-critical verification for approver identities, bindings, groups, memberships, assignments and eligibility snapshots;
+- recovery-critical verification for approver identities, bindings, groups, memberships, assignments, eligibility snapshots, immutable audit evidence and credential lifecycle state;
 - a real PostgreSQL recovery drill proving migration continuity, idempotent API replay, approval-authority continuity, historical receipt/key verification and outbox/dead-letter continuity;
 - a deployment-neutral production-operations contract with initial health/metric alert baselines and rollback/escalation rules;
 - real PostgreSQL restart, isolation, approval-assignment, decision-concurrency, attempt, expiry, backlog, receipt, supersession, outbox, key-rotation, replay, retention and recovery tests.
@@ -176,7 +177,7 @@ Mandate-API signs an immutable v1.1 root receipt
 Mandate-API verifies the predecessor and appends a v1.2 successor
 ```
 
-A valid API key is not, by itself, approval authority. A decision requires the dedicated scope, an active credential binding to a durable approver identity, an active assignment, and membership in that assignment's immutable eligibility snapshot. Group membership added after assignment does not authorize that old request.
+A valid API key is not, by itself, approval authority. A decision requires the dedicated scope, an active credential binding to a durable approver identity, an active assignment, membership in that assignment's immutable eligibility snapshot, and an immutable decision audit event carrying the same credential/approver/assignment proof. Group membership added after assignment does not authorize that old request.
 
 Unused reservations are materialized as `EXPIRED` by the PostgreSQL-backed expiry process. A `RESERVED` attempt is not proof that execution started or succeeded; only a `COMPLETED` attempt can issue a root receipt. Supersession never changes the attempt or root receipt.
 
@@ -213,14 +214,13 @@ Unused reservations are materialized as `EXPIRED` by the PostgreSQL-backed expir
 | `POST`, `GET` | `/v1/mandates` | Create or list mandates |
 | `GET` | `/v1/mandates/:id` | Retrieve a mandate |
 | `POST` | `/v1/mandates/:id/revoke` | Revoke a mandate |
-| `POST`, `GET` | `/v1/approvers` | Create or list approver identities |
-| `GET` | `/v1/approvers/:id` | Retrieve an approver identity |
-| `POST` | `/v1/approvers/:id/bind-current-credential` | Bind the authenticated credential to an approver identity |
-| `POST` | `/v1/approvers/:id/disable` | Disable an approver identity |
+| `POST`, `GET` | `/v1/approver-identities` | Create or list approver identities |
+| `POST` | `/v1/approver-identities/:id/bindings` | Bind either the authenticated credential or one explicit credential |
+| `POST` | `/v1/approver-identities/:id/bindings/revoke` | Revoke an active credential binding |
+| `POST` | `/v1/approver-identities/:id/disable` | Disable an approver identity |
 | `POST`, `GET` | `/v1/approver-groups` | Create or list approver groups |
-| `GET` | `/v1/approver-groups/:id` | Retrieve an approver group |
-| `POST`, `GET` | `/v1/approver-groups/:id/members` | Add or list group memberships |
-| `POST` | `/v1/approver-groups/:id/members/:approverId/remove` | Remove a group member for future snapshots |
+| `POST` | `/v1/approver-groups/:id/members` | Add a member for future assignment snapshots |
+| `POST` | `/v1/approver-groups/:id/members/:approverId/remove` | Remove a member for future assignment snapshots |
 | `POST`, `GET` | `/v1/approvals` | Request or list assigned approvals |
 | `GET` | `/v1/approvals/:id` | Retrieve an approval |
 | `GET` | `/v1/approvals/:id/assignment` | Retrieve the active assignment and immutable eligibility snapshot |
@@ -267,10 +267,11 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.8.0 contract.
 - Cross-tenant access is indistinguishable from a missing object.
 - A valid API credential is not automatically a human approver identity.
 - New approval decisions never trust caller-supplied `decidedBy` text.
+- A credential-binding request cannot contain both current-credential and explicit-credential selectors.
 - Only an active approver identity bound to the authenticated credential and included in the active assignment snapshot may decide.
 - Group eligibility is snapshotted at assignment time; later membership additions cannot expand authority over an existing request.
 - Reassignment/cancellation preserve prior assignment history rather than rewriting it.
-- PostgreSQL independently rejects terminal approval decisions without authenticated eligible approver evidence.
+- PostgreSQL independently rejects terminal approval decisions unless immutable audit evidence proves the same active credential binding, approver identity and active assignment eligibility at decision time.
 - An allowed decision, mandate-use increment, approval consumption, audit event, and outbox row belong to one transaction.
 - The final mandate use and an approved approval can each be consumed only once under concurrency.
 - One allowed decision can be reserved by at most one action attempt.
@@ -294,7 +295,7 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.8.0 contract.
 - Idempotency cleanup cannot shorten the seven-day replay floor or cross tenant/environment scope.
 - Runtime and worker database identities cannot migrate, own schema objects, inherit broad roles, or silently gain default grants.
 - Dead letters are never automatically replayed or reset in place.
-- Recovery verification must preserve exact migration/trust-state continuity before a backup is accepted as a proven restore artifact.
+- Recovery verification requires migration `012_approval_decision_credential_evidence` and exact migration/trust-state continuity before a backup is accepted as a proven restore artifact.
 
 ## Not production-ready yet
 
