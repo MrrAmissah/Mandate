@@ -1,13 +1,15 @@
 openapi: 3.1.0
 info:
   title: Mandate-API
-  version: 0.7.0
-  summary: Delegated authorization, single-use execution attempts, and append-only signed receipts for AI agents
+  version: 0.8.0
+  summary: Delegated authorization, assigned human approvals, single-use execution attempts, and append-only signed receipts for AI agents
   description: |
     Mandate-API is a provider-independent trust layer for consequential agent actions.
-    An ALLOW decision must be reserved by one ActionAttempt and completed with execution
-    evidence before one root Receipt is signed. Corrections append a linear signed successor
-    chain; they never rewrite the original receipt or its execution evidence.
+    Sensitive actions can require an approval assigned to a durable approver identity or an
+    eligibility-snapshotted approver group. An ALLOW decision must be reserved by one
+    ActionAttempt and completed with execution evidence before one root Receipt is signed.
+    Corrections append a linear signed successor chain; they never rewrite the original receipt
+    or its execution evidence.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -18,6 +20,7 @@ tags:
   - name: System
   - name: Mandates
   - name: Approvals
+  - name: Approver administration
   - name: Authorizations
   - name: Action attempts
   - name: Receipts
@@ -143,11 +146,222 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /v1/approver-identities:
+    post:
+      tags: [Approver administration]
+      operationId: createApproverIdentity
+      summary: Create a durable approver identity and optionally bind a credential
+      x-required-scope: approvers:write
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateApproverIdentityRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/ApproverIdentityResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    get:
+      tags: [Approver administration]
+      operationId: listApproverIdentities
+      summary: List tenant-visible approver identities
+      x-required-scope: approvers:read
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+      responses:
+        '200':
+          description: Approver identities
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApproverIdentityListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/approver-identities/{id}/disable:
+    post:
+      tags: [Approver administration]
+      operationId: disableApproverIdentity
+      summary: Disable an approver identity
+      description: Disabling an identity immediately removes its live decision authority, including existing assignment snapshots.
+      x-required-scope: approvers:write
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/ApproverIdentityId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 1000 }
+      responses:
+        '200': { $ref: '#/components/responses/ApproverIdentityResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/approver-identities/{id}/bindings:
+    post:
+      tags: [Approver administration]
+      operationId: bindApproverCredential
+      summary: Bind an active API credential to an approver identity
+      x-required-scope: approvers:write
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/ApproverIdentityId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BindApproverCredentialRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/ApproverCredentialBindingResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/approver-identities/{id}/bindings/revoke:
+    post:
+      tags: [Approver administration]
+      operationId: revokeApproverCredentialBinding
+      summary: Revoke one active credential-to-approver binding
+      x-required-scope: approvers:write
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/ApproverIdentityId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [credentialId, reason]
+              properties:
+                credentialId: { type: string, pattern: '^key_.+' }
+                reason: { type: string, minLength: 1, maxLength: 1000 }
+      responses:
+        '200': { $ref: '#/components/responses/ApproverCredentialBindingResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/approver-groups:
+    post:
+      tags: [Approver administration]
+      operationId: createApproverGroup
+      summary: Create an approver group
+      x-required-scope: approvers:write
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        '201': { $ref: '#/components/responses/ApproverGroupResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    get:
+      tags: [Approver administration]
+      operationId: listApproverGroups
+      summary: List tenant-visible approver groups
+      x-required-scope: approvers:read
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+      responses:
+        '200':
+          description: Approver groups
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApproverGroupListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/approver-groups/{id}/members:
+    post:
+      tags: [Approver administration]
+      operationId: addApproverGroupMember
+      summary: Add one active approver identity to a group
+      description: Existing approval assignments are not expanded; group eligibility is snapshotted only when an assignment is created.
+      x-required-scope: approvers:write
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/ApproverGroupId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [approverId]
+              properties:
+                approverId: { type: string, pattern: '^apv_.+' }
+      responses:
+        '201': { $ref: '#/components/responses/ApproverGroupMembershipResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/approver-groups/{id}/members/{approverId}/remove:
+    post:
+      tags: [Approver administration]
+      operationId: removeApproverGroupMember
+      summary: Remove an approver from future group assignment snapshots
+      description: Existing assignment snapshots remain unchanged; disable the approver identity when immediate removal of live decision authority is required.
+      x-required-scope: approvers:write
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/ApproverGroupId' }
+        - { $ref: '#/components/parameters/ApproverMemberId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 1000 }
+      responses:
+        '200': { $ref: '#/components/responses/ApproverGroupMembershipResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /v1/approvals:
     post:
       tags: [Approvals]
       operationId: createApproval
-      summary: Request exact human approval
+      summary: Request exact human approval with an explicit assignment
+      description: Group assignments snapshot the currently active members; later membership additions do not expand a pending approval's eligibility.
       x-required-scope: approvals:write
       parameters:
         - { $ref: '#/components/parameters/RequestId' }
@@ -158,7 +372,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/CreateApprovalRequest' }
       responses:
-        '201': { $ref: '#/components/responses/ApprovalResponse' }
+        '201': { $ref: '#/components/responses/AssignedApprovalResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -196,11 +410,54 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1/approvals/{id}/assignment:
+    get:
+      tags: [Approvals]
+      operationId: getApprovalAssignment
+      summary: Retrieve the active assignment and its immutable eligibility snapshot
+      x-required-scope: approvals:read
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/ApprovalId' }
+      responses:
+        '200': { $ref: '#/components/responses/ApprovalAssignmentResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /v1/approvals/{id}/decide:
     post:
       tags: [Approvals]
       operationId: decideApproval
-      summary: Approve or reject a pending request
+      summary: Approve or reject a pending request as the authenticated eligible approver
+      description: The deciding approver identity is derived from the authenticated credential. Callers must not supply decidedBy.
+      x-required-scope: approvals:decide
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/ApprovalId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [APPROVED, REJECTED] }
+                reason: { type: [string, 'null'], maxLength: 2000 }
+      responses:
+        '200': { $ref: '#/components/responses/ApprovalResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/approvals/{id}/reassign:
+    post:
+      tags: [Approvals]
+      operationId: reassignApproval
+      summary: Supersede a pending approval assignment with a new explicit snapshot
       x-required-scope: approvals:write
       parameters:
         - { $ref: '#/components/parameters/RequestId' }
@@ -213,11 +470,37 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [decision, decidedBy]
+              required: [assignment]
               properties:
-                decision: { type: string, enum: [APPROVED, REJECTED] }
-                decidedBy: { type: string, minLength: 1 }
-                reason: { type: [string, 'null'], maxLength: 2000 }
+                assignment: { $ref: '#/components/schemas/ApprovalAssignmentSelector' }
+                reason: { type: string, minLength: 1, maxLength: 1000 }
+      responses:
+        '200': { $ref: '#/components/responses/ReassignmentResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/approvals/{id}/cancel:
+    post:
+      tags: [Approvals]
+      operationId: cancelApproval
+      summary: Cancel a pending approval and its active assignment
+      x-required-scope: approvals:write
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/ApprovalId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 1000 }
       responses:
         '200': { $ref: '#/components/responses/ApprovalResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -535,6 +818,21 @@ components:
       in: path
       required: true
       schema: { type: string, pattern: '^apr_.+' }
+    ApproverIdentityId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^apv_.+' }
+    ApproverGroupId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^apg_.+' }
+    ApproverMemberId:
+      name: approverId
+      in: path
+      required: true
+      schema: { type: string, pattern: '^apv_.+' }
     DecisionId:
       name: id
       in: path
@@ -561,6 +859,41 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Approval' }
+    AssignedApprovalResponse:
+      description: Newly requested approval and active assignment snapshot
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AssignedApproval' }
+    ApprovalAssignmentResponse:
+      description: Active approval assignment
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApprovalAssignment' }
+    ReassignmentResponse:
+      description: Approval reassignment result
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ReassignmentResult' }
+    ApproverIdentityResponse:
+      description: Approver identity
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApproverIdentity' }
+    ApproverCredentialBindingResponse:
+      description: Approver credential binding
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApproverCredentialBinding' }
+    ApproverGroupResponse:
+      description: Approver group
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApproverGroup' }
+    ApproverGroupMembershipResponse:
+      description: Approver group membership result
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApproverGroupMembership' }
     DecisionResponse:
       description: Authorization decision
       content:
@@ -587,7 +920,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
     Forbidden:
-      description: Missing required scope or action-attempt owner mismatch; code MISSING_SCOPE or ACTION_ATTEMPT_OWNER_MISMATCH
+      description: Missing scope, action-attempt owner mismatch, or authenticated approver is not eligible for the assignment
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -597,7 +930,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
     Conflict:
-      description: State, idempotency, or concurrency conflict
+      description: State, idempotency, assignment, or concurrency conflict
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -647,10 +980,19 @@ components:
             createdAt: { type: string, format: date-time }
             revokedAt: { type: [string, 'null'], format: date-time }
             revocationReason: { type: [string, 'null'] }
+    ApprovalAssignmentSelector:
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type: { type: string, enum: [APPROVER, GROUP] }
+        id:
+          type: string
+          description: apv_ approver ID for APPROVER or apg_ group ID for GROUP
     CreateApprovalRequest:
       type: object
       additionalProperties: false
-      required: [mandateId, agentId, action, resource, summary]
+      required: [mandateId, agentId, action, resource, summary, assignment]
       properties:
         mandateId: { type: string, pattern: '^mnd_.+' }
         agentId: { type: string }
@@ -658,20 +1000,148 @@ components:
         resource: { type: string }
         summary: { type: string, minLength: 1 }
         expiresAt: { type: [string, 'null'], format: date-time }
+        assignment: { $ref: '#/components/schemas/ApprovalAssignmentSelector' }
     Approval:
+      type: object
+      additionalProperties: true
+      required: [id, mandateId, agentId, action, resource, summary, status, requestedAt, decidedAt, decidedBy, decisionReason, consumedAt, consumedByDecisionId]
+      properties:
+        id: { type: string, pattern: '^apr_.+' }
+        mandateId: { type: string, pattern: '^mnd_.+' }
+        agentId: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        summary: { type: string }
+        status: { type: string, enum: [PENDING, APPROVED, REJECTED, EXPIRED, CANCELLED, CONSUMED] }
+        requestedAt: { type: string, format: date-time }
+        expiresAt: { type: [string, 'null'], format: date-time }
+        decidedAt: { type: [string, 'null'], format: date-time }
+        decidedBy:
+          type: [string, 'null']
+          description: Compatibility projection; new decisions contain the server-derived approver identity ID.
+        decidedByApproverId: { type: [string, 'null'], pattern: '^apv_.+' }
+        decisionReason: { type: [string, 'null'] }
+        cancelledAt: { type: [string, 'null'], format: date-time }
+        cancelledByCredentialId: { type: [string, 'null'], pattern: '^key_.+' }
+        cancellationReason: { type: [string, 'null'] }
+        consumedAt: { type: [string, 'null'], format: date-time }
+        consumedByDecisionId: { type: [string, 'null'] }
+    ApprovalAssignment:
+      type: object
+      additionalProperties: false
+      required: [id, approvalId, sourceType, sourceId, status, assignedByCredentialId, assignedAt, endedAt, endReason, version, eligibleApproverIds]
+      properties:
+        id: { type: string, pattern: '^apa_.+' }
+        approvalId: { type: string, pattern: '^apr_.+' }
+        sourceType: { type: string, enum: [APPROVER, GROUP] }
+        sourceId: { type: string }
+        status: { type: string, enum: [ACTIVE, SUPERSEDED, CANCELLED] }
+        assignedByCredentialId: { type: string, pattern: '^key_.+' }
+        assignedAt: { type: string, format: date-time }
+        endedAt: { type: [string, 'null'], format: date-time }
+        endReason: { type: [string, 'null'] }
+        version: { type: integer, minimum: 0 }
+        eligibleApproverIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, pattern: '^apv_.+' }
+    AssignedApproval:
       allOf:
-        - { $ref: '#/components/schemas/CreateApprovalRequest' }
+        - { $ref: '#/components/schemas/Approval' }
         - type: object
-          required: [id, status, requestedAt, decidedAt, decidedBy, decisionReason, consumedAt, consumedByDecisionId]
+          required: [assignment]
           properties:
-            id: { type: string, pattern: '^apr_.+' }
-            status: { type: string, enum: [PENDING, APPROVED, REJECTED, EXPIRED, CONSUMED] }
-            requestedAt: { type: string, format: date-time }
-            decidedAt: { type: [string, 'null'], format: date-time }
-            decidedBy: { type: [string, 'null'] }
-            decisionReason: { type: [string, 'null'] }
-            consumedAt: { type: [string, 'null'], format: date-time }
-            consumedByDecisionId: { type: [string, 'null'] }
+            assignment: { $ref: '#/components/schemas/ApprovalAssignment' }
+    ReassignmentResult:
+      type: object
+      additionalProperties: false
+      required: [approvalId, previousAssignmentId, assignment]
+      properties:
+        approvalId: { type: string, pattern: '^apr_.+' }
+        previousAssignmentId: { type: string, pattern: '^apa_.+' }
+        assignment: { $ref: '#/components/schemas/ApprovalAssignment' }
+    CreateApproverIdentityRequest:
+      type: object
+      additionalProperties: false
+      required: [displayName]
+      properties:
+        displayName: { type: string, minLength: 1, maxLength: 200 }
+        bindCurrentCredential: { type: boolean }
+        credentialId: { type: string, pattern: '^key_.+' }
+      not:
+        required: [bindCurrentCredential, credentialId]
+    BindApproverCredentialRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        bindCurrentCredential: { type: boolean, const: true }
+        credentialId: { type: string, pattern: '^key_.+' }
+      oneOf:
+        - required: [bindCurrentCredential]
+        - required: [credentialId]
+    ApproverCredentialBinding:
+      type: object
+      additionalProperties: false
+      required: [id, approverId, credentialId, status, boundAt, revokedAt, revocationReason]
+      properties:
+        id: { type: string, pattern: '^apb_.+' }
+        approverId: { type: string, pattern: '^apv_.+' }
+        credentialId: { type: string, pattern: '^key_.+' }
+        status: { type: string, enum: [ACTIVE, REVOKED] }
+        boundAt: { type: string, format: date-time }
+        revokedAt: { type: [string, 'null'], format: date-time }
+        revocationReason: { type: [string, 'null'] }
+    ApproverIdentity:
+      type: object
+      additionalProperties: false
+      required: [id, displayName, status, createdAt, disabledAt, disableReason]
+      properties:
+        id: { type: string, pattern: '^apv_.+' }
+        displayName: { type: string }
+        status: { type: string, enum: [ACTIVE, DISABLED] }
+        createdAt: { type: string, format: date-time }
+        disabledAt: { type: [string, 'null'], format: date-time }
+        disableReason: { type: [string, 'null'] }
+        binding:
+          oneOf:
+            - { $ref: '#/components/schemas/ApproverCredentialBinding' }
+            - { type: 'null' }
+    ApproverGroup:
+      type: object
+      additionalProperties: false
+      required: [id, name, status, createdAt, disabledAt, disableReason]
+      properties:
+        id: { type: string, pattern: '^apg_.+' }
+        name: { type: string }
+        status: { type: string, enum: [ACTIVE, DISABLED] }
+        createdAt: { type: string, format: date-time }
+        disabledAt: { type: [string, 'null'], format: date-time }
+        disableReason: { type: [string, 'null'] }
+    ApproverGroupMembership:
+      type: object
+      additionalProperties: false
+      required: [groupId, approverId, status]
+      properties:
+        id: { type: string, pattern: '^agm_.+' }
+        groupId: { type: string, pattern: '^apg_.+' }
+        approverId: { type: string, pattern: '^apv_.+' }
+        status: { type: string, enum: [ACTIVE, REMOVED] }
+        addedAt: { type: string, format: date-time }
+        removedAt: { type: [string, 'null'], format: date-time }
+        removalReason: { type: [string, 'null'] }
+    ApproverIdentityListResponse:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/ApproverIdentity' } }
+    ApproverGroupListResponse:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/ApproverGroup' } }
     AuthorizationRequest:
       type: object
       additionalProperties: false
