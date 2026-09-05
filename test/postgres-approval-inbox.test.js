@@ -12,6 +12,7 @@ import {
 } from '../src/application/approval-inbox.js';
 import { createApiCredentialRecord } from '../src/auth/api-credentials.js';
 import { createApprovalRequest } from '../src/domain/approvals.js';
+import { createMandate } from '../src/domain/mandates.js';
 import { pageWindow, parsePageRequest } from '../src/http/pagination.js';
 import { createPostgresPool, PostgresStore } from '../src/store/postgres-store.js';
 
@@ -65,6 +66,17 @@ integration('PostgreSQL approval inbox enforces active assignment authority, key
     await store.save('apiCredentials', ownership, bobCredential);
     await store.save('apiCredentials', ownership, adminCredential);
 
+    const mandate = createMandate({
+      principalId: 'principal_owner',
+      agentId: 'agent_coder',
+      purpose: 'Exercise approval inbox authority',
+      resources: ['github:owner/repo'],
+      allowedActions: ['repository.write', 'pull_request.merge', 'deployment.promote'],
+      approvalRequiredActions: ['repository.write', 'pull_request.merge', 'deployment.promote'],
+      validUntil: new Date(baseNow.getTime() + 24 * 60 * 60 * 1000).toISOString()
+    }, baseNow);
+    await store.save('mandates', ownership, mandate);
+
     const { alice, bob } = await store.transaction(async (view) => ({
       alice: await createApproverIdentity({
         view,
@@ -85,8 +97,8 @@ integration('PostgreSQL approval inbox enforces active assignment authority, key
     async function assigned(approverId, offsetMs, action) {
       const requestedAt = new Date(baseNow.getTime() + offsetMs);
       const approval = createApprovalRequest({
-        mandateId: opaque('mnd_inbox'),
-        agentId: 'agent_coder',
+        mandateId: mandate.id,
+        agentId: mandate.agentId,
         action,
         resource: 'github:owner/repo',
         summary: `Approve ${action}`,
