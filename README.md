@@ -31,9 +31,9 @@ It answers three questions ordinary application authorization does not answer we
 
 Mandate-API sits between agents and tools. It allows permitted actions, pauses sensitive actions for human approval, blocks prohibited actions, and records completed execution as independently verifiable evidence. The exact implemented lifecycle is documented in **Core flow** below.
 
-## Current milestone: durable execution and receipt lifecycle
+## Current milestone: durable execution, evidence and operational foundation
 
-The current platform binds authorization decisions to one execution attempt, terminal evidence, one immutable root receipt, and an optional linear chain of signed correction receipts. PostgreSQL time also expires unused reservations through a separately composed worker process.
+The current platform binds authorization decisions to one execution attempt, terminal evidence, one immutable root receipt, and an optional linear chain of signed correction receipts. PostgreSQL time expires unused reservations through a separately composed worker process. The repository also contains a provider-neutral production foundation for least-privilege database identities, outbox supervision, controlled dead-letter operations, and executable backup/restore proof.
 
 Implemented now:
 
@@ -64,8 +64,14 @@ Implemented now:
 - cursor-paginated resource collections;
 - tenant-aware PostgreSQL persistence;
 - serializable transactions and one-winner concurrency tests;
-- leased outbox claims, retries, stale-lease recovery, and dead-letter transitions;
-- real PostgreSQL restart, isolation, attempt, expiry, backlog, receipt, supersession, approval, outbox, key-rotation, replay, and retention tests.
+- a standalone supervised outbox worker with trusted exact local handlers, bounded retries, stale-lease recovery, readiness and metrics;
+- controlled dead-letter inspection and replay that preserves failed history and immutable operator evidence;
+- separate migration, API, expiry, outbox, maintenance and operator PostgreSQL authorities with fail-closed role policy;
+- a non-root/read-only production image and deployment-neutral Compose topology with health checks, restart/shutdown rules, CPU/memory/PID/log bounds and private worker operations surfaces;
+- snapshot-consistent PostgreSQL backup/restore tooling with SHA-256 manifests and disposable restore targets;
+- a real PostgreSQL recovery drill proving migration continuity, idempotent API replay, historical receipt/key verification and outbox/dead-letter continuity;
+- a deployment-neutral production-operations contract with initial health/metric alert baselines and rollback/escalation rules;
+- real PostgreSQL restart, isolation, attempt, expiry, backlog, receipt, supersession, approval, outbox, key-rotation, replay, retention and recovery tests.
 
 Memory mode remains available for local API experiments. Live API environments require PostgreSQL, explicit scopes, a non-default API key, an explicit persistent key ID, and persistent receipt-signing keys.
 
@@ -213,10 +219,13 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.7.0 contract.
 - [Receipt verification](./docs/RECEIPT_VERIFICATION.md)
 - [Signing-key operations](./docs/SIGNING_KEYS.md)
 - [Idempotency and HTTP replay](./docs/IDEMPOTENCY.md)
+- [Transactional outbox execution](./docs/OUTBOX.md)
 - [Target architecture](./docs/ARCHITECTURE.md)
 - [Security model](./docs/SECURITY_MODEL.md)
 - [Persistence and transaction contract](./docs/PERSISTENCE.md)
-- [Transactional outbox execution](./docs/OUTBOX.md)
+- [Production deployment](./docs/PRODUCTION_DEPLOYMENT.md)
+- [Production supervision and operations](./docs/PRODUCTION_OPERATIONS.md)
+- [Database backup and recovery](./docs/DATABASE_RECOVERY.md)
 - [Delivery roadmap](./docs/ROADMAP.md)
 - [Database migrations](./migrations/)
 - [Project assets](./assets/)
@@ -242,11 +251,14 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.7.0 contract.
 - Server and offline verification share one canonical JSON implementation.
 - Active and retired keys verify historical receipts; revoked keys do not.
 - Raw generated API credentials are displayed once and are not stored durably.
-- Authorization decisions, receipts, audit events, and outbox attempts are immutable in PostgreSQL.
+- Authorization decisions, receipts, audit events, outbox attempts and dead-letter replay records are immutable in PostgreSQL.
 - Workers may mutate only the exact rows claimed within their transactions.
 - Unknown idempotency operation scopes are rejected instead of receiving guessed HTTP metadata.
 - Idempotency cleanup cannot shorten the seven-day replay floor or cross tenant/environment scope.
+- Runtime and worker database identities cannot migrate, own schema objects, inherit broad roles, or silently gain default grants.
+- Dead letters are never automatically replayed or reset in place.
+- Recovery verification must preserve exact migration/trust-state continuity before a backup is accepted as a proven restore artifact.
 
 ## Not production-ready yet
 
-PostgreSQL mode is restart-safe for the implemented state, but the platform is not yet ready for consequential autonomous actions. Platform-specific service manifests, restricted deployment roles, network policy, alert thresholds, supervisor restart policy, backup/restore, dead-letter operations, npm publication and provenance attestation, external delivery handlers, SDKs, and deployment runbooks remain open.
+The repository now has durable PostgreSQL state, least-privilege database-role separation, supervised workers, controlled dead-letter operations, snapshot-consistent recovery proof and a deployment-neutral supervision baseline. It is still **not ready for consequential autonomous production use** until the chosen deployment supplies and proves the remaining external controls: TLS termination and firewall/trusted-proxy policy, paging and centralized logs/SIEM, production backup scheduling/PITR with measured RPO/RTO, HA/failover where required, an approved live dead-letter replay process, an externally reviewed real delivery handler, container vulnerability/SBOM/provenance controls, and the later integration/SDK/enterprise work described in the roadmap.

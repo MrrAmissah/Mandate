@@ -12,8 +12,16 @@ x-service-security: &service-security
     - no-new-privileges:true
   user: "10001:10001"
   pids_limit: 256
+  cpus: "${MANDATE_SERVICE_CPUS:-1.0}"
+  mem_limit: ${MANDATE_SERVICE_MEMORY_LIMIT:-512m}
   restart: unless-stopped
+  stop_signal: SIGTERM
   stop_grace_period: 30s
+  logging:
+    driver: json-file
+    options:
+      max-size: "${MANDATE_LOG_MAX_SIZE:-10m}"
+      max-file: "${MANDATE_LOG_MAX_FILES:-5}"
   networks:
     - backend
 

@@ -1,6 +1,8 @@
 # Production deployment foundation
 
-This document defines the repository's production deployment contract. It is a hardened single-host reference, not a claim of high availability. Production operators must use a **dedicated PostgreSQL 16 Mandate database** with backups, point-in-time recovery, TLS verification, network controls and distinct credentials for each Mandate process. Do not apply the database-role policy to a database shared with another application.
+This document defines the repository's production deployment contract. It is a hardened single-host reference, not a claim of high availability. Production operators must use a **dedicated PostgreSQL 16 Mandate database** with durable backups, TLS verification, network controls and distinct credentials for each Mandate process. Do not apply the database-role policy to a database shared with another application.
+
+The deployment-neutral supervision, alerting, incident and rollback rules are defined in [`PRODUCTION_OPERATIONS.md`](./PRODUCTION_OPERATIONS.md). Executable backup and restore procedures are defined in [`DATABASE_RECOVERY.md`](./DATABASE_RECOVERY.md).
 
 ## Trust boundaries
 
@@ -13,7 +15,7 @@ Mandate runs as four different process identities:
 | Expiry worker | Expires reserved action attempts and writes the matching audit/outbox evidence. |
 | Outbox worker | Claims and completes outbox work through an explicitly mounted trusted handler module. |
 
-Idempotency cleanup and dead-letter inspection/replay use separate maintenance/operator credentials and should run as controlled one-shot jobs. They are deliberately not long-running services in the reference Compose file.
+Idempotency cleanup and dead-letter inspection/replay use separate maintenance/operator credentials and should run as controlled one-shot jobs. Backup and restore commands also require infrastructure-controlled database authority and are not API/worker responsibilities. These jobs are deliberately not long-running services in the reference Compose file.
 
 ## Image contract
 
@@ -30,16 +32,32 @@ Container commands invoke Node directly rather than `npm run`, so a read-only ru
 
 Deployments should promote the same image digest between environments. Do not rebuild separately for test and live.
 
+## Reference resource and log bounds
+
+The shared Compose service contract now applies explicit starting bounds:
+
+- `pids_limit: 256`;
+- `MANDATE_SERVICE_CPUS` default `1.0` CPU;
+- `MANDATE_SERVICE_MEMORY_LIMIT` default `512m`;
+- a `64m` no-exec/nosuid/nodev `/tmp` tmpfs;
+- Docker `json-file` logs with `MANDATE_LOG_MAX_SIZE` default `10m` and `MANDATE_LOG_MAX_FILES` default `5`;
+- `SIGTERM` shutdown with a 30-second grace period.
+
+Long-running API/worker services use `restart: unless-stopped`. Migration and database-role configuration jobs override this with `restart: "no"` so a failed privileged operation is never blindly retried by the supervisor.
+
+These are safety budgets, not load-tested capacity guarantees. Tune them only with observed workload evidence and retain explicit limits in the deployment platform.
+
 ## Secret files
 
 The entry point supports either the direct variable or its `_FILE` counterpart, never both:
 
 - `DATABASE_URL` / `DATABASE_URL_FILE`
+- `MANDATE_RECOVERY_TARGET_URL` / `MANDATE_RECOVERY_TARGET_URL_FILE`
 - `MANDATE_API_KEY` / `MANDATE_API_KEY_FILE`
 - `MANDATE_PRIVATE_KEY_PEM` / `MANDATE_PRIVATE_KEY_PEM_FILE`
 - `MANDATE_PUBLIC_KEY_PEM` / `MANDATE_PUBLIC_KEY_PEM_FILE`
 
-Secret files must be readable regular files between 1 byte and 1 MiB. Values are never logged. The Compose reference mounts each secret read-only under `/run/secrets`.
+Secret files must be readable regular files between 1 byte and 1 MiB. Values are never logged. The Compose reference mounts service secrets read-only under `/run/secrets`. Recovery tooling may use the same entrypoint contract when run inside the production image.
 
 ## Database roles
 
@@ -64,7 +82,7 @@ The policy fails closed unless migration 010 is present and every runtime role a
 
 ### Quiesced policy application
 
-Role configuration is serialized by a PostgreSQL advisory lock and applies in two committed stages:
+Role configuration is serialized by a PostgreSQL advisory lock and applies in committed stages:
 
 1. validate role attributes, migration state, role memberships, ownership and prepared transactions;
 2. revoke runtime `CONNECT`, database `CREATE`/`TEMPORARY` and schema `CREATE`, then commit that quiescence boundary;
@@ -79,7 +97,7 @@ The policy removes known DDL and stale-access escape paths for runtime identitie
 - `CREATE` and `TEMPORARY` are revoked at database level;
 - `TEMPORARY` and `CONNECT` are revoked from `PUBLIC`;
 - `CREATE` is revoked from `PUBLIC` and every runtime role across every existing non-system schema;
-- schema, table, **column**, sequence and **all routine** privileges are reset for `PUBLIC` and runtime roles across every existing non-system schema—procedures are included;
+- schema, table, column, sequence and all-routine privileges are reset for `PUBLIC` and runtime roles across every existing non-system schema—procedures are included;
 - only `USAGE` on the `mandate` schema is restored to runtime roles;
 - migration-owner defaults are scrubbed globally and in every inventoried schema for tables, sequences and routines, for `PUBLIC` and every runtime role.
 
@@ -103,11 +121,11 @@ The API exposes separate unauthenticated operational probes:
 | `/health/live` | The Node.js process can serve HTTP. It does not claim PostgreSQL is usable. |
 | `/health/ready` | PostgreSQL answered within the configured timeout and migration 010 is present. Returns `503` while the process is shutting down. |
 
-`MANDATE_API_READINESS_TIMEOUT_MS` defaults to 2,000 ms and is bounded between 100 and 10,000 ms. Readiness uses a dedicated one-connection pool whose **client acquisition** and SQL execution are both bounded by this value, so an exhausted application pool cannot accumulate unbounded probes. Database failures return only the stable reason `DATABASE_UNAVAILABLE`; SQL and driver messages are never returned. Supervisors and load balancers must use `/health/ready`, not `/health`, before routing traffic.
+`MANDATE_API_READINESS_TIMEOUT_MS` defaults to 2,000 ms and is bounded between 100 and 10,000 ms. Readiness uses a dedicated one-connection pool whose client acquisition and SQL execution are both bounded by this value, so an exhausted application pool cannot accumulate unbounded probes. Database failures return only the stable reason `DATABASE_UNAVAILABLE`; SQL and driver messages are never returned. Supervisors and load balancers must use `/health/ready`, not `/health`, before routing traffic.
 
-Expiry and outbox workers retain their own `/health/live`, `/health/ready` and `/metrics` listeners. Worker ports are not host-published by the reference topology.
+Expiry and outbox workers retain their own `/health/live`, `/health/ready` and `/metrics` listeners. Worker ports are not host-published by the reference topology. Alert interpretation and initial threshold guidance are in [`PRODUCTION_OPERATIONS.md`](./PRODUCTION_OPERATIONS.md).
 
-## Compose start order
+## Compose start and supervision order
 
 `deployment/compose.production.yaml` enforces:
 
@@ -115,9 +133,15 @@ Expiry and outbox workers retain their own `/health/live`, `/health/ready` and `
 2. database-role policy completes;
 3. API and workers start with their separate database secrets.
 
-The API is loopback-published by default. Worker health ports are exposed only to the Compose network. Every long-running service has a readiness health check, dropped Linux capabilities, `no-new-privileges`, a read-only filesystem and bounded PIDs.
+The API is loopback-published by default. Worker health ports are exposed only to the Compose network. Every long-running service has a readiness health check, dropped Linux capabilities, `no-new-privileges`, a read-only filesystem, bounded PIDs, explicit CPU/memory budgets, bounded local log retention and a graceful shutdown signal/deadline.
 
 A trusted outbox handler file must be mounted explicitly. The image ships no wildcard or no-op production handler.
+
+## Backup and restore proof
+
+The repository now contains executable snapshot-consistent `pg_dump`/`pg_restore` tooling and a real PostgreSQL recovery test. CI proves migration-registry continuity, critical durable-state counts, idempotent API replay, historical Ed25519 receipt verification, outbox/dead-letter continuity and exclusion of writes committed after the exported backup snapshot.
+
+See [`DATABASE_RECOVERY.md`](./DATABASE_RECOVERY.md). This is repository-level recoverability proof, not a production RPO/RTO or provider backup policy. A production owner must still configure durable encrypted backup storage, cadence, retention, PITR where required and production-equivalent recovery exercises.
 
 ## Example
 
@@ -130,14 +154,17 @@ docker compose -f deployment/compose.production.yaml up -d
 
 Do not expose the API directly to the public internet from this reference file. Put it behind a TLS-terminating reverse proxy or load balancer with request-size limits, connection limits, access logs that omit credentials, and explicit trusted-proxy handling.
 
-## Mandatory follow-on gates
+## Mandatory deployment-specific gates
 
-Before consequential autonomous use, production readiness still requires:
+Before consequential autonomous use, the repository still cannot choose or prove the deployment provider's:
 
-- tested backup, point-in-time recovery and restore verification;
-- deployment-specific network policy and firewall rules;
-- alert thresholds for API/worker readiness, stale leases, due backlog and dead letters;
-- supervisor restart and rollback policy;
-- an approval policy for live dead-letter replay;
-- an externally reviewed trusted outbox handler;
-- release provenance and vulnerability scanning for the container image.
+- TLS termination, firewall/security-group rules and trusted-proxy policy;
+- paging/alert backend wired to the repository's supervision baseline;
+- durable centralized log retention/SIEM pipeline;
+- production backup schedule, encrypted storage, PITR policy and measured RPO/RTO;
+- HA/failover topology where required;
+- live dead-letter replay approval policy;
+- external review and operational ownership of the real outbox delivery handler;
+- container image vulnerability scanning, SBOM/provenance and release promotion controls.
+
+These are explicit go-live gates, not reasons to couple Mandate core runtime to a particular cloud.
