@@ -3,6 +3,17 @@ import { canonicalize } from '../crypto/canonical-json.js';
 import { hashJson } from '../domain/receipts.js';
 import { DomainError } from '../domain/errors.js';
 
+function validateUnambiguousAuthoritySelectors(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  if (Object.hasOwn(value, 'bindCurrentCredential') && Object.hasOwn(value, 'credentialId')) {
+    throw new DomainError(
+      'INVALID_REQUEST',
+      'Use either bindCurrentCredential or credentialId, not both.'
+    );
+  }
+  return value;
+}
+
 export async function readJson(request) {
   const chunks = [];
   let size = 0;
@@ -13,8 +24,9 @@ export async function readJson(request) {
   }
   if (chunks.length === 0) return {};
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  } catch {
+    return validateUnambiguousAuthoritySelectors(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+  } catch (error) {
+    if (error instanceof DomainError) throw error;
     throw new DomainError('INVALID_JSON', 'Request body must contain valid JSON.');
   }
 }

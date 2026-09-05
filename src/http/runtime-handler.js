@@ -10,6 +10,7 @@ import { API_SCOPES, ownershipFrom, requireScope } from '../auth/authentication.
 import { verifyReceiptWithRegistry } from '../domain/receipts.js';
 import { DomainError } from '../domain/errors.js';
 import { createApp } from '../app.js';
+import { createApprovalOperationsHandler } from './approval-operations-handler.js';
 import { paginate, parsePageRequest } from './pagination.js';
 import {
   readJson,
@@ -52,7 +53,7 @@ async function idempotentMutation({ runtime, ownership, scope, key, fingerprint,
 export function createRuntimeHandler(runtime) {
   if (!runtime?.signingKeys) throw new TypeError('A signing-key registry is required.');
   if (!runtime?.authenticator) throw new TypeError('An API authenticator is required.');
-  const application = createApp(runtime);
+  const application = createApprovalOperationsHandler(runtime, createApp(runtime));
 
   return async function runtimeHandler(request, response) {
     const url = new URL(request.url, 'http://localhost');

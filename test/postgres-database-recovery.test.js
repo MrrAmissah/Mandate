@@ -8,6 +8,12 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createApp } from '../src/app.js';
 import {
+  addApproverGroupMember,
+  createApprovalAssignment,
+  createApproverGroup,
+  createApproverIdentity
+} from '../src/application/approval-operations.js';
+import {
   assertCredentialUsable,
   createApiCredentialRecord,
   hashApiKey,
@@ -16,6 +22,7 @@ import {
 import { createStoredApiKeyAuthenticator } from '../src/auth/authentication.js';
 import { createReceiptSigner } from '../src/crypto/receipt-signer.js';
 import { PostgresSigningKeyRegistry } from '../src/crypto/signing-key-registry.js';
+import { createApprovalRequest } from '../src/domain/approvals.js';
 import { issueReceipt } from '../src/domain/receipts.js';
 import {
   createDatabaseBackup,
@@ -113,6 +120,7 @@ postgresTest('real PostgreSQL dump and restore preserve the recovery snapshot an
     sourceStore = new PostgresStore(sourcePool);
 
     const tenantId = `ten_recovery_${id}`;
+    const ownership = { tenantId, environment: 'test' };
     const credentialId = `key_recovery_api_${id}`;
     const secret = `recovery-secret-${id}`;
     const idempotencyKey = `recovery-idempotency-${id}`;
@@ -129,9 +137,10 @@ postgresTest('real PostgreSQL dump and restore preserve the recovery snapshot an
       environment: 'test',
       credential
     });
+    const authentication = { ...ownership, credentialId, scopes: ['*'] };
 
     const signer = createReceiptSigner({ keyId: `key_recovery_signer_${id}` });
-    const sourceRegistry = new PostgresSigningKeyRegistry(sourcePool, { tenantId, environment: 'test' });
+    const sourceRegistry = new PostgresSigningKeyRegistry(sourcePool, ownership);
     await sourceRegistry.registerActive(signer);
 
     let first;
@@ -140,6 +149,47 @@ postgresTest('real PostgreSQL dump and restore preserve the recovery snapshot an
       assert.equal(first.response.status, 201);
     });
     const mandate = JSON.parse(first.text);
+
+    const approvalTrustState = await sourceStore.transaction(async (transaction) => {
+      const approver = await createApproverIdentity({
+        view: transaction,
+        ownership,
+        authentication,
+        input: { displayName: 'Recovery approver', credentialId },
+        now: fixedNow
+      });
+      const group = await createApproverGroup({
+        view: transaction,
+        ownership,
+        input: { name: `Recovery group ${id}` },
+        now: fixedNow
+      });
+      await addApproverGroupMember({
+        view: transaction,
+        ownership,
+        groupId: group.id,
+        approverId: approver.id,
+        now: fixedNow
+      });
+      const approval = createApprovalRequest({
+        mandateId: mandate.id,
+        agentId: mandate.agentId,
+        action: 'repository.read',
+        resource: 'github:owner/recovery-proof',
+        summary: 'Recovery approval assignment proof',
+        expiresAt: '2026-08-01T13:00:00.000Z'
+      }, fixedNow);
+      await transaction.save('approvals', ownership, approval);
+      const assignment = await createApprovalAssignment({
+        view: transaction,
+        ownership,
+        approvalId: approval.id,
+        assignment: { type: 'GROUP', id: group.id },
+        authentication,
+        now: fixedNow
+      });
+      return { approver, group, approval, assignment };
+    });
 
     const decision = {
       id: `dec_recovery_${id}`,
@@ -238,7 +288,7 @@ postgresTest('real PostgreSQL dump and restore preserve the recovery snapshot an
     });
     const restored = await restoreAndVerifyDatabase(restoreConfig);
     assert.equal(restored.targetDatabase, targetDatabase);
-    assert.ok(restored.migrations >= 10);
+    assert.ok(restored.migrations >= 11);
 
     targetPool = await createPostgresPool({ connectionString: targetUrl, max: 4 });
     targetStore = new PostgresStore(targetPool);
@@ -251,6 +301,39 @@ postgresTest('real PostgreSQL dump and restore preserve the recovery snapshot an
       assert.equal(replay.text, first.text);
     });
 
+    const restoredApprovalTrust = await targetPool.query(
+      `SELECT assignment.id AS assignment_id,
+              assignment.source_type,
+              assignment.source_id,
+              eligibility.approver_id,
+              binding.credential_id,
+              membership.group_id
+       FROM mandate.approval_assignments assignment
+       JOIN mandate.approval_assignment_eligibility eligibility
+         ON eligibility.tenant_id=assignment.tenant_id
+        AND eligibility.environment=assignment.environment
+        AND eligibility.assignment_id=assignment.id
+       JOIN mandate.approver_credential_bindings binding
+         ON binding.tenant_id=assignment.tenant_id
+        AND binding.environment=assignment.environment
+        AND binding.approver_id=eligibility.approver_id
+       JOIN mandate.approver_group_memberships membership
+         ON membership.tenant_id=assignment.tenant_id
+        AND membership.environment=assignment.environment
+        AND membership.group_id=assignment.source_id
+        AND membership.approver_id=eligibility.approver_id
+       WHERE assignment.tenant_id=$1 AND assignment.environment='test' AND assignment.approval_id=$2`,
+      [tenantId, approvalTrustState.approval.id]
+    );
+    assert.deepEqual(restoredApprovalTrust.rows, [{
+      assignment_id: approvalTrustState.assignment.id,
+      source_type: 'GROUP',
+      source_id: approvalTrustState.group.id,
+      approver_id: approvalTrustState.approver.id,
+      credential_id: credentialId,
+      group_id: approvalTrustState.group.id
+    }]);
+
     const restoredReceipt = await targetPool.query(
       `SELECT key_id, algorithm, payload, signature
        FROM mandate.receipts
@@ -258,7 +341,7 @@ postgresTest('real PostgreSQL dump and restore preserve the recovery snapshot an
       [tenantId, receipt.id]
     );
     assert.equal(restoredReceipt.rowCount, 1);
-    const restoredRegistry = new PostgresSigningKeyRegistry(targetPool, { tenantId, environment: 'test' });
+    const restoredRegistry = new PostgresSigningKeyRegistry(targetPool, ownership);
     assert.equal(await restoredRegistry.verifyPayload({
       keyId: restoredReceipt.rows[0].key_id,
       algorithm: restoredReceipt.rows[0].algorithm,

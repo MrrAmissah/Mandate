@@ -100,7 +100,7 @@ Delivered:
 
 ### Phase 2I — database authority, recovery and production supervision
 
-Status: merged when this tranche lands.
+Status: merged.
 
 Delivered across the production-hardening changes:
 
@@ -206,7 +206,7 @@ Delivered:
 - no dependency on API credentials or API-process startup;
 - explicit database and test/live environment posture;
 - explicit live worker identity;
-- migration-006 readiness check without migration authority;
+- migration-readiness check without migration authority;
 - signal-aware shutdown and PostgreSQL-pool closure;
 - bounded poll interval and cycle batch size;
 - structured success/failure logs with safe error codes;
@@ -337,33 +337,67 @@ This phase must not weaken canonical JSON verification or the append-only correc
 
 ## Phase 4 — approval operations
 
-Status: next product-control tranche after the repository-controlled operational foundation.
-
-Build sequence:
+Status: Phase 4A implemented in the current approval-assignment tranche; Phase 4B is the next product-control dependency after merge.
 
 ### Phase 4A — approval assignment model
 
-- approver identities and groups;
-- eligibility rules;
-- durable assignment ownership;
-- cancellation rules;
-- explicit authority separate from API credential ownership.
+Status: implemented in this tranche.
+
+Delivered:
+
+- durable tenant/environment-scoped approver identities with active/disabled lifecycle;
+- revocable bindings from authenticated API credentials to approver identities, preserving a future OIDC/SSO seam;
+- approver groups with history-preserving membership lifecycle;
+- direct and group approval assignments with exactly one active assignment per pending approval;
+- immutable assignment-time eligibility snapshots so later group additions cannot expand authority over an existing request;
+- explicit reassignment that terminates old authority history and creates a fresh snapshot;
+- explicit cancellation with authenticated operator evidence and assignment termination;
+- separate `approvers:read`, `approvers:write`, `approvals:write`, and `approvals:decide` authorities;
+- server-derived decision identity instead of caller-supplied `decidedBy` authority;
+- fail-closed rejection of ambiguous current-vs-explicit credential binding selectors;
+- migration 011 database enforcement for active assignment eligibility and immutable authority history;
+- migration 012 database enforcement requiring matching immutable `approval.decided` audit evidence and the exact active credential-to-approver binding at commit;
+- recovery-critical backup/restore coverage for approver identities, bindings, groups, memberships, assignments, eligibility, credential lifecycle and immutable audit evidence;
+- OpenAPI v0.8.0;
+- memory adversarial tests and real PostgreSQL concurrency/database-bypass proofs.
+
+Exit gate for 4A:
+
+- a valid API credential alone cannot decide an approval;
+- an unassigned or ineligible identity cannot decide;
+- a group member added after assignment cannot decide the old request;
+- disabling an approver or binding removes live decision authority without rewriting historical evidence;
+- ambiguous binding selectors are rejected before authority resolution;
+- concurrent eligible approvers produce one terminal winner;
+- legacy free-text decision attribution cannot commit through PostgreSQL after migration 011;
+- an apparently eligible decision without matching immutable credential-backed audit evidence cannot commit after migration 012.
 
 ### Phase 4B — approval inbox API
 
-- bounded list/read endpoints for future UI and delivery adapters;
-- server-derived ownership and eligibility;
-- safe pagination and tenant isolation;
-- no connector-specific semantics in the core resource.
+Next dependency.
+
+Scope:
+
+- bounded list/read endpoints optimized for future UI and delivery adapters;
+- server-derived eligibility views for the authenticated approver;
+- filters for actionable/pending state without exposing unrelated tenant approval traffic;
+- safe pagination and tenant/environment isolation;
+- no connector-specific semantics in the core inbox resource;
+- explicit distinction between administrative approval listing and an approver's actionable inbox.
 
 ### Phase 4C — approval expiry/cancellation process
+
+Scope:
 
 - database-time expiry separate from action-attempt expiry;
 - durable system evidence;
 - bounded claims and multi-worker safety;
-- notification/resumption events through the outbox.
+- notification/resumption events through the outbox;
+- precedence rules among decision, reassignment, cancellation, and expiry.
 
 ### Phase 4D — approval evidence
+
+Scope:
 
 - decision comment;
 - optional evidence links with bounded validation;
@@ -372,14 +406,14 @@ Build sequence:
 
 ### Phase 4E — multi-party approval
 
-Only after single-approver assignment is proven:
+Only after single-approver/group assignment is proven:
 
 - `1-of-N`;
 - `2-of-3` or general threshold;
 - unanimous;
 - concurrency-safe threshold completion and cancellation/expiry precedence.
 
-Exit gate:
+Phase 4 exit gate:
 
 - approval notifications are retried through the outbox;
 - assignment, decision and consumption are fully auditable;

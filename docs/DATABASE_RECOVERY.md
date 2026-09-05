@@ -29,7 +29,7 @@ When the process environment is prepared directly rather than by the production 
 
 The command:
 
-1. verifies migration `010_outbox_dead_letter_replays`;
+1. verifies migration `012_approval_decision_credential_evidence`;
 2. opens one read-only repeatable-read transaction and exports its PostgreSQL snapshot;
 3. captures the ordered migration registry and critical durable-state row counts inside that snapshot;
 4. gives the same exported snapshot to `pg_dump`, so the manifest and dump describe the same recovery point even while normal writes continue;
@@ -37,6 +37,8 @@ The command:
 6. applies mode `0600` and verifies the artifact is non-empty;
 7. calculates SHA-256;
 8. atomically publishes the dump and then its mode-`0600` JSON manifest.
+
+Critical durable state includes tenants, API credentials, mandates, approvals, durable approver identities, credential bindings, approver groups and memberships, approval assignments and immutable eligibility snapshots, authorization decisions, action attempts, receipts, idempotency records, audit state, outbox/dead-letter state, and signing keys.
 
 The dump and manifest names are reserved exclusively before database work begins and remain reserved through publication. A concurrent process using the same label fails closed instead of sharing a `.partial` path or overwriting another backup. A failed invocation removes only artifacts it reserved or created.
 
@@ -59,12 +61,14 @@ The drill:
 2. recalculates and compares SHA-256 before restore;
 3. runs `pg_restore` in direct-database mode against only the explicitly disposable target, with `--clean --if-exists --exit-on-error --no-owner --no-privileges`;
 4. reloads the migration registry;
-5. verifies exact row counts for tenants, credentials, mandates, approvals, authorization decisions, action attempts, receipts, idempotency records, audit sequence/evidence, outbox messages/attempts/dead-letter replay evidence, and signing keys.
+5. verifies exact row counts for every inventoried critical table, including approval identity, credential binding, assignment, eligibility and audit evidence.
 
-The PostgreSQL CI drill goes beyond row counts. It creates an isolated source database, performs a normal idempotent Mandate API mutation, registers a real Ed25519 signing key, stores a signed receipt, and records dead-letter evidence. During backup it performs another source write only after the exported snapshot exists. After restoring into a fresh `mandate_restore_*` database, CI proves that:
+The PostgreSQL CI drill goes beyond row counts. It creates an isolated source database, performs a normal idempotent Mandate API mutation, registers a real Ed25519 signing key, stores a signed receipt, creates a real pending approver-group assignment with a credential binding, and records dead-letter evidence. During backup it performs another source write only after the exported snapshot exists. After restoring into a fresh `mandate_restore_*` database, CI proves that:
 
 - the post-snapshot write is absent, demonstrating that dump and manifest use one recovery point;
 - the original idempotent API request replays the same stored response;
+- the durable approver identity, credential binding, group membership, active assignment and immutable eligibility snapshot survive together;
+- immutable audit state required for authenticated approval decision evidence is part of the recovery-critical dataset;
 - the restored receipt verifies against the restored signing-key registry;
 - the dead-letter message and append-only delivery attempt retain their terminal evidence;
 - the migration registry and all inventoried critical counts match the manifest exactly.
@@ -83,7 +87,7 @@ Minimum operational evidence for each drill:
 - disposable restore database identity;
 - restore start/end time;
 - verification result and safe error code on failure;
-- application-level replay/receipt/outbox verification result;
+- application-level idempotency, approval-authority, receipt and outbox verification result;
 - operator identity and incident/change reference;
 - cleanup confirmation for the disposable database.
 

@@ -1,5 +1,5 @@
 const RUNTIME_ROLE_IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
-export const DATABASE_ROLE_POLICY_VERSION = '2026-07-30.9';
+export const DATABASE_ROLE_POLICY_VERSION = '2026-09-05.1';
 
 const ROLE_ENVIRONMENT = Object.freeze({
   api: 'MANDATE_DATABASE_API_ROLE',
@@ -24,6 +24,12 @@ const TABLE_GRANTS = Object.freeze({
     api_credentials: ['SELECT', 'INSERT', 'UPDATE'],
     mandates: ['SELECT', 'INSERT', 'UPDATE'],
     approvals: ['SELECT', 'INSERT', 'UPDATE'],
+    approver_identities: ['SELECT', 'INSERT', 'UPDATE'],
+    approver_credential_bindings: ['SELECT', 'INSERT', 'UPDATE'],
+    approver_groups: ['SELECT', 'INSERT', 'UPDATE'],
+    approver_group_memberships: ['SELECT', 'INSERT', 'UPDATE'],
+    approval_assignments: ['SELECT', 'INSERT', 'UPDATE'],
+    approval_assignment_eligibility: ['SELECT', 'INSERT'],
     authorization_decisions: ['SELECT', 'INSERT'],
     receipts: ['SELECT', 'INSERT'],
     idempotency_records: ['SELECT', 'INSERT', 'UPDATE'],
@@ -59,7 +65,7 @@ const TABLE_GRANTS = Object.freeze({
   })
 });
 
-const REQUIRED_MIGRATION = '010_outbox_dead_letter_replays';
+const REQUIRED_MIGRATION = '011_approval_assignments';
 const POLICY_LOCK_NAME = 'mandate:database-role-policy';
 const SESSION_TERMINATION_TIMEOUT_MS = 5_000;
 

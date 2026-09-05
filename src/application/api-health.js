@@ -1,4 +1,4 @@
-const REQUIRED_MIGRATION = '010_outbox_dead_letter_replays';
+const REQUIRED_MIGRATION = '012_approval_decision_credential_evidence';
 
 function integer(value, fallback, { name, minimum, maximum }) {
   const parsed = value === undefined ? fallback : Number(value);

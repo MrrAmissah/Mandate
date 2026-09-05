@@ -61,7 +61,7 @@ postgresTest('database role policy removes database CREATE inherited through PUB
     }
 
     const result = await applyDatabaseRolePolicy(client, { roles });
-    assert.equal(result.policyVersion, '2026-07-30.9');
+    assert.equal(result.policyVersion, '2026-09-05.1');
 
     const publicPrivilege = await client.query(
       'SELECT has_database_privilege($1, $2, $3) AS allowed',

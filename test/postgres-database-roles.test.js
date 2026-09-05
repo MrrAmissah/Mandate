@@ -212,7 +212,7 @@ postgresTest('database role policy quiesces sessions and removes current, future
 
     const result = await applyDatabaseRolePolicy(client, { roles });
     assert.equal(result.roles.api, roles.api);
-    assert.equal(result.policyVersion, '2026-07-30.9');
+    assert.equal(result.policyVersion, '2026-09-05.1');
     assert.ok(result.schemaNames.includes('mandate'));
     assert.ok(result.schemaNames.includes('public'));
     assert.ok(result.schemaNames.includes(customSchema));

@@ -7,12 +7,18 @@ import { createPostgresPool } from '../store/postgres-store.js';
 
 const LABEL_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const RESTORE_DATABASE_PATTERN = /^mandate_restore_[a-z0-9_]{1,40}$/;
-const REQUIRED_MIGRATION = '010_outbox_dead_letter_replays';
+const REQUIRED_MIGRATION = '012_approval_decision_credential_evidence';
 const CRITICAL_TABLES = Object.freeze([
   'tenants',
   'api_credentials',
   'mandates',
   'approvals',
+  'approver_identities',
+  'approver_credential_bindings',
+  'approver_groups',
+  'approver_group_memberships',
+  'approval_assignments',
+  'approval_assignment_eligibility',
   'authorization_decisions',
   'action_attempts',
   'receipts',

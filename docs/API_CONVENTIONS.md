@@ -1,14 +1,18 @@
 # API conventions
 
-This document defines the stable HTTP behavior Mandate-API should preserve across all v1 endpoints.
+This document defines the stable HTTP behavior Mandate-API currently preserves across the implemented v1 endpoints. Future controls are identified explicitly rather than described as current behavior.
 
 ## 1. Base URL and versioning
 
+Local development uses:
+
 ```text
-https://api.mandate.example/v1
+http://localhost:8787/v1
 ```
 
-The major version is encoded in the path. Compatible additions may ship within v1. Breaking field removals, semantic changes, or state-machine changes require a new major version.
+The major version is encoded in the path. Compatible additions may ship within v1. Breaking field removals, semantic changes, or state-machine changes require an explicit contract review and version change.
+
+The current OpenAPI contract revision is v0.8.0. That document revision is not the same thing as the `/v1` HTTP major version.
 
 ## 2. Content type
 
@@ -19,19 +23,36 @@ Content-Type: application/json
 Accept: application/json
 ```
 
-Unknown request fields should be rejected on security-sensitive create and decision endpoints once schemas are stable. Read responses may gain new fields without a major version change.
+Security-sensitive create, transition, assignment, and decision routes reject malformed JSON and validate their accepted fields. Unknown fields must never become hidden authority inputs.
 
-## 3. Authentication
+## 3. Authentication and scopes
 
-Initial developer preview:
+The current runtime authenticates API credentials with:
 
 ```http
-Authorization: Bearer mnd_test_...
+X-Api-Key: <credential secret>
 ```
 
-The Milestone 0 `x-api-key` header remains temporary and will be removed before public v1.
+Credentials are tenant- and environment-scoped. Durable storage contains only the credential hash and safe metadata, never the plaintext secret.
 
-Credentials are tenant- and environment-scoped. The plaintext secret is returned only at creation time. Stored credentials are hashed and have explicit scopes.
+A valid API credential is not automatically a human approver. Approval decision authority additionally requires:
+
+1. the dedicated `approvals:decide` scope;
+2. an active credential binding to a durable approver identity;
+3. an active approval assignment; and
+4. membership in that assignment's immutable eligibility snapshot.
+
+Approval administration is deliberately separate:
+
+```text
+approvers:read
+approvers:write
+approvals:read
+approvals:write
+approvals:decide
+```
+
+Future OAuth/OIDC or SSO may replace or supplement the authentication mechanism, but it should bind into the durable approver identity model instead of redefining credentials as people.
 
 ## 4. Request IDs
 
@@ -41,11 +62,11 @@ Clients may provide:
 X-Request-Id: req_client_generated_value
 ```
 
-The server validates or replaces it and always returns the effective value in both the `X-Request-Id` response header and error body. Request IDs are diagnostic correlation values, not idempotency controls.
+The server validates or replaces it and returns the effective value in the `X-Request-Id` response header and error body. Request IDs are diagnostic correlation values, not idempotency controls.
 
 ## 5. Idempotency
 
-All state-changing `POST` endpoints accept and eventually require:
+State-changing mutation endpoints support:
 
 ```http
 Idempotency-Key: unique-client-generated-key
@@ -53,13 +74,14 @@ Idempotency-Key: unique-client-generated-key
 
 Rules:
 
-- key length: 16 to 255 printable ASCII characters;
-- scope: tenant, environment, method, and route operation;
-- retention: at least 24 hours, with a target of 7 days;
-- the stored request fingerprint includes method, normalized path, API version, authenticated tenant, and canonical JSON body;
-- replay with the same fingerprint returns the original status and response;
+- key maximum: 255 characters in the current contract;
+- scope: tenant, environment, and exact logical operation;
+- retention floor: seven days for durable replay records;
+- the stored request fingerprint includes method, normalized path, and canonical JSON body at the HTTP boundary;
+- replay with the same fingerprint returns the committed logical response;
 - reuse with a different fingerprint returns `409 IDEMPOTENCY_CONFLICT`;
-- concurrent first use must be resolved atomically.
+- concurrent first use is resolved atomically;
+- unknown operation scopes are rejected rather than receiving guessed response metadata.
 
 ## 6. Errors
 
@@ -85,133 +107,126 @@ Common status mapping:
 | Status | Meaning |
 |---|---|
 | 400 | Invalid input or malformed JSON |
-| 401 | Missing or invalid credential |
-| 403 | Authenticated client lacks scope |
+| 401 | Missing, invalid, expired, or revoked credential |
+| 403 | Authenticated credential lacks required scope or authority |
 | 404 | Tenant-scoped resource does not exist |
-| 409 | State conflict, replay conflict, or optimistic concurrency failure |
-| 413 | Request exceeds size limit |
-| 422 | Structurally valid request fails domain validation |
-| 429 | Rate limit exceeded |
+| 409 | State, idempotency, assignment, or concurrency conflict |
+| 413 | Request exceeds configured size limit |
 | 500 | Unexpected server error |
-| 503 | Required dependency unavailable |
+| 503 | Required dependency or signing authority unavailable |
 
-Cross-tenant access should normally return `404`, not reveal resource existence.
+Cross-tenant access returns tenant-safe not-found behavior rather than confirming object existence.
 
 ## 7. Resource identifiers
 
-IDs are opaque strings with readable prefixes:
+IDs are opaque strings with readable prefixes. Implemented resources include:
 
 ```text
-ten_  tenant
-key_  API credential
-pri_  principal
-agt_  agent
-mnd_  mandate
-apr_  approval
-dec_  authorization decision
-act_  action attempt
-rcpt_ receipt
-aud_  audit event
-wh_   webhook endpoint
-whd_ webhook delivery
-sk_   signing key
+ten_   tenant
+key_   API credential
+mnd_   mandate
+apr_   approval
+apv_   approver identity
+apb_   approver credential binding
+apg_   approver group
+agm_   approver group membership
+apa_   approval assignment
+dec_   authorization decision
+att_   action attempt
+rcpt_  receipt
+aud_   audit event
+out_   outbox message
 ```
 
-Clients must not parse semantics from the suffix.
+Clients must not parse business semantics from the suffix.
 
 ## 8. Timestamps
 
-All timestamps are RFC 3339 UTC strings with millisecond precision:
+API timestamps are RFC 3339 UTC strings:
 
 ```text
 2026-07-29T06:45:12.123Z
 ```
 
-Intervals are half-open unless documented otherwise: `validFrom <= now < validUntil`.
+Time-window comparisons are half-open where documented, such as `validFrom <= now < validUntil`.
+
+PostgreSQL time is authoritative for live action-attempt expiry and operational backlog age. Application clocks are used only where the relevant domain contract explicitly permits them.
 
 ## 9. Pagination
 
-Collection endpoints use cursor pagination:
+Implemented collection endpoints use bounded cursor-style pagination with:
 
 ```http
-GET /v1/mandates?limit=50&after=mnd_...
+GET /v1/mandates?limit=20&startingAfter=mnd_...
 ```
+
+The default limit is 20 and the maximum is 100.
+
+Responses use the current flat page shape:
 
 ```json
 {
   "data": [],
-  "page": {
-    "hasMore": true,
-    "nextCursor": "opaque_cursor"
-  }
+  "hasMore": true,
+  "nextCursor": "opaque-or-resource-cursor"
 }
 ```
 
-Default limit is 25; maximum is 100. Cursors are opaque, signed or authenticated, and scoped to the original filter set.
+Approval-inbox work in Phase 4B must reuse safe bounded pagination without exposing unrelated tenant approval traffic.
 
 ## 10. Filtering and ordering
 
-Filters are explicit query parameters. The default sort is newest first unless endpoint semantics require event order.
+Only filters explicitly implemented and documented by an endpoint may be relied upon. Clients must not infer generic filtering behavior from another collection.
 
-Examples:
+Administrative approval listing and the future authenticated approver inbox are separate concerns. Phase 4B must not turn the broad administrative list route into a substitute for server-derived approver eligibility.
 
-```text
-status=ACTIVE
-agentId=agt_...
-createdAfter=2026-07-01T00:00:00Z
-createdBefore=2026-08-01T00:00:00Z
-```
+## 11. Concurrency and mutable resources
 
-Audit events default to ascending sequence order when replaying a lifecycle.
+Security-critical transitions use database locking, serializable transactions, uniqueness constraints, immutable history, or compare-and-swap semantics as appropriate.
 
-## 11. Optimistic concurrency
+Implemented examples include:
 
-Mutable resources expose a numeric `revision` and an `ETag`. Mutating an existing resource should accept `If-Match` or an expected revision. Stale writes return `409 REVISION_CONFLICT`.
+- final mandate-use one-winner behavior;
+- single-use approval consumption;
+- one active approval assignment per approval;
+- one terminal approval decision under concurrent eligible approvers;
+- one action-attempt reservation per allowed decision;
+- one root receipt per completed attempt/decision;
+- one direct receipt successor per predecessor;
+- one dead-letter replay replacement per source.
 
-Security-critical transitions such as authorization counters and approval consumption additionally require database locking or compare-and-swap semantics.
+The API does not currently expose a universal ETag/`If-Match` convention. If added later, it must supplement—not replace—database enforcement for security-critical transitions.
 
-## 12. Expandable relationships
+## 12. Approval assignment semantics
 
-Responses use IDs by default. Selected relationships may be expanded explicitly:
+Approval creation includes an assignment selector, but persisted approval resources and assignment resources are distinct.
 
-```http
-GET /v1/receipts/rcpt_...?expand=mandate,approval
-```
+Direct assignment snapshots one approver. Group assignment snapshots the group's active members at assignment time. Later membership additions affect future assignment snapshots only.
 
-Unbounded expansion is forbidden.
+Reassignment ends the current assignment and creates a new one with a new eligibility snapshot. It never edits old eligibility rows.
 
-## 13. Rate limits
+`POST /v1/approvals/{id}/decide` accepts the decision and optional reason. It does not accept authoritative `decidedBy` input. The server derives the approver identity from authentication and persists that identity as decision evidence.
 
-Responses expose:
+## 13. Expandable relationships
 
-```http
-RateLimit-Limit: 1000
-RateLimit-Remaining: 998
-RateLimit-Reset: 42
-```
+Unbounded relationship expansion is not part of the current contract. Relationships are exposed through explicit resource IDs and dedicated routes such as the approval assignment route.
 
-Limits are enforced by credential, tenant, environment, route class, and abuse signals. Authorization endpoints receive a separately managed high-priority budget.
+If expansion is introduced later, it must be allowlisted and bounded.
 
-## 14. Webhooks
+## 14. Rate limits
 
-Webhook events use a common envelope:
+A public rate-limit header contract is not implemented yet. Deployment-edge throttling may be used as an external control, but clients must not currently depend on `RateLimit-*` headers from the core API.
 
-```json
-{
-  "id": "evt_...",
-  "type": "approval.approved",
-  "apiVersion": "2026-07-29",
-  "createdAt": "2026-07-29T06:45:12.123Z",
-  "tenantId": "ten_...",
-  "environment": "test",
-  "data": {
-    "object": {}
-  }
-}
-```
+Future application-level rate limiting must distinguish authorization/decision traffic from ordinary reads and must not create an authority bypass during overload.
 
-Deliveries include timestamped HMAC signatures, unique delivery IDs, bounded exponential backoff, manual replay, and an append-only attempt history.
+## 15. Webhooks
 
-## 15. Deprecation
+Public webhook endpoint management and delivery signatures are future Phase 5 work. The current durable outbox, supervised worker, immutable delivery-attempt evidence, dead-letter state, and controlled replay machinery provide the internal delivery foundation only.
 
-Deprecated fields and endpoints include response headers linking to migration guidance and an announced sunset date. Security fixes may tighten validation without the normal deprecation window when unsafe behavior must be removed.
+A future webhook contract is expected to use timestamped signatures, unique delivery IDs, bounded retry, and replay-safe delivery history, but none of those public endpoint semantics should be treated as shipped until they appear in OpenAPI.
+
+## 16. Deprecation and security tightening
+
+Deprecated fields and endpoints should include migration guidance and an announced sunset where practical. Security fixes may tighten validation without the normal deprecation window when preserving previous behavior would retain an authority bypass.
+
+Migration 011 is such a boundary for approval decisions: pre-existing free-text `decided_by` history remains readable for compatibility, but new terminal decisions require authenticated durable approver evidence and cannot use caller-supplied text as authority.
