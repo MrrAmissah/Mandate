@@ -162,7 +162,7 @@ ALTER TABLE mandate.approvals
     FOREIGN KEY (tenant_id, environment, cancelled_by_credential_id)
     REFERENCES mandate.api_credentials (tenant_id, environment, id) ON DELETE RESTRICT;
 
-CREATE OR REPLACE FUNCTION mandate.guard_approval_operational_transition()
+CREATE OR REPLACE FUNCTION mandate.guard_approval_evidence_immutability()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -180,25 +180,49 @@ BEGIN
     RAISE EXCEPTION 'approval cancellation evidence is immutable';
   END IF;
 
-  IF OLD.status = 'PENDING' AND NEW.status IN ('APPROVED', 'REJECTED') THEN
-    IF NEW.decided_at IS NULL OR NEW.decided_by_approver_id IS NULL THEN
-      RAISE EXCEPTION 'approval decision requires authenticated approver identity';
-    END IF;
-  END IF;
-
-  IF OLD.status = 'PENDING' AND NEW.status = 'CANCELLED' THEN
-    IF NEW.cancelled_at IS NULL OR NEW.cancelled_by_credential_id IS NULL OR NEW.cancellation_reason IS NULL THEN
-      RAISE EXCEPTION 'approval cancellation requires immutable operator evidence';
-    END IF;
-  END IF;
-
   RETURN NEW;
 END;
 $$;
 
-CREATE TRIGGER approvals_operational_transition_guard
+CREATE TRIGGER approvals_evidence_immutability_guard
 BEFORE UPDATE ON mandate.approvals
-FOR EACH ROW EXECUTE FUNCTION mandate.guard_approval_operational_transition();
+FOR EACH ROW EXECUTE FUNCTION mandate.guard_approval_evidence_immutability();
+
+CREATE OR REPLACE FUNCTION mandate.validate_approval_operational_transition()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  current_approval mandate.approvals%ROWTYPE;
+BEGIN
+  IF OLD.status = 'PENDING' AND NEW.status IN ('APPROVED', 'REJECTED', 'CANCELLED') THEN
+    SELECT * INTO current_approval
+      FROM mandate.approvals
+     WHERE tenant_id = NEW.tenant_id
+       AND environment = NEW.environment
+       AND id = NEW.id;
+
+    IF NEW.status IN ('APPROVED', 'REJECTED') THEN
+      IF current_approval.decided_at IS NULL OR current_approval.decided_by_approver_id IS NULL THEN
+        RAISE EXCEPTION 'approval decision requires authenticated approver identity';
+      END IF;
+    ELSIF NEW.status = 'CANCELLED' THEN
+      IF current_approval.cancelled_at IS NULL
+         OR current_approval.cancelled_by_credential_id IS NULL
+         OR current_approval.cancellation_reason IS NULL THEN
+        RAISE EXCEPTION 'approval cancellation requires immutable operator evidence';
+      END IF;
+    END IF;
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER approvals_operational_transition_guard
+AFTER UPDATE ON mandate.approvals
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION mandate.validate_approval_operational_transition();
 
 CREATE OR REPLACE FUNCTION mandate.assign_idempotency_http_metadata()
 RETURNS trigger
