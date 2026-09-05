@@ -29,6 +29,8 @@ The core remains handler-neutral. A deployment starts the worker only with an ex
 19. **Replay is optimistic and idempotent.** Operators supply the observed attempt count and a payload-bound replay key.
 20. **Business and operator provenance remain separate.** A replacement message retains the source message's business `audit_event_id`; the replay record separately references the operator's `outbox.dead_letter_replayed` audit event.
 
+The production reference assigns the worker its own restricted `mandate_outbox_worker` database identity; dead-letter inspection/replay uses the distinct operator identity. See [`PRODUCTION_DEPLOYMENT.md`](./PRODUCTION_DEPLOYMENT.md).
+
 ## Message lifecycle
 
 ```text
@@ -82,7 +84,7 @@ The module is trusted deployment code and receives the committed payload plus sa
 
 ## Run the worker
 
-Apply migrations with a dedicated deployment role, then start the process separately from the API:
+Apply migrations with a dedicated deployment role, apply the database-role policy, then start the process separately from the API:
 
 ```bash
 MANDATE_STORE=postgres \
@@ -115,7 +117,7 @@ The loopback-default health listener exposes:
 | `/health/ready` | Recent successful-cycle readiness |
 | `/metrics` | Low-cardinality Prometheus counters and capped backlog samples |
 
-Health probes read cached state and do not query PostgreSQL per request. Binding beyond loopback requires deployment network controls.
+Health probes read cached state and do not query PostgreSQL per request. Binding beyond loopback requires deployment network controls. In the production reference Compose topology, worker ports are only exposed inside the private backend network and are not host-published.
 
 ## Inspect dead letters
 
@@ -161,6 +163,8 @@ Replay behavior:
 
 The raw replay key is never stored. Migration 010 stores only its SHA-256 hash and request fingerprint.
 
+A live replay also requires the deployment's external human approval/change-control policy. The repository does not pretend that an operator field is maker-checker enforcement. Until a live approval policy exists, production replay should be treated as prohibited. See [`PRODUCTION_OPERATIONS.md`](./PRODUCTION_OPERATIONS.md).
+
 ## Operational interpretation
 
 - `hasDue=1` means more registered work may remain after a bounded cycle.
@@ -169,8 +173,22 @@ The raw replay key is never stored. Migration 010 stores only its SHA-256 hash a
 - sample gauges are capped and are not exact global counts.
 - repeated cycle failures or stale success timestamps make readiness fail closed.
 
-## Remaining work
+The reference supervision baseline pages on new dead letters, escalates persistent stale leases and readiness failures, and warns on sustained due work/batch saturation. Exact metric names and initial thresholds are defined in [`PRODUCTION_OPERATIONS.md`](./PRODUCTION_OPERATIONS.md). Those thresholds are engineering starting points, not customer-facing delivery SLOs.
 
-- reference webhook/delivery handlers with their own idempotency contracts;
-- platform-specific service manifests and restricted runtime/operator database roles;
-- alert thresholds, approval policy for live replay, and supervisor restart policy.
+## Graceful shutdown and restart
+
+The executable handles `SIGINT` and `SIGTERM`, stops advertising readiness, aborts the polling loop, allows the bounded active cycle to finish, closes the health listener and then closes its PostgreSQL pool.
+
+The production reference supervises the long-running worker with `restart: unless-stopped`, explicit CPU/memory/PID/log bounds, `SIGTERM`, and a 30-second grace period. If infrastructure kills a worker after lease acquisition, stale-lease recovery remains the database-backed continuation mechanism; the deployment must not bypass it by resetting rows manually.
+
+## Remaining deployment-specific work
+
+The worker, controlled replay path, restricted worker/operator database roles, reference restart/resource policy and alert baseline are implemented. A real deployment still needs:
+
+- an externally reviewed real webhook/delivery handler with its own destination-side idempotency contract;
+- provider-specific firewall/monitoring-network enforcement;
+- a paging backend wired to the documented health/metrics conditions;
+- durable log/SIEM retention;
+- a live dead-letter replay approval/change-control policy;
+- production backup/PITR schedule and measured recovery objectives;
+- platform-specific HA/service manifests where required.
