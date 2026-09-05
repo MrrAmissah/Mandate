@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createPostgresPool } from '../store/postgres-store.js';
 
@@ -16,8 +16,12 @@ const CRITICAL_TABLES = Object.freeze([
   'authorization_decisions',
   'action_attempts',
   'receipts',
+  'idempotency_records',
+  'audit_sequences',
   'audit_events',
   'outbox_messages',
+  'outbox_attempts',
+  'outbox_dead_letter_replays',
   'signing_keys'
 ]);
 
@@ -55,6 +59,25 @@ function safeToolPath(value, fallback, code) {
   return tool;
 }
 
+function postgresToolEnvironment(databaseUrl, databaseSsl = false) {
+  const parsed = parseConnectionUrl(databaseUrl, 'DATABASE_TOOL_URL_INVALID');
+  const url = new URL(parsed.raw);
+  const env = { ...process.env };
+  env.PGHOST = url.hostname;
+  env.PGDATABASE = parsed.databaseName;
+  if (url.port) env.PGPORT = url.port;
+  else delete env.PGPORT;
+  if (url.username) env.PGUSER = decodeURIComponent(url.username);
+  else delete env.PGUSER;
+  if (url.password) env.PGPASSWORD = decodeURIComponent(url.password);
+  else delete env.PGPASSWORD;
+  const sslMode = url.searchParams.get('sslmode');
+  if (sslMode) env.PGSSLMODE = sslMode;
+  else if (databaseSsl) env.PGSSLMODE = 'require';
+  else delete env.PGSSLMODE;
+  return env;
+}
+
 export function parseDatabaseBackupConfig(env = process.env) {
   const source = parseConnectionUrl(env.DATABASE_URL, 'DATABASE_BACKUP_URL_INVALID');
   const outputDirectory = requiredString(
@@ -65,13 +88,15 @@ export function parseDatabaseBackupConfig(env = process.env) {
   if (!isAbsolute(outputDirectory)) {
     throw recoveryError('DATABASE_BACKUP_OUTPUT_UNSAFE', 'Backup output directory must be absolute.');
   }
-  const label = (env.MANDATE_BACKUP_LABEL ?? new Date().toISOString().replaceAll(':', '-')).trim();
+  const generatedLabel = new Date().toISOString().replaceAll(':', '-').toLowerCase();
+  const label = (env.MANDATE_BACKUP_LABEL ?? generatedLabel).trim();
   if (!LABEL_PATTERN.test(label)) throw recoveryError('DATABASE_BACKUP_LABEL_INVALID', 'Backup label is invalid.');
   return Object.freeze({
     source,
     outputDirectory: resolve(outputDirectory),
     label,
-    pgDumpPath: safeToolPath(env.MANDATE_PG_DUMP_PATH, 'pg_dump', 'DATABASE_BACKUP_TOOL_INVALID')
+    pgDumpPath: safeToolPath(env.MANDATE_PG_DUMP_PATH, 'pg_dump', 'DATABASE_BACKUP_TOOL_INVALID'),
+    databaseSsl: env.MANDATE_DATABASE_SSL === 'true'
   });
 }
 
@@ -100,11 +125,11 @@ export function parseDatabaseRestoreConfig(env = process.env) {
   });
 }
 
-export function runDatabaseTool(command, args, { databaseUrl, spawnImpl = spawn } = {}) {
+export function runDatabaseTool(command, args, { databaseUrl, databaseSsl = false, spawnImpl = spawn } = {}) {
   return new Promise((resolvePromise, reject) => {
     const child = spawnImpl(command, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, PGDATABASE: databaseUrl }
+      stdio: ['ignore', 'ignore', 'pipe'],
+      env: postgresToolEnvironment(databaseUrl, databaseSsl)
     });
     let stderr = '';
     child.stderr?.setEncoding?.('utf8');
@@ -129,8 +154,8 @@ async function sha256File(path) {
   return hash.digest('hex');
 }
 
-async function loadRecoverySnapshot(pool) {
-  const migrationResult = await pool.query(
+async function loadRecoverySnapshot(queryable) {
+  const migrationResult = await queryable.query(
     `SELECT version
        FROM mandate.schema_migrations
       ORDER BY applied_at DESC, version DESC`
@@ -140,13 +165,21 @@ async function loadRecoverySnapshot(pool) {
   }
   const counts = {};
   for (const table of CRITICAL_TABLES) {
-    const result = await pool.query(`SELECT count(*)::bigint AS count FROM mandate.${table}`);
+    const result = await queryable.query(`SELECT count(*)::bigint AS count FROM mandate.${table}`);
     counts[table] = result.rows[0].count;
   }
   return Object.freeze({
     migrations: Object.freeze(migrationResult.rows.map((row) => row.version)),
     counts: Object.freeze(counts)
   });
+}
+
+async function reservePath(fs, path) {
+  const reservation = await fs.open(path, 'wx', 0o600).catch((error) => {
+    if (error?.code === 'EEXIST') throw recoveryError('DATABASE_BACKUP_EXISTS', 'Backup destination already exists.');
+    throw error;
+  });
+  await reservation.close();
 }
 
 export async function createDatabaseBackup(config, dependencies = {}) {
@@ -158,30 +191,60 @@ export async function createDatabaseBackup(config, dependencies = {}) {
   if (!directory.isDirectory()) throw recoveryError('DATABASE_BACKUP_OUTPUT_UNSAFE', 'Backup output is not a directory.');
 
   const finalPath = join(config.outputDirectory, `mandate-${config.label}.dump`);
-  const temporaryPath = `${finalPath}.partial`;
   const manifestPath = `${finalPath}.manifest.json`;
-  const reservation = await fs.open(finalPath, 'wx', 0o600).catch((error) => {
-    if (error?.code === 'EEXIST') throw recoveryError('DATABASE_BACKUP_EXISTS', 'Backup destination already exists.');
-    throw error;
-  });
-  await reservation.close();
-  await fs.rm(finalPath, { force: true });
+  const suffix = `${process.pid}-${randomUUID()}`;
+  const temporaryPath = `${finalPath}.partial-${suffix}`;
+  const temporaryManifestPath = `${manifestPath}.partial-${suffix}`;
+  let finalReserved = false;
+  let manifestReserved = false;
+  let pool;
+  let client;
+  let transactionOpen = false;
 
-  const pool = await poolFactory({ connectionString: config.source.raw, max: 1, ssl: false });
   try {
-    const snapshot = await loadRecoverySnapshot(pool);
+    await reservePath(fs, finalPath);
+    finalReserved = true;
+    await reservePath(fs, manifestPath);
+    manifestReserved = true;
+
+    pool = await poolFactory({
+      connectionString: config.source.raw,
+      max: 1,
+      ssl: config.databaseSsl
+    });
+    client = await pool.connect();
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    transactionOpen = true;
+    const exported = await client.query('SELECT pg_export_snapshot() AS snapshot_id');
+    const snapshotId = exported.rows[0]?.snapshot_id;
+    if (typeof snapshotId !== 'string' || snapshotId.length === 0) {
+      throw recoveryError('DATABASE_BACKUP_SNAPSHOT_FAILED', 'PostgreSQL did not export a backup snapshot.');
+    }
+    const snapshot = await loadRecoverySnapshot(client);
+
     await toolRunner(
       config.pgDumpPath,
-      ['--format=custom', '--compress=9', '--no-owner', '--no-privileges', '--file', temporaryPath],
-      { databaseUrl: config.source.raw }
+      [
+        '--format=custom',
+        '--compress=9',
+        '--no-owner',
+        '--no-privileges',
+        '--snapshot',
+        snapshotId,
+        '--file',
+        temporaryPath
+      ],
+      { databaseUrl: config.source.raw, databaseSsl: config.databaseSsl }
     );
+    await client.query('COMMIT');
+    transactionOpen = false;
+
     await fs.chmod(temporaryPath, 0o600);
     const dumpStat = await fs.stat(temporaryPath);
     if (!dumpStat.isFile() || dumpStat.size < 1) {
       throw recoveryError('DATABASE_BACKUP_EMPTY', 'Backup tool produced an empty artifact.');
     }
     const digest = await sha256File(temporaryPath);
-    await fs.rename(temporaryPath, finalPath);
     const manifest = Object.freeze({
       formatVersion: 1,
       artifact: basename(finalPath),
@@ -192,15 +255,20 @@ export async function createDatabaseBackup(config, dependencies = {}) {
       migrations: snapshot.migrations,
       counts: snapshot.counts
     });
-    await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    await fs.writeFile(temporaryManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    await fs.rename(temporaryPath, finalPath);
+    await fs.rename(temporaryManifestPath, manifestPath);
     return Object.freeze({ backupPath: finalPath, manifestPath, sha256: digest, sizeBytes: dumpStat.size });
   } catch (error) {
+    if (transactionOpen && client) await client.query('ROLLBACK').catch(() => {});
     await fs.rm(temporaryPath, { force: true }).catch(() => {});
-    await fs.rm(finalPath, { force: true }).catch(() => {});
-    await fs.rm(manifestPath, { force: true }).catch(() => {});
+    await fs.rm(temporaryManifestPath, { force: true }).catch(() => {});
+    if (finalReserved) await fs.rm(finalPath, { force: true }).catch(() => {});
+    if (manifestReserved) await fs.rm(manifestPath, { force: true }).catch(() => {});
     throw error;
   } finally {
-    await pool.end();
+    client?.release?.();
+    await pool?.end?.();
   }
 }
 
@@ -209,7 +277,12 @@ export async function restoreAndVerifyDatabase(config, dependencies = {}) {
   const poolFactory = dependencies.poolFactory ?? createPostgresPool;
   const backup = await stat(config.backupPath);
   if (!backup.isFile() || backup.size < 1) throw recoveryError('DATABASE_RESTORE_BACKUP_INVALID', 'Backup artifact is empty or missing.');
-  const manifest = JSON.parse(await readFile(config.manifestPath, 'utf8'));
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile(config.manifestPath, 'utf8'));
+  } catch {
+    throw recoveryError('DATABASE_RESTORE_MANIFEST_INVALID', 'Backup manifest is missing or invalid.');
+  }
   if (manifest.formatVersion !== 1 || basename(config.backupPath) !== manifest.artifact) {
     throw recoveryError('DATABASE_RESTORE_MANIFEST_INVALID', 'Backup manifest does not match the artifact.');
   }
@@ -218,8 +291,17 @@ export async function restoreAndVerifyDatabase(config, dependencies = {}) {
 
   await toolRunner(
     config.pgRestorePath,
-    ['--clean', '--if-exists', '--exit-on-error', '--no-owner', '--no-privileges', config.backupPath],
-    { databaseUrl: config.target.raw }
+    [
+      '--dbname',
+      config.target.databaseName,
+      '--clean',
+      '--if-exists',
+      '--exit-on-error',
+      '--no-owner',
+      '--no-privileges',
+      config.backupPath
+    ],
+    { databaseUrl: config.target.raw, databaseSsl: config.databaseSsl }
   );
 
   const pool = await poolFactory({
