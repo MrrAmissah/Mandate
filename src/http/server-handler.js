@@ -1,4 +1,3 @@
-import { createApprovalOperationsHandler } from './approval-operations-handler.js';
 import { createRuntimeHandler } from './runtime-handler.js';
 import { resolveRequestId, sendJson } from './utils.js';
 
@@ -8,8 +7,7 @@ export function createServerHandler(runtime) {
   if (!runtime?.health?.liveness || !runtime?.health?.readiness) {
     throw new TypeError('API liveness and readiness are required.');
   }
-  const runtimeApplication = createRuntimeHandler(runtime);
-  const application = createApprovalOperationsHandler(runtime, runtimeApplication);
+  const application = createRuntimeHandler(runtime);
 
   return async function serverHandler(request, response) {
     const method = request.method ?? 'GET';
