@@ -146,6 +146,167 @@ CREATE TABLE mandate.approval_assignment_eligibility (
     REFERENCES mandate.approver_groups (tenant_id, environment, id) ON DELETE RESTRICT
 );
 
+CREATE OR REPLACE FUNCTION mandate.guard_approval_authority_history()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_TABLE_NAME = 'approver_identities' THEN
+    IF NEW.id IS DISTINCT FROM OLD.id OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+      RAISE EXCEPTION 'approver identity provenance is immutable';
+    END IF;
+    IF OLD.status = 'DISABLED' AND NEW IS DISTINCT FROM OLD THEN
+      RAISE EXCEPTION 'disabled approver identity is immutable';
+    END IF;
+    IF OLD.status = 'ACTIVE' AND NEW.status NOT IN ('ACTIVE', 'DISABLED') THEN
+      RAISE EXCEPTION 'invalid approver identity transition';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'approver_credential_bindings' THEN
+    IF NEW.approver_id IS DISTINCT FROM OLD.approver_id
+       OR NEW.credential_id IS DISTINCT FROM OLD.credential_id
+       OR NEW.bound_at IS DISTINCT FROM OLD.bound_at THEN
+      RAISE EXCEPTION 'approver credential binding provenance is immutable';
+    END IF;
+    IF OLD.status = 'REVOKED' AND NEW IS DISTINCT FROM OLD THEN
+      RAISE EXCEPTION 'revoked approver credential binding is immutable';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'approver_groups' THEN
+    IF NEW.id IS DISTINCT FROM OLD.id OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+      RAISE EXCEPTION 'approver group provenance is immutable';
+    END IF;
+    IF OLD.status = 'DISABLED' AND NEW IS DISTINCT FROM OLD THEN
+      RAISE EXCEPTION 'disabled approver group is immutable';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'approver_group_memberships' THEN
+    IF NEW.group_id IS DISTINCT FROM OLD.group_id
+       OR NEW.approver_id IS DISTINCT FROM OLD.approver_id
+       OR NEW.added_at IS DISTINCT FROM OLD.added_at THEN
+      RAISE EXCEPTION 'approver group membership provenance is immutable';
+    END IF;
+    IF OLD.status = 'REMOVED' AND NEW IS DISTINCT FROM OLD THEN
+      RAISE EXCEPTION 'removed approver group membership is immutable';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'approval_assignments' THEN
+    IF NEW.approval_id IS DISTINCT FROM OLD.approval_id
+       OR NEW.source_type IS DISTINCT FROM OLD.source_type
+       OR NEW.source_id IS DISTINCT FROM OLD.source_id
+       OR NEW.assigned_by_credential_id IS DISTINCT FROM OLD.assigned_by_credential_id
+       OR NEW.assigned_at IS DISTINCT FROM OLD.assigned_at THEN
+      RAISE EXCEPTION 'approval assignment provenance is immutable';
+    END IF;
+    IF OLD.status <> 'ACTIVE' AND NEW IS DISTINCT FROM OLD THEN
+      RAISE EXCEPTION 'terminal approval assignment is immutable';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER approver_identities_history_guard
+BEFORE UPDATE ON mandate.approver_identities
+FOR EACH ROW EXECUTE FUNCTION mandate.guard_approval_authority_history();
+CREATE TRIGGER approver_credential_bindings_history_guard
+BEFORE UPDATE ON mandate.approver_credential_bindings
+FOR EACH ROW EXECUTE FUNCTION mandate.guard_approval_authority_history();
+CREATE TRIGGER approver_groups_history_guard
+BEFORE UPDATE ON mandate.approver_groups
+FOR EACH ROW EXECUTE FUNCTION mandate.guard_approval_authority_history();
+CREATE TRIGGER approver_group_memberships_history_guard
+BEFORE UPDATE ON mandate.approver_group_memberships
+FOR EACH ROW EXECUTE FUNCTION mandate.guard_approval_authority_history();
+CREATE TRIGGER approval_assignments_history_guard
+BEFORE UPDATE ON mandate.approval_assignments
+FOR EACH ROW EXECUTE FUNCTION mandate.guard_approval_authority_history();
+
+CREATE OR REPLACE FUNCTION mandate.validate_approval_assignment_source()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.source_type = 'APPROVER' THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM mandate.approver_identities identity
+       WHERE identity.tenant_id = NEW.tenant_id
+         AND identity.environment = NEW.environment
+         AND identity.id = NEW.source_id
+         AND identity.status = 'ACTIVE'
+    ) THEN
+      RAISE EXCEPTION 'approval assignment source approver is unavailable';
+    END IF;
+  ELSIF NEW.source_type = 'GROUP' THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM mandate.approver_groups approver_group
+       WHERE approver_group.tenant_id = NEW.tenant_id
+         AND approver_group.environment = NEW.environment
+         AND approver_group.id = NEW.source_id
+         AND approver_group.status = 'ACTIVE'
+    ) THEN
+      RAISE EXCEPTION 'approval assignment source group is unavailable';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER approval_assignments_source_guard
+BEFORE INSERT ON mandate.approval_assignments
+FOR EACH ROW EXECUTE FUNCTION mandate.validate_approval_assignment_source();
+
+CREATE OR REPLACE FUNCTION mandate.validate_approval_assignment_eligibility()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  assignment mandate.approval_assignments%ROWTYPE;
+BEGIN
+  SELECT * INTO assignment
+    FROM mandate.approval_assignments
+   WHERE tenant_id = NEW.tenant_id
+     AND environment = NEW.environment
+     AND id = NEW.assignment_id;
+
+  IF assignment.id IS NULL OR assignment.status <> 'ACTIVE' THEN
+    RAISE EXCEPTION 'approval assignment is unavailable for eligibility snapshot';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM mandate.approver_identities identity
+     WHERE identity.tenant_id = NEW.tenant_id
+       AND identity.environment = NEW.environment
+       AND identity.id = NEW.approver_id
+       AND identity.status = 'ACTIVE'
+  ) THEN
+    RAISE EXCEPTION 'approval eligibility approver is unavailable';
+  END IF;
+
+  IF assignment.source_type = 'APPROVER' THEN
+    IF NEW.approver_id <> assignment.source_id OR NEW.snapshot_source_group_id IS NOT NULL THEN
+      RAISE EXCEPTION 'direct approval assignment eligibility does not match its source approver';
+    END IF;
+  ELSIF assignment.source_type = 'GROUP' THEN
+    IF NEW.snapshot_source_group_id IS DISTINCT FROM assignment.source_id THEN
+      RAISE EXCEPTION 'group approval assignment eligibility does not match its source group';
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM mandate.approver_group_memberships membership
+       WHERE membership.tenant_id = NEW.tenant_id
+         AND membership.environment = NEW.environment
+         AND membership.group_id = assignment.source_id
+         AND membership.approver_id = NEW.approver_id
+         AND membership.status = 'ACTIVE'
+    ) THEN
+      RAISE EXCEPTION 'approval eligibility approver was not an active source-group member';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER approval_assignment_eligibility_source_guard
+BEFORE INSERT ON mandate.approval_assignment_eligibility
+FOR EACH ROW EXECUTE FUNCTION mandate.validate_approval_assignment_eligibility();
+
 CREATE TRIGGER approval_assignment_eligibility_immutable
 BEFORE UPDATE OR DELETE ON mandate.approval_assignment_eligibility
 FOR EACH ROW EXECUTE FUNCTION mandate.reject_immutable_change();
@@ -205,6 +366,26 @@ BEGIN
     IF NEW.status IN ('APPROVED', 'REJECTED') THEN
       IF current_approval.decided_at IS NULL OR current_approval.decided_by_approver_id IS NULL THEN
         RAISE EXCEPTION 'approval decision requires authenticated approver identity';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+          FROM mandate.approval_assignments assignment
+          JOIN mandate.approval_assignment_eligibility eligibility
+            ON eligibility.tenant_id = assignment.tenant_id
+           AND eligibility.environment = assignment.environment
+           AND eligibility.assignment_id = assignment.id
+          JOIN mandate.approver_identities identity
+            ON identity.tenant_id = eligibility.tenant_id
+           AND identity.environment = eligibility.environment
+           AND identity.id = eligibility.approver_id
+         WHERE assignment.tenant_id = NEW.tenant_id
+           AND assignment.environment = NEW.environment
+           AND assignment.approval_id = NEW.id
+           AND assignment.status = 'ACTIVE'
+           AND eligibility.approver_id = current_approval.decided_by_approver_id
+           AND identity.status = 'ACTIVE'
+      ) THEN
+        RAISE EXCEPTION 'approval decision approver is not eligible for active assignment';
       END IF;
     ELSIF NEW.status = 'CANCELLED' THEN
       IF current_approval.cancelled_at IS NULL
