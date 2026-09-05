@@ -16,6 +16,8 @@ const replayUpPath = new URL('../migrations/010_outbox_dead_letter_replays.up.sq
 const replayDownPath = new URL('../migrations/010_outbox_dead_letter_replays.down.sql', import.meta.url);
 const approvalUpPath = new URL('../migrations/011_approval_assignments.up.sql', import.meta.url);
 const approvalDownPath = new URL('../migrations/011_approval_assignments.down.sql', import.meta.url);
+const approvalEvidenceUpPath = new URL('../migrations/012_approval_decision_credential_evidence.up.sql', import.meta.url);
+const approvalEvidenceDownPath = new URL('../migrations/012_approval_decision_credential_evidence.down.sql', import.meta.url);
 const runnerPath = new URL('../src/store/postgres-migrations.js', import.meta.url);
 
 async function baselineMigration() {
@@ -169,6 +171,24 @@ test('approval assignment migration binds decisions to authenticated identities 
   assert.match(sql, /011_approval_assignments/);
 });
 
+test('approval decision evidence migration requires immutable audit credential binding at commit', async () => {
+  const sql = await readFile(approvalEvidenceUpPath, 'utf8');
+  assert.match(sql, /^BEGIN;/);
+  assert.match(sql, /COMMIT;\s*$/);
+  assert.match(sql, /CREATE OR REPLACE FUNCTION mandate\.validate_approval_operational_transition/);
+  assert.match(sql, /FROM mandate\.audit_events event/);
+  assert.match(sql, /JOIN mandate\.approver_credential_bindings binding/);
+  assert.match(sql, /JOIN mandate\.api_credentials credential/);
+  assert.match(sql, /event\.type = 'approval\.decided'/);
+  assert.match(sql, /event\.actor_type = 'APPROVER'/);
+  assert.match(sql, /event\.data ->> 'credentialId'/);
+  assert.match(sql, /event\.data ->> 'assignmentId'/);
+  assert.match(sql, /binding\.status = 'ACTIVE'/);
+  assert.match(sql, /credential\.status = 'ACTIVE'/);
+  assert.match(sql, /approval decision requires authenticated credential evidence/);
+  assert.match(sql, /012_approval_decision_credential_evidence/);
+});
+
 test('migration runner applies all migrations in order under one advisory lock', async () => {
   const source = await readFile(runnerPath, 'utf8');
   const versions = [
@@ -176,7 +196,8 @@ test('migration runner applies all migrations in order under one advisory lock',
     '004_signing_key_lifecycle', '005_action_attempt_reservations',
     '006_attempt_completion_receipts', '007_receipt_supersession',
     '008_idempotency_retention', '009_outbox_worker_operations',
-    '010_outbox_dead_letter_replays', '011_approval_assignments'
+    '010_outbox_dead_letter_replays', '011_approval_assignments',
+    '012_approval_decision_credential_evidence'
   ];
   const positions = versions.map((version) => source.indexOf(`version: '${version}'`));
   assert.ok(positions.every((position) => position >= 0));
@@ -217,6 +238,11 @@ test('development down migrations remove only their owned objects', async () => 
   assert.match(replay, /DROP COLUMN IF EXISTS replay_message_id/);
   assert.match(replay, /DELETE FROM mandate\.schema_migrations WHERE version = '010_outbox_dead_letter_replays'/);
   assert.doesNotMatch(replay, /DROP SCHEMA/);
+  const approvalEvidence = await readFile(approvalEvidenceDownPath, 'utf8');
+  assert.match(approvalEvidence, /CREATE OR REPLACE FUNCTION mandate\.validate_approval_operational_transition/);
+  assert.match(approvalEvidence, /DELETE FROM mandate\.schema_migrations/);
+  assert.match(approvalEvidence, /012_approval_decision_credential_evidence/);
+  assert.doesNotMatch(approvalEvidence, /DROP TABLE|DROP SCHEMA/);
   const approval = await readFile(approvalDownPath, 'utf8');
   assert.match(approval, /DROP TRIGGER IF EXISTS approvals_operational_transition_guard/);
   assert.match(approval, /DROP FUNCTION IF EXISTS mandate\.validate_approval_operational_transition/);
