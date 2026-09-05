@@ -5,6 +5,11 @@ import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { createApp } from '../src/app.js';
 import {
+  createApprovalAssignment,
+  createApproverIdentity,
+  decideAssignedApproval
+} from '../src/application/approval-operations.js';
+import {
   assertCredentialUsable,
   createApiCredentialRecord,
   hashApiKey,
@@ -12,6 +17,7 @@ import {
 } from '../src/auth/api-credentials.js';
 import { createStoredApiKeyAuthenticator } from '../src/auth/authentication.js';
 import { createReceiptSigner } from '../src/crypto/receipt-signer.js';
+import { decideApproval } from '../src/domain/approvals.js';
 import { createPostgresPool, PostgresStore } from '../src/store/postgres-store.js';
 
 const connectionString = process.env.DATABASE_URL;
@@ -62,17 +68,19 @@ async function post(baseUrl, path, secret, body) {
 
 integration('consumed approvals and signed receipts survive PostgreSQL restart', async () => {
   const tenantId = unique('ten_lifecycle');
+  const ownership = { tenantId, environment: 'test' };
   const credentialId = unique('key_lifecycle');
   const secret = `lifecycle-secret-${randomUUID()}`;
   const credential = createApiCredentialRecord({
     id: credentialId,
-    tenantId,
-    environment: 'test',
+    ...ownership,
     name: 'Lifecycle integration credential',
     scopes: ['*']
   }, secret, fixedNow);
+  const authentication = { ...ownership, credentialId, scopes: ['*'] };
   let approvalId;
   let receiptId;
+  let approverId;
 
   const firstStore = await createStore();
   try {
@@ -99,12 +107,36 @@ integration('consumed approvals and signed receipts survive PostgreSQL restart',
       assert.equal(requested.response.status, 201);
       approvalId = requested.body.id;
 
-      const approved = await post(baseUrl, `/v1/approvals/${approvalId}/decide`, secret, {
-        decision: 'APPROVED',
-        decidedBy: 'principal_owner'
+      const decided = await firstStore.transaction(async (transaction) => {
+        const approver = await createApproverIdentity({
+          view: transaction,
+          ownership,
+          authentication,
+          input: { displayName: 'Lifecycle approver', credentialId },
+          now: fixedNow
+        });
+        approverId = approver.id;
+        await createApprovalAssignment({
+          view: transaction,
+          ownership,
+          approvalId,
+          assignment: { type: 'APPROVER', id: approver.id },
+          authentication,
+          now: fixedNow
+        });
+        const approval = await transaction.get('approvals', ownership, approvalId);
+        return decideAssignedApproval({
+          view: transaction,
+          ownership,
+          approval,
+          input: { decision: 'APPROVED' },
+          authentication,
+          decide: decideApproval,
+          now: fixedNow
+        });
       });
-      assert.equal(approved.response.status, 200);
-      assert.equal(approved.body.status, 'APPROVED');
+      assert.equal(decided.approval.status, 'APPROVED');
+      assert.equal(decided.approval.decidedByApproverId, approverId);
 
       const authorized = await post(baseUrl, '/v1/authorize', secret, {
         mandateId: mandate.body.id,
@@ -144,6 +176,13 @@ integration('consumed approvals and signed receipts survive PostgreSQL restart',
       const approval = await approvalResponse.json();
       assert.equal(approval.status, 'CONSUMED');
       assert.ok(approval.consumedByDecisionId);
+      const persistedActor = await restartedStore.pool.query(
+        `SELECT decided_by_approver_id
+         FROM mandate.approvals
+         WHERE tenant_id=$1 AND environment='test' AND id=$2`,
+        [tenantId, approvalId]
+      );
+      assert.equal(persistedActor.rows[0].decided_by_approver_id, approverId);
 
       const receiptResponse = await fetch(`${baseUrl}/v1/receipts/${receiptId}`, { headers: headers(secret) });
       assert.equal(receiptResponse.status, 200);
