@@ -33,6 +33,21 @@ export function parsePageRequest(url) {
   };
 }
 
+export function pageWindow(items, { limit, timestampField }) {
+  const window = [...items];
+  const hasMore = window.length > limit;
+  const data = hasMore ? window.slice(0, limit) : window;
+  const last = data.at(-1);
+
+  return {
+    data,
+    hasMore,
+    nextCursor: hasMore && last
+      ? encodeCursor({ id: last.id, at: last[timestampField] })
+      : null
+  };
+}
+
 export function paginate(items, { limit, cursor, timestampField }) {
   const ordered = [...items].sort((left, right) => {
     const timeOrder = String(left[timestampField]).localeCompare(String(right[timestampField]));
@@ -50,16 +65,5 @@ export function paginate(items, { limit, cursor, timestampField }) {
     startIndex = cursorIndex + 1;
   }
 
-  const window = ordered.slice(startIndex, startIndex + limit + 1);
-  const hasMore = window.length > limit;
-  const data = hasMore ? window.slice(0, limit) : window;
-  const last = data.at(-1);
-
-  return {
-    data,
-    hasMore,
-    nextCursor: hasMore && last
-      ? encodeCursor({ id: last.id, at: last[timestampField] })
-      : null
-  };
+  return pageWindow(ordered.slice(startIndex, startIndex + limit + 1), { limit, timestampField });
 }
