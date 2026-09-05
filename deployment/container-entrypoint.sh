@@ -36,6 +36,7 @@ load_secret() {
 }
 
 load_secret DATABASE_URL
+load_secret MANDATE_RECOVERY_TARGET_URL
 load_secret MANDATE_API_KEY
 load_secret MANDATE_PRIVATE_KEY_PEM
 load_secret MANDATE_PUBLIC_KEY_PEM

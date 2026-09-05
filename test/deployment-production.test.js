@@ -21,7 +21,13 @@ test('production image runs as a fixed non-root user with the secret entrypoint'
 
 test('container entrypoint loads only the supported secret-file variables', async () => {
   const entrypoint = await read('deployment/container-entrypoint.sh');
-  for (const name of ['DATABASE_URL', 'MANDATE_API_KEY', 'MANDATE_PRIVATE_KEY_PEM', 'MANDATE_PUBLIC_KEY_PEM']) {
+  for (const name of [
+    'DATABASE_URL',
+    'MANDATE_RECOVERY_TARGET_URL',
+    'MANDATE_API_KEY',
+    'MANDATE_PRIVATE_KEY_PEM',
+    'MANDATE_PUBLIC_KEY_PEM'
+  ]) {
     assert.match(entrypoint, new RegExp(`load_secret ${name}`));
   }
   assert.match(entrypoint, /Both \$name and \$file_name are set/);
