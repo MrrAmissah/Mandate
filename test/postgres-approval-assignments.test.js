@@ -8,6 +8,7 @@ import {
   createApproverIdentity,
   decideAssignedApproval
 } from '../src/application/approval-operations.js';
+import { recordSecurityEvent } from '../src/application/security-events.js';
 import { createApiCredentialRecord } from '../src/auth/api-credentials.js';
 import { createApprovalRequest, decideApproval } from '../src/domain/approvals.js';
 import { createMandate } from '../src/domain/mandates.js';
@@ -35,7 +36,7 @@ function auth(tenantId, credentialId) {
   return { tenantId, environment: 'test', credentialId, scopes: ['approvals:decide'] };
 }
 
-integration('PostgreSQL rejects free-text decision attribution and serializes eligible approvers', async () => {
+integration('PostgreSQL rejects free-text attribution and requires exact credential audit evidence for one eligible winner', async () => {
   const tenantId = unique('ten_assignment_pg');
   const ownership = { tenantId, environment: 'test' };
   const aliceCredentialId = unique('key_alice');
@@ -128,6 +129,23 @@ integration('PostgreSQL rejects free-text decision attribution and serializes el
     assert.equal(afterSpoof.status, 'PENDING');
 
     await assert.rejects(
+      store.transaction(async (transaction) => {
+        const current = await transaction.get('approvals', ownership, approval.id);
+        await decideAssignedApproval({
+          view: transaction,
+          ownership,
+          approval: current,
+          input: { decision: 'APPROVED', reason: 'Reviewed without audit' },
+          authentication: auth(tenantId, aliceCredentialId),
+          decide: decideApproval,
+          now: new Date('2026-09-05T20:01:30.000Z')
+        });
+      }),
+      /approval decision requires authenticated credential evidence/
+    );
+    assert.equal((await store.get('approvals', ownership, approval.id)).status, 'PENDING');
+
+    await assert.rejects(
       pool.query(
         `UPDATE mandate.approval_assignment_eligibility
          SET created_at = created_at + interval '1 second'
@@ -139,15 +157,35 @@ integration('PostgreSQL rejects free-text decision attribution and serializes el
 
     const decideAs = (credentialId) => store.transaction(async (transaction) => {
       const current = await transaction.get('approvals', ownership, approval.id);
-      return decideAssignedApproval({
+      const decisionNow = new Date('2026-09-05T20:02:00.000Z');
+      const result = await decideAssignedApproval({
         view: transaction,
         ownership,
         approval: current,
         input: { decision: 'APPROVED', reason: 'Reviewed' },
         authentication: auth(tenantId, credentialId),
         decide: decideApproval,
-        now: new Date('2026-09-05T20:02:00.000Z')
+        now: decisionNow
       });
+      await recordSecurityEvent({
+        transaction,
+        ownership,
+        authentication: auth(tenantId, credentialId),
+        actorType: 'APPROVER',
+        actorId: result.approver.id,
+        requestId: `req_${credentialId}`,
+        type: 'approval.decided',
+        objectType: 'approval',
+        objectId: result.approval.id,
+        data: {
+          decision: result.approval.status,
+          approverId: result.approver.id,
+          credentialId,
+          assignmentId: result.assignment.id
+        },
+        now: decisionNow
+      });
+      return result;
     });
 
     const outcomes = await Promise.allSettled([
@@ -170,6 +208,19 @@ integration('PostgreSQL rejects free-text decision attribution and serializes el
     assert.equal(persisted.rows[0].status, 'APPROVED');
     assert.equal(persisted.rows[0].decided_by, winner.approver.id);
     assert.equal(persisted.rows[0].decided_by_approver_id, winner.approver.id);
+
+    const audit = await pool.query(
+      `SELECT actor_id, data
+       FROM mandate.audit_events
+       WHERE tenant_id=$1 AND environment='test'
+         AND type='approval.decided' AND object_type='approval' AND object_id=$2`,
+      [tenantId, approval.id]
+    );
+    assert.equal(audit.rowCount, 1);
+    assert.equal(audit.rows[0].actor_id, winner.approver.id);
+    assert.equal(audit.rows[0].data.approverId, winner.approver.id);
+    assert.ok([aliceCredentialId, bobCredentialId].includes(audit.rows[0].data.credentialId));
+    assert.equal(audit.rows[0].data.assignmentId, setup.assignment.id);
   } finally {
     await store.close();
   }
