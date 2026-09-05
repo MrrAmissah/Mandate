@@ -93,13 +93,13 @@ test('PostgreSQL readiness checks the required migration with a bounded query ti
     ready: true,
     reason: 'READY',
     mode: 'postgres',
-    requiredMigration: '012_approval_decision_credential_evidence',
+    requiredMigration: '013_approval_inbox_indexes',
     databaseObservedAt: '2026-07-30T00:00:01.000Z',
     checkedAt: '2026-07-30T00:00:00.000Z'
   });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].query_timeout, 750);
-  assert.deepEqual(calls[0].values, ['012_approval_decision_credential_evidence']);
+  assert.deepEqual(calls[0].values, ['013_approval_inbox_indexes']);
 });
 
 test('readiness fails closed for missing migration, database errors and shutdown', async () => {
@@ -119,7 +119,7 @@ test('readiness fails closed for missing migration, database errors and shutdown
     ready: false,
     reason: 'DATABASE_UNAVAILABLE',
     mode: 'postgres',
-    requiredMigration: '012_approval_decision_credential_evidence',
+    requiredMigration: '013_approval_inbox_indexes',
     checkedAt: '2026-07-30T00:00:00.000Z'
   });
 
