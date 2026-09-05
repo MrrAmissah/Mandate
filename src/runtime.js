@@ -58,9 +58,17 @@ export async function createRuntime({ env = process.env } = {}) {
 
   const signer = createReceiptSigner({ privateKeyPem, publicKeyPem, keyId });
   const ownership = { tenantId, environment };
+  const credential = createApiCredentialRecord({
+    id: credentialId,
+    tenantId,
+    environment,
+    name: env.MANDATE_API_CREDENTIAL_NAME ?? 'Runtime bootstrap credential',
+    scopes
+  }, apiKey);
 
   if (mode === 'memory') {
     const store = new MemoryStore(ownership);
+    store.save('apiCredentials', ownership, credential);
     const signingKeys = createStaticSigningKeyRegistry(signer);
     const health = createApiHealth({ mode, queryTimeoutMs: healthConfig.queryTimeoutMs });
     await signingKeys.registerActive(signer);
@@ -91,10 +99,6 @@ export async function createRuntime({ env = process.env } = {}) {
   });
 
   try {
-    const credential = createApiCredentialRecord({
-      id: credentialId, tenantId, environment,
-      name: env.MANDATE_API_CREDENTIAL_NAME ?? 'Runtime bootstrap credential', scopes
-    }, apiKey);
     await ensurePostgresBootstrap(store, { tenantId, tenantName, environment, credential });
     await signingKeys.registerActive({
       keyId: signer.keyId,
