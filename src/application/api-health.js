@@ -1,4 +1,4 @@
-const REQUIRED_MIGRATION = '013_approval_inbox_indexes';
+const REQUIRED_MIGRATION = '014_approval_expiry';
 
 function integer(value, fallback, { name, minimum, maximum }) {
   const parsed = value === undefined ? fallback : Number(value);

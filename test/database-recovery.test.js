@@ -136,6 +136,8 @@ test('backup uses one exported snapshot and keeps the destination reserved until
       if (sql.includes('FROM mandate.schema_migrations')) {
         return {
           rows: [
+            { version: '014_approval_expiry' },
+            { version: '013_approval_inbox_indexes' },
             { version: '012_approval_decision_credential_evidence' },
             { version: '011_approval_assignments' }
           ]
@@ -175,7 +177,7 @@ test('backup uses one exported snapshot and keeps the destination reserved until
     );
     assert.equal(toolArgs.options.databaseSsl, true);
     const manifest = JSON.parse(await readFile(result.manifestPath, 'utf8'));
-    assert.equal(manifest.requiredMigration, '012_approval_decision_credential_evidence');
+    assert.equal(manifest.requiredMigration, '014_approval_expiry');
     assert.equal(manifest.counts.idempotency_records, '0');
     assert.equal(manifest.counts.outbox_dead_letter_replays, '0');
     assert.equal(manifest.counts.approver_identities, '0');
@@ -191,7 +193,13 @@ test('backup uses one exported snapshot and keeps the destination reserved until
 });
 
 test('restore verification requires exact migration and critical-table counts', () => {
-  const migrations = ['001_initial', '011_approval_assignments', '012_approval_decision_credential_evidence'];
+  const migrations = [
+    '001_initial',
+    '011_approval_assignments',
+    '012_approval_decision_credential_evidence',
+    '013_approval_inbox_indexes',
+    '014_approval_expiry'
+  ];
   const counts = Object.fromEntries(databaseRecovery.criticalTables.map((table, index) => [table, String(index + 1)]));
   assert.doesNotThrow(() => assertSnapshotMatchesManifest({ migrations, counts }, { migrations, counts }));
   assert.throws(
@@ -204,7 +212,7 @@ test('restore verification requires exact migration and critical-table counts', 
   );
 });
 
-test('approval authority and assignment evidence are critical recovery state', () => {
+test('approval authority, assignment, and expiry evidence require the current recovery schema', () => {
   for (const table of [
     'approver_identities',
     'approver_credential_bindings',
@@ -215,5 +223,5 @@ test('approval authority and assignment evidence are critical recovery state', (
   ]) {
     assert.ok(databaseRecovery.criticalTables.includes(table));
   }
-  assert.equal(databaseRecovery.requiredMigration, '012_approval_decision_credential_evidence');
+  assert.equal(databaseRecovery.requiredMigration, '014_approval_expiry');
 });
