@@ -17,7 +17,7 @@ function observableProcess() {
     lastCycleAt: '2026-09-06T12:00:00.000Z',
     lastSuccessAt: '2026-09-06T11:59:59.000Z',
     lastErrorCode: '40001',
-    backlogPendingExpiring: 5,
+    backlogExpiring: 5,
     backlogDue: 3,
     oldestDueAt: '2026-09-06T11:58:00.000Z',
     oldestOverdueSeconds: 120,
@@ -84,6 +84,7 @@ test('approval expiry health exposes liveness, cached readiness, and Prometheus 
     const text = await metrics.text();
     assert.match(text, /mandate_approval_expiry_cycles_total 7/);
     assert.match(text, /mandate_approval_expiry_expired_total 11/);
+    assert.match(text, /mandate_approval_expiry_backlog_expiring 5/);
     assert.match(text, /mandate_approval_expiry_backlog_due 3/);
     assert.match(text, /mandate_approval_expiry_oldest_overdue_seconds 120/);
     assert.match(text, /mandate_approval_expiry_ready 1/);
@@ -134,7 +135,7 @@ test('approval expiry metrics render zero before backlog observation', () => {
         limitReachedTotal: 0,
         consecutiveFailures: 0,
         lastSuccessAt: null,
-        backlogPendingExpiring: null,
+        backlogExpiring: null,
         backlogDue: null,
         oldestOverdueSeconds: null,
         backlogObservedAt: null
@@ -145,6 +146,7 @@ test('approval expiry metrics render zero before backlog observation', () => {
     }
   };
   const metrics = renderApprovalExpiryMetrics(expiryProcess, new Date('2026-09-06T12:00:00.000Z'));
+  assert.match(metrics, /mandate_approval_expiry_backlog_expiring 0/);
   assert.match(metrics, /mandate_approval_expiry_backlog_due 0/);
   assert.match(metrics, /mandate_approval_expiry_backlog_observed_unixtime_seconds 0/);
   assert.match(metrics, /mandate_approval_expiry_ready 0/);
