@@ -8,9 +8,9 @@ async function contract() {
   return readFile(contractUrl, 'utf8');
 }
 
-test('stable OpenAPI publishes the current execution, approval-assignment, and inbox contract', async () => {
+test('stable OpenAPI publishes the current execution, approval-assignment, inbox, and expiry contract', async () => {
   const yaml = await contract();
-  assert.match(yaml, /version: 0\.9\.0/);
+  assert.match(yaml, /version: 0\.10\.0/);
   for (const route of [
     '/v1/mandates:',
     '/v1/approver-identities:',
@@ -70,6 +70,24 @@ test('approval contract requires assignment and forbids caller-supplied decision
   assert.doesNotMatch(decideOperation, /decidedBy:/);
   assert.match(yaml, /decidedByApproverId:/);
   assert.match(yaml, /Group assignments snapshot/);
+});
+
+test('approval expiry contract exposes durable evidence and database-time deadline semantics', async () => {
+  const yaml = await contract();
+  const approval = yaml.match(/    Approval:([\s\S]*?)\n    ApprovalAssignment:/)?.[1];
+  assert.ok(approval, 'missing Approval schema');
+  assert.match(approval, /status: \{ type: string, enum: \[PENDING, APPROVED, REJECTED, EXPIRED, CANCELLED, CONSUMED\] \}/);
+  assert.match(approval, /expiredAt:/);
+  assert.match(approval, /expirationReason:/);
+  assert.match(approval, /expirationRequestId:/);
+
+  const assignment = yaml.match(/    ApprovalAssignment:([\s\S]*?)\n    AssignedApproval:/)?.[1];
+  assert.ok(assignment, 'missing ApprovalAssignment schema');
+  assert.match(assignment, /status: \{ type: string, enum: \[ACTIVE, SUPERSEDED, CANCELLED, EXPIRED\] \}/);
+
+  assert.match(yaml, /overdue PENDING or APPROVED-but-unconsumed approvals converge to durable EXPIRED state/);
+  assert.match(yaml, /APPROVAL_EXPIRED/);
+  assert.match(yaml, /An APPROVED approval cannot be consumed after expiresAt/);
 });
 
 test('approval inbox contract is current-authority scoped and distinguishes actionable from pending', async () => {
@@ -136,4 +154,5 @@ test('OpenAPI decision, mandate, approval, and execution fields match runtime na
   assert.match(yaml, /completionRequestId:/);
   assert.match(yaml, /cancelledByCredentialId:/);
   assert.match(yaml, /eligibleApproverIds:/);
+  assert.match(yaml, /expiredAt:/);
 });
