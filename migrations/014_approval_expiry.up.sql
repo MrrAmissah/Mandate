@@ -27,9 +27,9 @@ ALTER TABLE mandate.approval_assignments
     (status IN ('SUPERSEDED', 'CANCELLED', 'EXPIRED') AND ended_at IS NOT NULL AND end_reason IS NOT NULL)
   );
 
-CREATE INDEX approvals_pending_expiry_scope_idx
+CREATE INDEX approvals_expiring_scope_idx
   ON mandate.approvals (environment, tenant_id, expires_at, id)
-  WHERE status = 'PENDING' AND expires_at IS NOT NULL;
+  WHERE status IN ('PENDING', 'APPROVED') AND expires_at IS NOT NULL;
 
 CREATE OR REPLACE FUNCTION mandate.guard_approval_evidence_immutability()
 RETURNS trigger
@@ -114,7 +114,66 @@ DECLARE
   matched_assignment_id text;
   expired_assignment_id text;
 BEGIN
-  IF OLD.status = 'PENDING' AND NEW.status IN ('APPROVED', 'REJECTED', 'CANCELLED', 'EXPIRED') THEN
+  IF NEW.status = 'EXPIRED' AND OLD.status IN ('PENDING', 'APPROVED') THEN
+    SELECT * INTO current_approval
+      FROM mandate.approvals
+     WHERE tenant_id = NEW.tenant_id
+       AND environment = NEW.environment
+       AND id = NEW.id;
+
+    IF current_approval.expires_at IS NULL
+       OR current_approval.expires_at > clock_timestamp()
+       OR current_approval.expired_at IS NULL
+       OR current_approval.expired_at < current_approval.expires_at
+       OR current_approval.expiration_reason <> 'DEADLINE_ELAPSED'
+       OR current_approval.expiration_request_id IS NULL THEN
+      RAISE EXCEPTION 'approval expiry requires a reached deadline and immutable expiry evidence';
+    END IF;
+
+    SELECT assignment.id INTO expired_assignment_id
+      FROM mandate.approval_assignments assignment
+     WHERE assignment.tenant_id = NEW.tenant_id
+       AND assignment.environment = NEW.environment
+       AND assignment.approval_id = NEW.id
+       AND assignment.status = 'EXPIRED'
+       AND assignment.ended_at = current_approval.expired_at
+       AND assignment.end_reason = 'APPROVAL_EXPIRED'
+     ORDER BY assignment.assigned_at DESC, assignment.id
+     LIMIT 1;
+
+    IF EXISTS (
+      SELECT 1 FROM mandate.approval_assignments assignment
+       WHERE assignment.tenant_id = NEW.tenant_id
+         AND assignment.environment = NEW.environment
+         AND assignment.approval_id = NEW.id
+         AND assignment.status = 'ACTIVE'
+    ) THEN
+      RAISE EXCEPTION 'expired approval cannot retain an active assignment';
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1
+        FROM mandate.audit_events event
+       WHERE event.tenant_id = NEW.tenant_id
+         AND event.environment = NEW.environment
+         AND event.type = 'approval.expired'
+         AND event.object_type = 'approval'
+         AND event.object_id = NEW.id
+         AND event.actor_type = 'SYSTEM'
+         AND event.request_id = current_approval.expiration_request_id
+         AND event.data ->> 'previousStatus' = OLD.status
+         AND event.data ->> 'reason' = 'DEADLINE_ELAPSED'
+         AND event.data ->> 'expiresAt' = to_char(current_approval.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+         AND event.data ->> 'expiredAt' = to_char(current_approval.expired_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+         AND (
+           (expired_assignment_id IS NULL AND event.data ->> 'assignmentId' IS NULL)
+           OR event.data ->> 'assignmentId' = expired_assignment_id
+         )
+    ) THEN
+      RAISE EXCEPTION 'approval expiry requires immutable system audit evidence';
+    END IF;
+
+  ELSIF OLD.status = 'PENDING' AND NEW.status IN ('APPROVED', 'REJECTED', 'CANCELLED') THEN
     SELECT * INTO current_approval
       FROM mandate.approvals
      WHERE tenant_id = NEW.tenant_id
@@ -179,7 +238,7 @@ BEGIN
       ) THEN
         RAISE EXCEPTION 'approval decision requires authenticated credential evidence';
       END IF;
-    ELSIF NEW.status = 'CANCELLED' THEN
+    ELSE
       IF current_approval.expires_at IS NOT NULL AND current_approval.expires_at <= clock_timestamp() THEN
         RAISE EXCEPTION 'approval cancellation cannot commit after expiry deadline';
       END IF;
@@ -188,56 +247,16 @@ BEGIN
          OR current_approval.cancellation_reason IS NULL THEN
         RAISE EXCEPTION 'approval cancellation requires immutable operator evidence';
       END IF;
-    ELSE
-      IF current_approval.expires_at IS NULL
-         OR current_approval.expires_at > clock_timestamp()
-         OR current_approval.expired_at IS NULL
-         OR current_approval.expired_at < current_approval.expires_at
-         OR current_approval.expiration_reason <> 'DEADLINE_ELAPSED'
-         OR current_approval.expiration_request_id IS NULL THEN
-        RAISE EXCEPTION 'approval expiry requires a reached deadline and immutable expiry evidence';
-      END IF;
+    END IF;
 
-      SELECT assignment.id INTO expired_assignment_id
-        FROM mandate.approval_assignments assignment
-       WHERE assignment.tenant_id = NEW.tenant_id
-         AND assignment.environment = NEW.environment
-         AND assignment.approval_id = NEW.id
-         AND assignment.status = 'EXPIRED'
-         AND assignment.ended_at = current_approval.expired_at
-         AND assignment.end_reason = 'APPROVAL_EXPIRED'
-       ORDER BY assignment.assigned_at DESC, assignment.id
-       LIMIT 1;
-
-      IF EXISTS (
-        SELECT 1 FROM mandate.approval_assignments assignment
-         WHERE assignment.tenant_id = NEW.tenant_id
-           AND assignment.environment = NEW.environment
-           AND assignment.approval_id = NEW.id
-           AND assignment.status = 'ACTIVE'
-      ) THEN
-        RAISE EXCEPTION 'expired approval cannot retain an active assignment';
-      END IF;
-
-      IF NOT EXISTS (
-        SELECT 1
-          FROM mandate.audit_events event
-         WHERE event.tenant_id = NEW.tenant_id
-           AND event.environment = NEW.environment
-           AND event.type = 'approval.expired'
-           AND event.object_type = 'approval'
-           AND event.object_id = NEW.id
-           AND event.actor_type = 'SYSTEM'
-           AND event.request_id = current_approval.expiration_request_id
-           AND event.data ->> 'expiresAt' = to_char(current_approval.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
-           AND event.data ->> 'expiredAt' = to_char(current_approval.expired_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
-           AND (
-             (expired_assignment_id IS NULL AND event.data ->> 'assignmentId' IS NULL)
-             OR event.data ->> 'assignmentId' = expired_assignment_id
-           )
-      ) THEN
-        RAISE EXCEPTION 'approval expiry requires immutable system audit evidence';
-      END IF;
+  ELSIF OLD.status = 'APPROVED' AND NEW.status = 'CONSUMED' THEN
+    SELECT * INTO current_approval
+      FROM mandate.approvals
+     WHERE tenant_id = NEW.tenant_id
+       AND environment = NEW.environment
+       AND id = NEW.id;
+    IF current_approval.expires_at IS NOT NULL AND current_approval.expires_at <= clock_timestamp() THEN
+      RAISE EXCEPTION 'approval consumption cannot commit after expiry deadline';
     END IF;
   END IF;
 
