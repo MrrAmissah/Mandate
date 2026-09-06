@@ -11,6 +11,7 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "worker:attempt-expiry": "node scripts/run-action-attempt-expiry.js",
+    "worker:approval-expiry": "node scripts/run-approval-expiry.js",
     "worker:outbox": "node scripts/run-outbox-worker.js",
     "outbox:dead-letter:list": "node scripts/list-outbox-dead-letters.js",
     "outbox:dead-letter:replay": "node scripts/replay-outbox-dead-letter.js",
