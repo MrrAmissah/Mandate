@@ -1,9 +1,10 @@
 const RUNTIME_ROLE_IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
-export const DATABASE_ROLE_POLICY_VERSION = '2026-09-05.1';
+export const DATABASE_ROLE_POLICY_VERSION = '2026-09-06.1';
 
 const ROLE_ENVIRONMENT = Object.freeze({
   api: 'MANDATE_DATABASE_API_ROLE',
   expiry: 'MANDATE_DATABASE_EXPIRY_ROLE',
+  approvalExpiry: 'MANDATE_DATABASE_APPROVAL_EXPIRY_ROLE',
   outbox: 'MANDATE_DATABASE_OUTBOX_ROLE',
   maintenance: 'MANDATE_DATABASE_MAINTENANCE_ROLE',
   operator: 'MANDATE_DATABASE_OPERATOR_ROLE'
@@ -12,6 +13,7 @@ const ROLE_ENVIRONMENT = Object.freeze({
 const DEFAULT_ROLES = Object.freeze({
   api: 'mandate_api',
   expiry: 'mandate_expiry_worker',
+  approvalExpiry: 'mandate_approval_expiry_worker',
   outbox: 'mandate_outbox_worker',
   maintenance: 'mandate_maintenance',
   operator: 'mandate_operator'
@@ -46,6 +48,14 @@ const TABLE_GRANTS = Object.freeze({
     audit_events: ['SELECT', 'INSERT'],
     outbox_messages: ['SELECT', 'INSERT']
   }),
+  approvalExpiry: Object.freeze({
+    schema_migrations: ['SELECT'],
+    approvals: ['SELECT', 'UPDATE'],
+    approval_assignments: ['SELECT', 'UPDATE'],
+    audit_sequences: ['SELECT', 'INSERT', 'UPDATE'],
+    audit_events: ['SELECT', 'INSERT'],
+    outbox_messages: ['SELECT', 'INSERT']
+  }),
   outbox: Object.freeze({
     schema_migrations: ['SELECT'],
     outbox_messages: ['SELECT', 'UPDATE'],
@@ -65,7 +75,7 @@ const TABLE_GRANTS = Object.freeze({
   })
 });
 
-const REQUIRED_MIGRATION = '011_approval_assignments';
+const REQUIRED_MIGRATION = '014_approval_expiry';
 const POLICY_LOCK_NAME = 'mandate:database-role-policy';
 const SESSION_TERMINATION_TIMEOUT_MS = 5_000;
 
