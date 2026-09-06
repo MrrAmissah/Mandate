@@ -337,7 +337,7 @@ This phase must not weaken canonical JSON verification or the append-only correc
 
 ## Phase 4 — approval operations
 
-Status: Phase 4A assignment authority and Phase 4B authority-scoped inbox are implemented. Phase 4C approval expiry/cancellation processing is the next trust dependency.
+Status: Phase 4A assignment authority, Phase 4B authority-scoped inbox, and Phase 4C database-time approval expiry are implemented. Phase 4D approval evidence is the next trust dependency.
 
 ### Phase 4A — approval assignment model
 
@@ -374,7 +374,7 @@ Exit gate for 4A:
 
 ### Phase 4B — approval inbox API
 
-Status: implemented in the approval-inbox tranche.
+Status: merged.
 
 Delivered:
 
@@ -388,7 +388,7 @@ Delivered:
 - reassignment removing prior assignee visibility and terminal states disappearing from the inbox;
 - bounded keyset pagination over `(requested_at, id)` with a database-side `limit + 1` window;
 - migration 013 approver-first eligibility and pending-order indexes;
-- API readiness requiring migration 013 while recovery trust-state verification remains correctly anchored to migration 012 because 013 is index-only;
+- API readiness initially requiring migration 013 for the bounded read posture;
 - OpenAPI v0.9.0 and aligned API/security/persistence documentation;
 - memory adversarial tests and a real PostgreSQL authority/isolation/index proof.
 
@@ -400,22 +400,45 @@ Exit gate for 4B:
 - terminal approvals do not remain actionable inbox work;
 - overdue pending approvals are never represented as actionable;
 - pagination remains bounded and does not require loading unrelated tenant approval traffic;
-- the production API fails readiness until migration 013's intended read indexes are present.
+- the production API does not serve the inbox without its intended read indexes.
 
-### Phase 4C — approval expiry/cancellation process
+### Phase 4C — database-time approval expiry
 
-Next dependency.
+Status: implemented in the approval-expiry tranche.
 
-Scope:
+Delivered:
 
-- database-time expiry separate from action-attempt expiry;
-- durable system evidence;
-- bounded claims and multi-worker safety;
-- notification/resumption events through the outbox;
-- precedence rules among decision, reassignment, cancellation, and expiry;
-- explicit convergence between overdue inbox inspection and durable `EXPIRED` materialization.
+- migration `014_approval_expiry` with immutable `expired_at`, `expiration_reason`, and `expiration_request_id` evidence;
+- PostgreSQL `clock_timestamp()` as the live approval deadline authority;
+- expirable-state coverage for both `PENDING` and `APPROVED` approvals so approval itself does not create unlimited lifetime;
+- bounded `(environment, tenant_id, expires_at, id)` partial index and `FOR UPDATE SKIP LOCKED` claims;
+- one-winner `PENDING|APPROVED → EXPIRED` materialization across concurrent workers;
+- active assignment termination as `EXPIRED` with `APPROVAL_EXPIRED` end reason in the same transaction;
+- immutable `approval.expired` audit/outbox evidence including the prior approval state, deadline, materialization time, reason and assignment ID;
+- database-time rejection of post-deadline decision, cancellation, reassignment/new assignment and `APPROVED → CONSUMED` transitions;
+- controlled `409 APPROVAL_EXPIRED` translation for database deadline races;
+- a standalone `worker:approval-expiry` process with explicit live worker identity, migration-readiness checks, signal-aware shutdown and bounded cycles;
+- cached expiring/due backlog inspection, oldest-overdue age, loopback-default liveness/readiness, and Prometheus metrics;
+- a separate `mandate_approval_expiry_worker` PostgreSQL role so approval expiry and action-attempt expiry cannot mutate each other's domain tables;
+- production Compose and CI topology for the extra worker/secret/health boundary;
+- API readiness, database-role readiness and backup/restore proof advanced to migration 014;
+- OpenAPI v0.10.0 and aligned security, persistence, deployment, operations, recovery and README contracts;
+- memory tests for pending/approved expiry and real PostgreSQL tests for multi-worker claims, stale application clocks, decision/cancel/reassign precedence and approved-before-deadline consumption races.
+
+Exit gate for 4C:
+
+- an overdue pending approval cannot be decided, cancelled, reassigned, or assigned anew merely because an application clock is stale;
+- a validly approved approval cannot be consumed after its database deadline;
+- delayed worker execution cannot extend authority because PostgreSQL transition guards remain fail-closed;
+- overdue pending and approved approvals converge to one durable `EXPIRED` state with immutable system evidence;
+- an expired approval cannot retain an active assignment;
+- concurrent expiry workers produce exactly one terminal transition/audit/outbox winner;
+- approval-expiry and action-attempt-expiry database identities cannot mutate each other's protected rows;
+- API and recovery readiness reject pre-014 schema posture.
 
 ### Phase 4D — approval evidence
+
+Next dependency.
 
 Scope:
 
@@ -426,7 +449,7 @@ Scope:
 
 ### Phase 4E — multi-party approval
 
-Only after single-approver/group assignment is proven:
+Only after single-approver/group assignment and expiry precedence are proven:
 
 - `1-of-N`;
 - `2-of-3` or general threshold;
@@ -436,7 +459,7 @@ Only after single-approver/group assignment is proven:
 Phase 4 exit gate:
 
 - approval notifications are retried through the outbox;
-- assignment, decision and consumption are fully auditable;
+- assignment, decision, expiry and consumption are fully auditable;
 - expired, cancelled or ineligible approvals cannot authorize an action;
 - connector/UI delivery cannot bypass canonical approval state.
 
@@ -457,37 +480,3 @@ Exit gate:
 - at least one real protected workflow runs end to end;
 - integrations translate to canonical resources and actions;
 - connector-specific behavior never bypasses core evaluation.
-
-## Phase 6 — developer experience
-
-Scope:
-
-- TypeScript SDK;
-- CLI;
-- generated API reference site;
-- quickstarts and runnable examples;
-- policy simulator;
-- local development mode;
-- test clocks and fixture keys;
-- import/export for mandate templates.
-
-Exit gate:
-
-- a new developer can protect a tool call from documentation alone;
-- SDK behavior matches raw HTTP semantics;
-- examples run in CI.
-
-## Phase 7 — tool-call firewall and enterprise controls
-
-Scope:
-
-- user-intent and tool-argument comparison;
-- data-egress policies;
-- untrusted-content provenance markers;
-- policy bundles and organization defaults;
-- SSO/OIDC and role-based administration;
-- audit export, SIEM sinks, retention controls;
-- regional data placement;
-- usage metering and billing hooks.
-
-This phase extends Mandate-API beyond delegated authorization without weakening the deterministic core.
