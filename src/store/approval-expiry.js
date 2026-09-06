@@ -46,20 +46,24 @@ function validateScope(scope) {
   return scope;
 }
 
+function isExpirableStatus(status) {
+  return status === 'PENDING' || status === 'APPROVED';
+}
+
 export async function inspectApprovalExpiryBacklog(store, scope, { now = new Date() } = {}) {
   validateScope(scope);
   if (!isPostgres(store)) {
     const tenantId = scope.tenantId ?? store.defaultOwnership?.tenantId;
     if (!tenantId) throw new TypeError('Memory approval expiry backlog requires a tenantId.');
     const ownership = { tenantId, environment: scope.environment };
-    const pending = (await store.list('approvals', ownership))
-      .filter((approval) => approval.status === 'PENDING' && approval.expiresAt);
-    const due = pending
+    const expiring = (await store.list('approvals', ownership))
+      .filter((approval) => isExpirableStatus(approval.status) && approval.expiresAt);
+    const due = expiring
       .filter((approval) => Date.parse(approval.expiresAt) <= now.getTime())
       .sort((left, right) => Date.parse(left.expiresAt) - Date.parse(right.expiresAt) || left.id.localeCompare(right.id));
     const oldestDueAt = due[0]?.expiresAt ?? null;
     return Object.freeze({
-      pendingExpiringCount: pending.length,
+      expiringCount: expiring.length,
       dueCount: due.length,
       oldestDueAt,
       oldestOverdueSeconds: oldestDueAt
@@ -72,7 +76,7 @@ export async function inspectApprovalExpiryBacklog(store, scope, { now = new Dat
   const result = await queryable(store).query(
     `WITH observed AS (SELECT clock_timestamp() AS observed_at)
      SELECT
-       COUNT(approval.id)::integer AS pending_expiring_count,
+       COUNT(approval.id)::integer AS expiring_count,
        COUNT(approval.id) FILTER (WHERE approval.expires_at <= observed.observed_at)::integer AS due_count,
        MIN(approval.expires_at) FILTER (WHERE approval.expires_at <= observed.observed_at) AS oldest_due_at,
        COALESCE(
@@ -83,7 +87,7 @@ export async function inspectApprovalExpiryBacklog(store, scope, { now = new Dat
        observed.observed_at
      FROM observed
      LEFT JOIN mandate.approvals approval
-       ON approval.status = 'PENDING'
+       ON approval.status IN ('PENDING', 'APPROVED')
       AND approval.expires_at IS NOT NULL
       AND approval.environment = $1
       AND ($2::text IS NULL OR approval.tenant_id = $2)
@@ -92,7 +96,7 @@ export async function inspectApprovalExpiryBacklog(store, scope, { now = new Dat
   );
   const row = result.rows[0];
   return Object.freeze({
-    pendingExpiringCount: Number(row.pending_expiring_count),
+    expiringCount: Number(row.expiring_count),
     dueCount: Number(row.due_count),
     oldestDueAt: timestamp(row.oldest_due_at),
     oldestOverdueSeconds: Number(row.oldest_overdue_seconds),
@@ -111,7 +115,7 @@ export async function expireNextApproval(transaction, scope, { requestId, now = 
     if (!tenantId) throw new TypeError('Memory approval expiry requires a tenantId.');
     const ownership = { tenantId, environment: scope.environment };
     const candidate = (await transaction.list('approvals', ownership))
-      .filter((approval) => approval.status === 'PENDING'
+      .filter((approval) => isExpirableStatus(approval.status)
         && approval.expiresAt
         && Date.parse(approval.expiresAt) <= now.getTime())
       .sort((left, right) => Date.parse(left.expiresAt) - Date.parse(right.expiresAt) || left.id.localeCompare(right.id))[0];
@@ -129,6 +133,7 @@ export async function expireNextApproval(transaction, scope, { requestId, now = 
     }
 
     const expiredAt = now.toISOString();
+    const previousStatus = candidate.status;
     const expired = {
       ...candidate,
       status: 'EXPIRED',
@@ -154,15 +159,16 @@ export async function expireNextApproval(transaction, scope, { requestId, now = 
     return {
       ownership,
       approval: expired,
-      assignmentId: assignment?.id ?? null
+      assignmentId: assignment?.id ?? null,
+      previousStatus
     };
   }
 
   const result = await queryable(transaction).query(
     `WITH candidate AS (
-       SELECT tenant_id, environment, id
+       SELECT tenant_id, environment, id, status AS previous_status
        FROM mandate.approvals
-       WHERE status = 'PENDING'
+       WHERE status IN ('PENDING', 'APPROVED')
          AND expires_at IS NOT NULL
          AND expires_at <= clock_timestamp()
          AND environment = $1
@@ -181,7 +187,7 @@ export async function expireNextApproval(transaction, scope, { requestId, now = 
         WHERE approval.tenant_id = candidate.tenant_id
           AND approval.environment = candidate.environment
           AND approval.id = candidate.id
-       RETURNING approval.*
+       RETURNING approval.*, candidate.previous_status
      ), ended_assignment AS (
        UPDATE mandate.approval_assignments assignment
           SET status = 'EXPIRED',
@@ -205,6 +211,7 @@ export async function expireNextApproval(transaction, scope, { requestId, now = 
   return {
     ownership: { tenantId: row.tenant_id, environment: row.environment },
     approval: approvalFromExpiryRow(row),
-    assignmentId: row.assignment_id ?? null
+    assignmentId: row.assignment_id ?? null,
+    previousStatus: row.previous_status
   };
 }
