@@ -156,7 +156,7 @@ export class ApprovalExpiryProcess {
     this.metrics = {
       cycles: 0, expiredTotal: 0, failures: 0, limitReachedTotal: 0,
       consecutiveFailures: 0, lastCycleAt: null, lastSuccessAt: null,
-      lastErrorCode: null, backlogPendingExpiring: 0, backlogDue: 0,
+      lastErrorCode: null, backlogExpiring: 0, backlogDue: 0,
       oldestDueAt: null, oldestOverdueSeconds: 0, backlogObservedAt: null
     };
   }
@@ -193,7 +193,7 @@ export class ApprovalExpiryProcess {
       if (result.limitReached) this.metrics.limitReachedTotal += 1;
       const backlog = await this.worker.backlog();
       const completedAt = dateValue(this.clock(), 'process clock');
-      this.metrics.backlogPendingExpiring = backlog.pendingExpiringCount;
+      this.metrics.backlogExpiring = backlog.expiringCount;
       this.metrics.backlogDue = backlog.dueCount;
       this.metrics.oldestDueAt = backlog.oldestDueAt;
       this.metrics.oldestOverdueSeconds = backlog.oldestOverdueSeconds;
