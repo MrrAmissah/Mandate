@@ -18,10 +18,10 @@ function approval({ id, expiresAt, status = 'PENDING' }) {
     status,
     requestedAt: '2026-09-06T11:00:00.000Z',
     expiresAt,
-    decidedAt: null,
-    decidedBy: null,
-    decidedByApproverId: null,
-    decisionReason: null,
+    decidedAt: status === 'APPROVED' ? '2026-09-06T11:30:00.000Z' : null,
+    decidedBy: status === 'APPROVED' ? 'apv_expiry' : null,
+    decidedByApproverId: status === 'APPROVED' ? 'apv_expiry' : null,
+    decisionReason: status === 'APPROVED' ? 'Approved before deadline' : null,
     cancelledAt: null,
     cancelledByCredentialId: null,
     cancellationReason: null,
@@ -51,15 +51,15 @@ function seedAssignment(store, approvalId, assignmentId = `apa_${approvalId}`) {
   return assignmentId;
 }
 
-test('approval expiry worker materializes deadline expiry with assignment, audit, and outbox evidence', async () => {
+test('approval expiry worker materializes pending and approved deadline expiry with immutable evidence', async () => {
   const store = new MemoryStore(ownership);
-  const due = approval({ id: 'apr_due', expiresAt: '2026-09-06T11:59:59.000Z' });
+  const duePending = approval({ id: 'apr_due_pending', expiresAt: '2026-09-06T11:59:59.000Z' });
+  const dueApproved = approval({ id: 'apr_due_approved', expiresAt: '2026-09-06T11:30:00.000Z', status: 'APPROVED' });
   const future = approval({ id: 'apr_future', expiresAt: '2026-09-06T12:05:00.000Z' });
-  const alreadyDecided = approval({ id: 'apr_decided', expiresAt: '2026-09-06T11:30:00.000Z', status: 'APPROVED' });
-  store.save('approvals', ownership, due);
-  store.save('approvals', ownership, future);
-  store.save('approvals', ownership, alreadyDecided);
-  const assignmentId = seedAssignment(store, due.id);
+  const rejected = approval({ id: 'apr_rejected', expiresAt: '2026-09-06T11:30:00.000Z', status: 'REJECTED' });
+  for (const item of [duePending, dueApproved, future, rejected]) store.save('approvals', ownership, item);
+  const pendingAssignmentId = seedAssignment(store, duePending.id);
+  const approvedAssignmentId = seedAssignment(store, dueApproved.id);
 
   const worker = new ApprovalExpiryWorker({
     store,
@@ -68,45 +68,49 @@ test('approval expiry worker materializes deadline expiry with assignment, audit
     now: () => now
   });
 
-  const result = await worker.pollOnce();
-  assert.equal(result.status, 'EXPIRED');
-  assert.equal(result.approval.id, due.id);
-  assert.equal(result.approval.status, 'EXPIRED');
-  assert.equal(result.approval.expiredAt, now.toISOString());
-  assert.equal(result.approval.expirationReason, 'DEADLINE_ELAPSED');
-  assert.match(result.approval.expirationRequestId, /^sys_approval_expiry_/);
-  assert.equal(result.assignmentId, assignmentId);
+  const first = await worker.pollOnce();
+  assert.equal(first.status, 'EXPIRED');
+  assert.equal(first.approval.id, dueApproved.id);
+  assert.equal(first.approval.status, 'EXPIRED');
+  assert.equal(first.approval.expiredAt, now.toISOString());
+  assert.equal(first.approval.expirationReason, 'DEADLINE_ELAPSED');
+  assert.match(first.approval.expirationRequestId, /^sys_approval_expiry_/);
+  assert.equal(first.assignmentId, approvedAssignmentId);
 
-  const assignment = store.state.approvalAssignments.get(`${ownership.tenantId}:${ownership.environment}:${assignmentId}`);
-  assert.equal(assignment.status, 'EXPIRED');
-  assert.equal(assignment.endedAt, now.toISOString());
-  assert.equal(assignment.endReason, 'APPROVAL_EXPIRED');
-  assert.equal(assignment.version, 1);
+  const second = await worker.pollOnce();
+  assert.equal(second.status, 'EXPIRED');
+  assert.equal(second.approval.id, duePending.id);
+  assert.equal(second.assignmentId, pendingAssignmentId);
+
+  for (const assignmentId of [pendingAssignmentId, approvedAssignmentId]) {
+    const assignment = store.state.approvalAssignments.get(`${ownership.tenantId}:${ownership.environment}:${assignmentId}`);
+    assert.equal(assignment.status, 'EXPIRED');
+    assert.equal(assignment.endedAt, now.toISOString());
+    assert.equal(assignment.endReason, 'APPROVAL_EXPIRED');
+    assert.equal(assignment.version, 1);
+  }
 
   assert.equal(store.get('approvals', ownership, future.id).status, 'PENDING');
-  assert.equal(store.get('approvals', ownership, alreadyDecided.id).status, 'APPROVED');
+  assert.equal(store.get('approvals', ownership, rejected.id).status, 'REJECTED');
 
   const events = store.list('auditEvents', ownership).filter((event) => event.type === 'approval.expired');
-  assert.equal(events.length, 1);
-  assert.equal(events[0].actorType, 'SYSTEM');
-  assert.equal(events[0].actorId, 'approval-expiry-worker-memory');
-  assert.equal(events[0].objectId, due.id);
-  assert.equal(events[0].data.assignmentId, assignmentId);
-  assert.equal(events[0].data.expiresAt, due.expiresAt);
-  assert.equal(events[0].data.expiredAt, now.toISOString());
-  assert.equal(store.list('outboxMessages', ownership).filter((message) => message.eventType === 'approval.expired').length, 1);
+  assert.equal(events.length, 2);
+  assert.deepEqual(new Set(events.map((event) => event.data.previousStatus)), new Set(['PENDING', 'APPROVED']));
+  assert.ok(events.every((event) => event.actorType === 'SYSTEM'));
+  assert.ok(events.every((event) => event.actorId === 'approval-expiry-worker-memory'));
+  assert.equal(store.list('outboxMessages', ownership).filter((message) => message.eventType === 'approval.expired').length, 2);
 
   assert.deepEqual(await worker.pollOnce(), { status: 'IDLE' });
 });
 
-test('approval expiry drain is bounded and ordered by deadline', async () => {
+test('approval expiry drain is bounded and ordered by deadline across pending and approved state', async () => {
   const store = new MemoryStore(ownership);
-  for (const [id, expiresAt] of [
-    ['apr_later', '2026-09-06T11:59:59.000Z'],
-    ['apr_first', '2026-09-06T11:00:00.000Z'],
-    ['apr_middle', '2026-09-06T11:30:00.000Z']
+  for (const [id, expiresAt, status] of [
+    ['apr_later', '2026-09-06T11:59:59.000Z', 'PENDING'],
+    ['apr_first', '2026-09-06T11:00:00.000Z', 'APPROVED'],
+    ['apr_middle', '2026-09-06T11:30:00.000Z', 'PENDING']
   ]) {
-    store.save('approvals', ownership, approval({ id, expiresAt }));
+    store.save('approvals', ownership, approval({ id, expiresAt, status }));
   }
   const worker = new ApprovalExpiryWorker({
     store,
@@ -122,18 +126,19 @@ test('approval expiry drain is bounded and ordered by deadline', async () => {
   assert.equal(second.limitReached, false);
 });
 
-test('approval expiry backlog counts only pending approvals with deadlines', async () => {
+test('approval expiry backlog counts only expirable pending or approved approvals with deadlines', async () => {
   const store = new MemoryStore(ownership);
   store.save('approvals', ownership, approval({ id: 'apr_due_backlog', expiresAt: '2026-09-06T11:59:00.000Z' }));
+  store.save('approvals', ownership, approval({ id: 'apr_approved_due', expiresAt: '2026-09-06T11:58:00.000Z', status: 'APPROVED' }));
   store.save('approvals', ownership, approval({ id: 'apr_future_backlog', expiresAt: '2026-09-06T12:10:00.000Z' }));
   store.save('approvals', ownership, approval({ id: 'apr_no_deadline', expiresAt: null }));
   store.save('approvals', ownership, approval({ id: 'apr_terminal_backlog', expiresAt: '2026-09-06T11:00:00.000Z', status: 'REJECTED' }));
 
   assert.deepEqual(await inspectApprovalExpiryBacklog(store, ownership, { now }), {
-    pendingExpiringCount: 2,
-    dueCount: 1,
-    oldestDueAt: '2026-09-06T11:59:00.000Z',
-    oldestOverdueSeconds: 60,
+    expiringCount: 3,
+    dueCount: 2,
+    oldestDueAt: '2026-09-06T11:58:00.000Z',
+    oldestOverdueSeconds: 120,
     observedAt: now.toISOString()
   });
 });
