@@ -41,7 +41,7 @@ export class ApprovalExpiryWorker {
       });
       if (!expired) return Object.freeze({ status: 'IDLE' });
 
-      const { ownership, approval, assignmentId } = expired;
+      const { ownership, approval, assignmentId, previousStatus } = expired;
       await recordSecurityEvent({
         transaction,
         ownership,
@@ -54,6 +54,7 @@ export class ApprovalExpiryWorker {
         data: {
           mandateId: approval.mandateId,
           assignmentId,
+          previousStatus,
           expiresAt: approval.expiresAt,
           expiredAt: approval.expiredAt,
           reason: approval.expirationReason
@@ -65,7 +66,8 @@ export class ApprovalExpiryWorker {
         status: 'EXPIRED',
         ownership,
         approval,
-        assignmentId
+        assignmentId,
+        previousStatus
       });
     });
   }
