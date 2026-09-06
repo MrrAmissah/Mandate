@@ -32,6 +32,19 @@ function json(value) {
   return JSON.stringify(value);
 }
 
+function translatePostgresDomainError(error) {
+  if (error instanceof DomainError) return error;
+  const message = typeof error?.message === 'string' ? error.message : '';
+  if (
+    message.includes('approval decision cannot commit after expiry deadline')
+    || message.includes('approval cancellation cannot commit after expiry deadline')
+    || message.includes('approval is unavailable for a new active assignment')
+  ) {
+    return new DomainError('APPROVAL_EXPIRED', 'This approval request has expired.', 409);
+  }
+  return error;
+}
+
 function credentialFromRow(row) {
   return row && {
     id: row.id,
@@ -91,6 +104,9 @@ function approvalFromRow(row) {
     cancelledAt: timestamp(row.cancelled_at),
     cancelledByCredentialId: row.cancelled_by_credential_id ?? null,
     cancellationReason: row.cancellation_reason ?? null,
+    expiredAt: timestamp(row.expired_at),
+    expirationReason: row.expiration_reason ?? null,
+    expirationRequestId: row.expiration_request_id ?? null,
     consumedAt: timestamp(row.consumed_at),
     consumedByDecisionId: row.consumed_by_decision_id
   };
@@ -275,18 +291,23 @@ class PostgresView {
         await this.queryable.query(
           `INSERT INTO mandate.approvals
             (tenant_id, environment, id, mandate_id, agent_id, action, resource, summary, status,
-             requested_at, expires_at, decided_at, decided_by, decision_reason, consumed_at,
-             consumed_by_decision_id, version)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0)
+             requested_at, expires_at, decided_at, decided_by, decision_reason,
+             expired_at, expiration_reason, expiration_request_id,
+             consumed_at, consumed_by_decision_id, version)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,0)
            ON CONFLICT (tenant_id, environment, id) DO UPDATE SET
              status = EXCLUDED.status, decided_at = EXCLUDED.decided_at,
              decided_by = EXCLUDED.decided_by, decision_reason = EXCLUDED.decision_reason,
+             expired_at = EXCLUDED.expired_at,
+             expiration_reason = EXCLUDED.expiration_reason,
+             expiration_request_id = EXCLUDED.expiration_request_id,
              consumed_at = EXCLUDED.consumed_at,
              consumed_by_decision_id = EXCLUDED.consumed_by_decision_id,
              version = mandate.approvals.version + 1`,
           [scope.tenantId, scope.environment, entity.id, entity.mandateId, entity.agentId,
             entity.action, entity.resource, entity.summary, entity.status, entity.requestedAt,
             entity.expiresAt, entity.decidedAt, entity.decidedBy, entity.decisionReason,
+            entity.expiredAt ?? null, entity.expirationReason ?? null, entity.expirationRequestId ?? null,
             entity.consumedAt, entity.consumedByDecisionId]
         );
         break;
@@ -407,7 +428,7 @@ export class PostgresStore extends PostgresView {
       } catch (error) {
         await client.query('ROLLBACK').catch(() => {});
         if (RETRYABLE_CODES.has(error.code) && attempt < this.maximumTransactionAttempts) continue;
-        throw error;
+        throw translatePostgresDomainError(error);
       } finally {
         client.release();
       }
