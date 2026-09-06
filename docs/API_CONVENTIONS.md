@@ -12,7 +12,7 @@ http://localhost:8787/v1
 
 The major version is encoded in the path. Compatible additions may ship within v1. Breaking field removals, semantic changes, or state-machine changes require an explicit contract review and version change.
 
-The current OpenAPI contract revision is v0.9.0. That document revision is not the same thing as the `/v1` HTTP major version.
+The current OpenAPI contract revision is v0.10.0. That document revision is not the same thing as the `/v1` HTTP major version.
 
 ## 2. Content type
 
@@ -67,6 +67,8 @@ X-Request-Id: req_client_generated_value
 
 The server validates or replaces it and returns the effective value in the `X-Request-Id` response header and error body. Request IDs are diagnostic correlation values, not idempotency controls.
 
+Approval expiry is a system operation rather than a client request. The worker generates `sys_approval_expiry_*` request IDs and persists the identifier with the approval plus immutable audit/outbox evidence.
+
 ## 5. Idempotency
 
 State-changing mutation endpoints support:
@@ -86,7 +88,7 @@ Rules:
 - concurrent first use is resolved atomically;
 - unknown operation scopes are rejected rather than receiving guessed response metadata.
 
-Read-only inbox routes do not create idempotency records.
+Read-only inbox routes and background approval expiry do not create client idempotency records.
 
 ## 6. Errors
 
@@ -115,10 +117,12 @@ Common status mapping:
 | 401 | Missing, invalid, expired, or revoked credential |
 | 403 | Authenticated credential lacks required scope or authority |
 | 404 | Tenant-scoped or current-authority-visible resource does not exist |
-| 409 | State, idempotency, assignment, or concurrency conflict |
+| 409 | State, idempotency, assignment, deadline, or concurrency conflict |
 | 413 | Request exceeds configured size limit |
 | 500 | Unexpected server error |
 | 503 | Required dependency or signing authority unavailable |
+
+`APPROVAL_EXPIRED` is a `409`. PostgreSQL produces this outcome when a decision, cancellation, reassignment/new assignment, or approved-approval consumption reaches the database after `expiresAt`, even if an application host supplies an earlier local timestamp.
 
 Cross-tenant access returns tenant-safe not-found behavior rather than confirming object existence. Inbox item lookup also returns `404` when a pending approval exists administratively but is not visible through the authenticated approver's current assignment authority.
 
@@ -150,12 +154,21 @@ Clients must not parse business semantics from the suffix.
 API timestamps are RFC 3339 UTC strings:
 
 ```text
-2026-07-29T06:45:12.123Z
+2026-09-06T06:45:12.123Z
 ```
 
 Time-window comparisons are half-open where documented, such as `validFrom <= now < validUntil`.
 
-PostgreSQL time is authoritative for live action-attempt expiry, approval-inbox actionable/overdue classification in PostgreSQL mode, and operational backlog age. Application clocks are used only where the relevant domain contract explicitly permits them.
+PostgreSQL time is authoritative for live action-attempt expiry, approval-inbox actionable/overdue classification in PostgreSQL mode, approval mutation/consumption deadline enforcement, approval-expiry materialization, and operational backlog age. Application clocks are used only where the relevant domain contract explicitly permits them.
+
+Approval responses may contain:
+
+- `expiresAt` — authority deadline;
+- `expiredAt` — durable materialization time;
+- `expirationReason` — `DEADLINE_ELAPSED` for worker expiry;
+- `expirationRequestId` — immutable system correlation identifier.
+
+A validly approved request does not obtain unlimited lifetime: if it is not consumed before `expiresAt`, PostgreSQL rejects consumption and the expiry worker may materialize it as `EXPIRED`.
 
 ## 9. Pagination
 
@@ -199,7 +212,7 @@ Administrative approval listing and the authenticated approver inbox are separat
 - `state=PENDING` includes all currently visible durable `PENDING` approvals, including overdue requests whose expiry transition has not yet been materialized;
 - overdue items are returned with `actionable=false` and `overdue=true` and must never be treated as decision authority merely because they remain inspectable.
 
-Reassignment changes the current assignment and therefore removes the item from the previous assignee's inbox. Terminal approval states are not inbox items.
+Reassignment changes the current assignment and therefore removes the item from the previous assignee's inbox. Terminal approval states are not inbox items. An `APPROVED` approval is also not an inbox item, but remains subject to its deadline until consumed.
 
 ## 11. Concurrency and mutable resources
 
@@ -211,24 +224,26 @@ Implemented examples include:
 - single-use approval consumption;
 - one active approval assignment per approval;
 - one terminal approval decision under concurrent eligible approvers;
+- database-time precedence among approval decision, reassignment, cancellation, consumption and expiry;
+- one approval-expiry winner across multiple workers using `FOR UPDATE SKIP LOCKED`;
 - one action-attempt reservation per allowed decision;
 - one root receipt per completed attempt/decision;
 - one direct receipt successor per predecessor;
 - one dead-letter replay replacement per source.
 
-The approval inbox is a derived read model, not a source of authority. Decision/reassignment/cancellation transactions remain the security-critical write boundary even if an inbox response becomes stale immediately after it is read.
+The approval inbox is a derived read model, not a source of authority. Decision/reassignment/cancellation/authorization transactions remain security-critical write boundaries even if an inbox response becomes stale immediately after it is read.
 
 The API does not currently expose a universal ETag/`If-Match` convention. If added later, it must supplement—not replace—database enforcement for security-critical transitions.
 
-## 12. Approval assignment and inbox semantics
+## 12. Approval assignment, inbox, and expiry semantics
 
 Approval creation includes an assignment selector, but persisted approval resources and assignment resources are distinct.
 
 Direct assignment snapshots one approver. Group assignment snapshots the group's active members at assignment time. Later membership additions affect future assignment snapshots only.
 
-Reassignment ends the current assignment and creates a new one with a new eligibility snapshot. It never edits old eligibility rows.
+Reassignment ends the current assignment and creates a new one with a new eligibility snapshot. It never edits old eligibility rows and cannot commit after the approval deadline.
 
-`POST /v1/approvals/{id}/decide` accepts the decision and optional reason. It does not accept authoritative `decidedBy` input. The server derives the approver identity from authentication and persists that identity as decision evidence.
+`POST /v1/approvals/{id}/decide` accepts the decision and optional reason. It does not accept authoritative `decidedBy` input. The server derives the approver identity from authentication and persists that identity as decision evidence. PostgreSQL rejects the decision if the deadline has passed by commit time.
 
 `GET /v1/approval-inbox` and `GET /v1/approval-inbox/{id}` are projections over current authority, not durable assignment history. Visibility requires all of the following at read time:
 
@@ -238,7 +253,9 @@ Reassignment ends the current assignment and creates a new one with a new eligib
 4. the approval has a current `ACTIVE` assignment; and
 5. the approver identity is present in that assignment's immutable eligibility snapshot.
 
-The inbox may become stale between read and decision. The decision endpoint therefore re-evaluates authority and the database independently enforces the terminal transition; an inbox row is never an authorization token.
+The inbox may become stale between read and decision. Write paths re-evaluate authority and the database independently enforces deadline/state transitions; an inbox row is never an authorization token.
+
+Migration 014 materializes overdue `PENDING` and `APPROVED` approvals as `EXPIRED` and changes an active assignment to `EXPIRED` in the same transaction. The transition writes `expiredAt`, `expirationReason`, and `expirationRequestId`; immutable audit/outbox evidence records the prior status. The background worker has no public HTTP mutation endpoint.
 
 ## 13. Expandable relationships
 
@@ -254,7 +271,7 @@ Future application-level rate limiting must distinguish authorization/decision t
 
 ## 15. Webhooks
 
-Public webhook endpoint management and delivery signatures are future Phase 5 work. The current durable outbox, supervised worker, immutable delivery-attempt evidence, dead-letter state, and controlled replay machinery provide the internal delivery foundation only.
+Public webhook endpoint management and delivery signatures are future Phase 5 work. The current durable outbox, supervised worker, immutable delivery-attempt evidence, dead-letter state, controlled replay machinery, and approval-expiry outbox events provide the internal delivery foundation only.
 
 A future webhook contract is expected to use timestamped signatures, unique delivery IDs, bounded retry, and replay-safe delivery history, but none of those public endpoint semantics should be treated as shipped until they appear in OpenAPI.
 
@@ -264,4 +281,4 @@ Deprecated fields and endpoints should include migration guidance and an announc
 
 Migration 011 is such a boundary for approval decisions: pre-existing free-text `decided_by` history remains readable for compatibility, but new terminal decisions require authenticated durable approver evidence and cannot use caller-supplied text as authority.
 
-Migration 013 is an operational contract boundary for the inbox read path: API readiness fails closed until the authority-first eligibility and pending-order indexes are registered, preventing the production API from serving the v0.9 inbox surface on an older schema posture.
+Migration 013 is an operational contract boundary for the inbox read path. Migration 014 is the current production readiness boundary: it makes approval deadlines durable, adds the bounded expiry index and immutable evidence, and prevents post-deadline decision/cancel/reassign/consume commits. API readiness fails closed until migration 014 is registered.
