@@ -12,7 +12,7 @@ import {
 } from '../src/application/approval-operations.js';
 import { recordSecurityEvent } from '../src/application/security-events.js';
 import { createApiCredentialRecord } from '../src/auth/api-credentials.js';
-import { createApprovalRequest, decideApproval } from '../src/domain/approvals.js';
+import { consumeApproval, createApprovalRequest, decideApproval } from '../src/domain/approvals.js';
 import { createMandate } from '../src/domain/mandates.js';
 import { createPostgresPool, PostgresStore } from '../src/store/postgres-store.js';
 
@@ -154,6 +154,7 @@ integration('PostgreSQL approval expiry uses database time, one-winner claims an
     assert.match(concurrentEvents.rows[0].actor_id, /^approval-expiry-pg-[ab]$/);
     assert.equal(concurrentEvents.rows[0].request_id, persistedConcurrent.expirationRequestId);
     assert.equal(concurrentEvents.rows[0].data.assignmentId, concurrent.assignment.id);
+    assert.equal(concurrentEvents.rows[0].data.previousStatus, 'PENDING');
 
     const concurrentOutbox = await pool.query(
       `SELECT count(*)::integer AS count
@@ -162,6 +163,53 @@ integration('PostgreSQL approval expiry uses database time, one-winner claims an
       [tenantId, ownership.environment, concurrent.approval.id]
     );
     assert.equal(concurrentOutbox.rows[0].count, 1);
+
+    const approvedThenOverdue = await assignedApproval({ expiresInMs: 1000, suffix: 'approved-overdue' });
+    await store.transaction(async (view) => {
+      const approval = await view.get('approvals', ownership, approvedThenOverdue.approval.id);
+      const decided = await decideAssignedApproval({
+        view,
+        ownership,
+        approval,
+        input: { decision: 'APPROVED', reason: 'Approved before deadline' },
+        authentication: auth(tenantId, approverCredentialId),
+        decide: decideApproval,
+        now: new Date()
+      });
+      await recordSecurityEvent({
+        transaction: view,
+        ownership,
+        authentication: auth(tenantId, approverCredentialId),
+        actorType: 'APPROVER',
+        actorId: decided.approver.id,
+        requestId: opaque('req_decide_approved'),
+        type: 'approval.decided',
+        objectType: 'approval',
+        objectId: approvedThenOverdue.approval.id,
+        data: {
+          decision: decided.approval.status,
+          approverId: decided.approver.id,
+          credentialId: approverCredentialId,
+          assignmentId: decided.assignment.id
+        },
+        now: new Date(decided.approval.decidedAt)
+      });
+    });
+    assert.equal((await store.get('approvals', ownership, approvedThenOverdue.approval.id)).status, 'APPROVED');
+    await sleep(1100);
+
+    await assert.rejects(
+      store.transaction(async (view) => {
+        const approval = await view.get('approvals', ownership, approvedThenOverdue.approval.id);
+        await view.save(
+          'approvals',
+          ownership,
+          consumeApproval(approval, opaque('dec_stale_consume'), approvedThenOverdue.requestedAt)
+        );
+      }),
+      (error) => error?.code === 'APPROVAL_EXPIRED' && error?.status === 409
+    );
+    assert.equal((await store.get('approvals', ownership, approvedThenOverdue.approval.id)).status, 'APPROVED');
 
     const skewedDecision = await assignedApproval({ expiresInMs: 500, suffix: 'decision' });
     const skewedCancel = await assignedApproval({ expiresInMs: 500, suffix: 'cancel' });
@@ -242,15 +290,29 @@ integration('PostgreSQL approval expiry uses database time, one-winner claims an
     }
 
     const drained = await workerA.drain({ limit: 10 });
-    assert.equal(drained.expired.length, 3);
+    assert.equal(drained.expired.length, 4);
     assert.deepEqual(
       drained.expired.map((approval) => approval.id).sort(),
-      [skewedDecision.approval.id, skewedCancel.approval.id, skewedReassign.approval.id].sort()
+      [
+        approvedThenOverdue.approval.id,
+        skewedDecision.approval.id,
+        skewedCancel.approval.id,
+        skewedReassign.approval.id
+      ].sort()
     );
+
+    const approvedExpiredEvent = await pool.query(
+      `SELECT data
+         FROM mandate.audit_events
+        WHERE tenant_id=$1 AND environment=$2 AND type='approval.expired' AND object_id=$3`,
+      [tenantId, ownership.environment, approvedThenOverdue.approval.id]
+    );
+    assert.equal(approvedExpiredEvent.rowCount, 1);
+    assert.equal(approvedExpiredEvent.rows[0].data.previousStatus, 'APPROVED');
 
     const index = await pool.query(
       `SELECT indexname FROM pg_indexes
-        WHERE schemaname='mandate' AND indexname='approvals_pending_expiry_scope_idx'`
+        WHERE schemaname='mandate' AND indexname='approvals_expiring_scope_idx'`
     );
     assert.equal(index.rowCount, 1);
   } finally {
