@@ -16,7 +16,7 @@ function capturingLogger() {
 
 function backlog(overrides = {}) {
   return {
-    pendingExpiringCount: 4,
+    expiringCount: 4,
     dueCount: 2,
     oldestDueAt: '2026-09-06T11:59:30.000Z',
     oldestOverdueSeconds: 30,
@@ -114,7 +114,7 @@ test('approval expiry process records completed-cycle metrics after backlog insp
     lastCycleAt: startedAt.toISOString(),
     lastSuccessAt: completedAt.toISOString(),
     lastErrorCode: null,
-    backlogPendingExpiring: 4,
+    backlogExpiring: 4,
     backlogDue: 2,
     oldestDueAt: '2026-09-06T11:59:30.000Z',
     oldestOverdueSeconds: 30,
@@ -172,7 +172,7 @@ test('approval expiry readiness is cached and shutdown stops the loop', async ()
     async drain() { return { expired: [], limitReached: false }; },
     async backlog() {
       backlogCalls += 1;
-      return backlog({ pendingExpiringCount: 0, dueCount: 0, oldestDueAt: null, oldestOverdueSeconds: 0 });
+      return backlog({ expiringCount: 0, dueCount: 0, oldestDueAt: null, oldestOverdueSeconds: 0 });
     }
   }, {
     clock: () => clockValues.shift() ?? new Date('2026-09-06T12:00:01.000Z'),
