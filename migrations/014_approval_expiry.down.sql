@@ -1,6 +1,6 @@
 BEGIN;
 
-DROP INDEX IF EXISTS mandate.approvals_pending_expiry_scope_idx;
+DROP INDEX IF EXISTS mandate.approvals_expiring_scope_idx;
 
 CREATE OR REPLACE FUNCTION mandate.validate_approval_assignment_source()
 RETURNS trigger
