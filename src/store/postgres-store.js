@@ -38,6 +38,7 @@ function translatePostgresDomainError(error) {
   if (
     message.includes('approval decision cannot commit after expiry deadline')
     || message.includes('approval cancellation cannot commit after expiry deadline')
+    || message.includes('approval consumption cannot commit after expiry deadline')
     || message.includes('approval is unavailable for a new active assignment')
   ) {
     return new DomainError('APPROVAL_EXPIRED', 'This approval request has expired.', 409);
