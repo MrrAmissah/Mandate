@@ -38,7 +38,7 @@ test('approval expiry development rollback removes only expiry-owned schema chan
   assert.match(sql, /DROP COLUMN IF EXISTS expired_at/);
   assert.match(sql, /DROP COLUMN IF EXISTS expiration_reason/);
   assert.match(sql, /DROP COLUMN IF EXISTS expiration_request_id/);
-  assert.match(sql, /DELETE FROM mandate\.schema_migrations WHERE version = '014_approval_expiry'/);
+  assert.match(sql, /DELETE FROM mandate\.schema_migrations\s+WHERE version = '014_approval_expiry'/);
   assert.doesNotMatch(sql, /DROP TABLE|DROP SCHEMA/);
 });
 
