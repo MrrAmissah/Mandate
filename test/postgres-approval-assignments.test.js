@@ -16,10 +16,14 @@ import { createPostgresPool, PostgresStore } from '../src/store/postgres-store.j
 
 const connectionString = process.env.DATABASE_URL;
 const integration = connectionString ? test : test.skip;
-const fixedNow = new Date('2026-09-05T20:00:00.000Z');
+const fixedNow = new Date();
 
 function unique(prefix) {
   return `${prefix}_${randomUUID().replaceAll('-', '')}`;
+}
+
+function minutesAfterFixedNow(minutes) {
+  return new Date(fixedNow.getTime() + minutes * 60 * 1000);
 }
 
 function credential(id, tenantId, secret) {
@@ -62,7 +66,7 @@ integration('PostgreSQL rejects free-text attribution and requires exact credent
       resources: ['github:owner/repo'],
       allowedActions: ['pull_request.merge'],
       approvalRequiredActions: ['pull_request.merge'],
-      validUntil: '2027-01-01T00:00:00.000Z'
+      validUntil: minutesAfterFixedNow(180).toISOString()
     }, fixedNow);
     await store.save('mandates', ownership, mandate);
 
@@ -72,7 +76,7 @@ integration('PostgreSQL rejects free-text attribution and requires exact credent
       action: 'pull_request.merge',
       resource: 'github:owner/repo',
       summary: 'Approve merge after human review',
-      expiresAt: '2026-09-05T22:00:00.000Z'
+      expiresAt: minutesAfterFixedNow(120).toISOString()
     }, fixedNow);
     await store.save('approvals', ownership, approval);
 
@@ -121,7 +125,7 @@ integration('PostgreSQL rejects free-text attribution and requires exact credent
         await transaction.save('approvals', ownership, decideApproval(current, {
           decision: 'APPROVED',
           decidedBy: 'spoofed-free-text-actor'
-        }, new Date('2026-09-05T20:01:00.000Z')));
+        }, minutesAfterFixedNow(1)));
       }),
       /approval decision requires authenticated approver identity/
     );
@@ -138,7 +142,7 @@ integration('PostgreSQL rejects free-text attribution and requires exact credent
           input: { decision: 'APPROVED', reason: 'Reviewed without audit' },
           authentication: auth(tenantId, aliceCredentialId),
           decide: decideApproval,
-          now: new Date('2026-09-05T20:01:30.000Z')
+          now: minutesAfterFixedNow(1.5)
         });
       }),
       /approval decision requires authenticated credential evidence/
@@ -157,7 +161,7 @@ integration('PostgreSQL rejects free-text attribution and requires exact credent
 
     const decideAs = (credentialId) => store.transaction(async (transaction) => {
       const current = await transaction.get('approvals', ownership, approval.id);
-      const decisionNow = new Date('2026-09-05T20:02:00.000Z');
+      const decisionNow = minutesAfterFixedNow(2);
       const result = await decideAssignedApproval({
         view: transaction,
         ownership,
