@@ -23,11 +23,15 @@ import { createPostgresPool, PostgresStore } from '../src/store/postgres-store.j
 
 const connectionString = process.env.DATABASE_URL;
 const integration = connectionString ? test : test.skip;
-const fixedNow = new Date();
+const fixedNow = new Date(Math.floor(Date.now() / 1000) * 1000);
 const signer = createReceiptSigner({ keyId: 'postgres-lifecycle-ed25519' });
 
 function unique(prefix) {
   return `${prefix}_${randomUUID().replaceAll('-', '')}`;
+}
+
+function hoursAfterFixedNow(hours) {
+  return new Date(fixedNow.getTime() + hours * 60 * 60 * 1000).toISOString();
 }
 
 async function createStore() {
@@ -93,7 +97,8 @@ integration('consumed approvals and signed receipts survive PostgreSQL restart',
         purpose: 'Commit reviewed code',
         resources: ['github:owner/repository'],
         allowedActions: ['commit.create'],
-        approvalRequiredActions: ['commit.create']
+        approvalRequiredActions: ['commit.create'],
+        validUntil: hoursAfterFixedNow(24)
       });
       assert.equal(mandate.response.status, 201);
 
@@ -103,7 +108,7 @@ integration('consumed approvals and signed receipts survive PostgreSQL restart',
         action: 'commit.create',
         resource: 'github:owner/repository',
         summary: 'Approve one reviewed commit',
-        expiresAt: new Date(fixedNow.getTime() + 60 * 60 * 1000).toISOString()
+        expiresAt: hoursAfterFixedNow(24)
       });
       assert.equal(requested.response.status, 201);
       approvalId = requested.body.id;
@@ -165,8 +170,8 @@ integration('consumed approvals and signed receipts survive PostgreSQL restart',
         resource: 'github:owner/repository',
         approvalId
       });
-      assert.equal(authorized.response.status, 200);
-      assert.equal(authorized.body.outcome, 'ALLOW');
+      assert.equal(authorized.response.status, 200, JSON.stringify(authorized.body));
+      assert.equal(authorized.body.outcome, 'ALLOW', JSON.stringify(authorized.body));
 
       const hash = `sha256:${'a'.repeat(64)}`;
       const issued = await post(baseUrl, '/v1/receipts', secret, {
