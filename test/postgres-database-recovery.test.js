@@ -37,7 +37,7 @@ import { createPostgresPool, PostgresStore } from '../src/store/postgres-store.j
 
 const databaseUrl = process.env.DATABASE_URL;
 const postgresTest = databaseUrl ? test : test.skip;
-const fixedNow = new Date('2026-08-01T12:00:00.000Z');
+const fixedNow = new Date();
 
 function suffix() {
   return randomUUID().replaceAll('-', '').slice(0, 12);
@@ -177,7 +177,7 @@ postgresTest('real PostgreSQL dump and restore preserve the recovery snapshot an
         action: 'repository.read',
         resource: 'github:owner/recovery-proof',
         summary: 'Recovery approval assignment proof',
-        expiresAt: '2026-08-01T13:00:00.000Z'
+        expiresAt: new Date(fixedNow.getTime() + 60 * 60 * 1000).toISOString()
       }, fixedNow);
       await transaction.save('approvals', ownership, approval);
       const assignment = await createApprovalAssignment({
