@@ -70,7 +70,7 @@ test('operations runbook is tied to emitted metrics and does not turn samples in
     assert.match(source, new RegExp(metric));
   }
 
-  assert.match(operations, /capped samples, not exact global queue counts/i);
+  assert.match(operations, /(?:capped|bounded) (?:outbox )?samples(?: are evidence that work exists)?, not exact global queue counts/i);
   assert.match(operations, /never be auto-replayed/i);
   assert.match(operations, /engineering objectives rather than customer-facing SLOs/i);
   assert.match(operations, /initial operational defaults/i);
@@ -93,7 +93,7 @@ test('top-level documentation no longer reports completed operational controls a
   const deployment = await read('docs/PRODUCTION_DEPLOYMENT.md');
 
   assert.match(readme, /snapshot-consistent PostgreSQL backup\/restore tooling/i);
-  assert.match(readme, /separate migration, API, expiry, outbox, maintenance and operator PostgreSQL authorities/i);
+  assert.match(readme, /separate migration, API, (?:expiry|action-attempt-expiry, approval-expiry), outbox, maintenance and operator PostgreSQL authorities/i);
   assert.match(readme, /controlled dead-letter inspection and replay/i);
   assert.match(roadmap, /Phase 2I — database authority, recovery and production supervision/);
   assert.match(roadmap, /Repository-controlled Phase 2 operational hardening is therefore closed/);

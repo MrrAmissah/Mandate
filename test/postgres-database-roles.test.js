@@ -85,6 +85,7 @@ postgresTest('database role policy quiesces sessions and removes current, future
   const roles = {
     api: `mdt_api_${suffix}`,
     expiry: `mdt_exp_${suffix}`,
+    approvalExpiry: `mdt_aexp_${suffix}`,
     outbox: `mdt_out_${suffix}`,
     maintenance: `mdt_mnt_${suffix}`,
     operator: `mdt_opr_${suffix}`
@@ -212,7 +213,8 @@ postgresTest('database role policy quiesces sessions and removes current, future
 
     const result = await applyDatabaseRolePolicy(client, { roles });
     assert.equal(result.roles.api, roles.api);
-    assert.equal(result.policyVersion, '2026-09-05.1');
+    assert.equal(result.roles.approvalExpiry, roles.approvalExpiry);
+    assert.equal(result.policyVersion, '2026-09-06.1');
     assert.ok(result.schemaNames.includes('mandate'));
     assert.ok(result.schemaNames.includes('public'));
     assert.ok(result.schemaNames.includes(customSchema));
@@ -240,7 +242,22 @@ postgresTest('database role policy quiesces sessions and removes current, future
 
     assert.equal(await tablePrivilege(client, roles.expiry, 'mandate.action_attempts', 'UPDATE'), true);
     assert.equal(await tablePrivilege(client, roles.expiry, 'mandate.action_attempts', 'INSERT'), false);
+    assert.equal(await tablePrivilege(client, roles.expiry, 'mandate.approvals', 'UPDATE'), false);
     assert.equal(await tablePrivilege(client, roles.expiry, 'mandate.outbox_attempts', 'INSERT'), false);
+
+    assert.equal(await tablePrivilege(client, roles.approvalExpiry, 'mandate.approvals', 'SELECT'), true);
+    assert.equal(await tablePrivilege(client, roles.approvalExpiry, 'mandate.approvals', 'UPDATE'), true);
+    assert.equal(await tablePrivilege(client, roles.approvalExpiry, 'mandate.approvals', 'INSERT'), false);
+    assert.equal(await tablePrivilege(client, roles.approvalExpiry, 'mandate.approvals', 'DELETE'), false);
+    assert.equal(await tablePrivilege(client, roles.approvalExpiry, 'mandate.approval_assignments', 'SELECT'), true);
+    assert.equal(await tablePrivilege(client, roles.approvalExpiry, 'mandate.approval_assignments', 'UPDATE'), true);
+    assert.equal(await tablePrivilege(client, roles.approvalExpiry, 'mandate.approval_assignments', 'INSERT'), false);
+    assert.equal(await tablePrivilege(client, roles.approvalExpiry, 'mandate.action_attempts', 'UPDATE'), false);
+    assert.equal(await tablePrivilege(client, roles.approvalExpiry, 'mandate.approval_assignment_eligibility', 'SELECT'), false);
+    assert.equal(await tablePrivilege(client, roles.approvalExpiry, 'mandate.approver_identities', 'SELECT'), false);
+    assert.equal(await tablePrivilege(client, roles.approvalExpiry, 'mandate.audit_events', 'INSERT'), true);
+    assert.equal(await tablePrivilege(client, roles.approvalExpiry, 'mandate.outbox_messages', 'INSERT'), true);
+
     assert.equal(await tablePrivilege(client, roles.outbox, 'mandate.outbox_messages', 'UPDATE'), true);
     assert.equal(await tablePrivilege(client, roles.outbox, 'mandate.outbox_attempts', 'INSERT'), true);
     assert.equal(await tablePrivilege(client, roles.outbox, 'mandate.receipts', 'SELECT'), false);
@@ -249,13 +266,15 @@ postgresTest('database role policy quiesces sessions and removes current, future
     assert.equal(await tablePrivilege(client, roles.operator, 'mandate.outbox_dead_letter_replays', 'INSERT'), true);
     assert.equal(await tablePrivilege(client, roles.operator, 'mandate.idempotency_records', 'DELETE'), false);
 
-    assert.equal(await databasePrivilege(client, roles.api, databaseName, 'CONNECT'), true);
-    assert.equal(await databasePrivilege(client, roles.api, databaseName, 'CREATE'), false);
-    assert.equal(await databasePrivilege(client, roles.api, databaseName, 'TEMPORARY'), false);
-    assert.equal(await schemaPrivilege(client, roles.api, 'mandate', 'USAGE'), true);
-    assert.equal(await schemaPrivilege(client, roles.api, 'mandate', 'CREATE'), false);
-    assert.equal(await schemaPrivilege(client, roles.api, 'public', 'USAGE'), false);
-    assert.equal(await schemaPrivilege(client, roles.api, customSchema, 'USAGE'), false);
+    for (const role of Object.values(roles)) {
+      assert.equal(await databasePrivilege(client, role, databaseName, 'CONNECT'), true);
+      assert.equal(await databasePrivilege(client, role, databaseName, 'CREATE'), false);
+      assert.equal(await databasePrivilege(client, role, databaseName, 'TEMPORARY'), false);
+      assert.equal(await schemaPrivilege(client, role, 'mandate', 'USAGE'), true);
+      assert.equal(await schemaPrivilege(client, role, 'mandate', 'CREATE'), false);
+      assert.equal(await schemaPrivilege(client, role, 'public', 'USAGE'), false);
+      assert.equal(await schemaPrivilege(client, role, customSchema, 'USAGE'), false);
+    }
     assert.equal(await tablePrivilege(client, roles.api, `${customSchema}.${existingTable}`, 'SELECT'), false);
     assert.equal(await columnPrivilege(client, roles.api, `${customSchema}.${existingTable}`, 'payload', 'UPDATE'), false);
     assert.equal(await sequencePrivilege(client, roles.api, `${customSchema}.${existingSequence}`, 'USAGE'), false);

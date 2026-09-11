@@ -132,10 +132,7 @@ test('dead-letter replay migration indexes immutable replay state and separates 
   assert.match(sql, /UNIQUE \(tenant_id, environment, replay_message_id\)/);
   assert.match(sql, /UNIQUE \(tenant_id, environment, operator_audit_event_id\)/);
   assert.match(sql, /UNIQUE \(tenant_id, environment, idempotency_key_hash\)/);
-  assert.match(
-    sql,
-    /FOREIGN KEY \(tenant_id, environment, operator_audit_event_id\)[\s\S]*REFERENCES mandate\.audit_events/
-  );
+  assert.match(sql, /FOREIGN KEY \(tenant_id, environment, operator_audit_event_id\)[\s\S]*REFERENCES mandate\.audit_events/);
   assert.match(sql, /guard_outbox_replay_link/);
   assert.match(sql, /outbox_messages_replay_link_guard/);
   assert.match(sql, /outbox_dead_letter_replays_immutable/);
@@ -149,15 +146,9 @@ test('approval assignment migration binds decisions to authenticated identities 
   assert.match(sql, /^BEGIN;/);
   assert.match(sql, /COMMIT;\s*$/);
   for (const table of [
-    'approver_identities',
-    'approver_credential_bindings',
-    'approver_groups',
-    'approver_group_memberships',
-    'approval_assignments',
-    'approval_assignment_eligibility'
-  ]) {
-    assert.match(sql, new RegExp(`CREATE TABLE mandate\\.${table}`));
-  }
+    'approver_identities', 'approver_credential_bindings', 'approver_groups',
+    'approver_group_memberships', 'approval_assignments', 'approval_assignment_eligibility'
+  ]) assert.match(sql, new RegExp(`CREATE TABLE mandate\\.${table}`));
   assert.match(sql, /approver_credential_bindings_active_credential_idx/);
   assert.match(sql, /approval_assignments_one_active_idx/);
   assert.match(sql, /approval_assignment_eligibility_immutable/);
@@ -212,7 +203,8 @@ test('migration runner applies all migrations in order under one advisory lock',
     '006_attempt_completion_receipts', '007_receipt_supersession',
     '008_idempotency_retention', '009_outbox_worker_operations',
     '010_outbox_dead_letter_replays', '011_approval_assignments',
-    '012_approval_decision_credential_evidence', '013_approval_inbox_indexes'
+    '012_approval_decision_credential_evidence', '013_approval_inbox_indexes',
+    '014_approval_expiry'
   ];
   const positions = versions.map((version) => source.indexOf(`version: '${version}'`));
   assert.ok(positions.every((position) => position >= 0));

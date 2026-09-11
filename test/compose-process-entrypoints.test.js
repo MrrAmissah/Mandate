@@ -13,6 +13,7 @@ test('production containers execute Node entrypoints directly', async () => {
     'scripts/configure-database-roles.js',
     'src/server.js',
     'scripts/run-action-attempt-expiry.js',
+    'scripts/run-approval-expiry.js',
     'scripts/run-outbox-worker.js'
   ]) {
     assert.match(compose, new RegExp(entrypoint.replaceAll('.', '\\.')));

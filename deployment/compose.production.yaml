@@ -48,6 +48,7 @@ services:
       MANDATE_DATABASE_SSL: ${MANDATE_DATABASE_SSL:-true}
       MANDATE_DATABASE_API_ROLE: ${MANDATE_DATABASE_API_ROLE:-mandate_api}
       MANDATE_DATABASE_EXPIRY_ROLE: ${MANDATE_DATABASE_EXPIRY_ROLE:-mandate_expiry_worker}
+      MANDATE_DATABASE_APPROVAL_EXPIRY_ROLE: ${MANDATE_DATABASE_APPROVAL_EXPIRY_ROLE:-mandate_approval_expiry_worker}
       MANDATE_DATABASE_OUTBOX_ROLE: ${MANDATE_DATABASE_OUTBOX_ROLE:-mandate_outbox_worker}
       MANDATE_DATABASE_MAINTENANCE_ROLE: ${MANDATE_DATABASE_MAINTENANCE_ROLE:-mandate_maintenance}
       MANDATE_DATABASE_OPERATOR_ROLE: ${MANDATE_DATABASE_OPERATOR_ROLE:-mandate_operator}
@@ -114,6 +115,30 @@ services:
       retries: 4
       start_period: 20s
 
+  approval-expiry:
+    <<: *service-security
+    command: ["node", "scripts/run-approval-expiry.js"]
+    depends_on:
+      configure-database-roles:
+        condition: service_completed_successfully
+    environment:
+      MANDATE_ENVIRONMENT: live
+      MANDATE_TENANT_ID: ${MANDATE_TENANT_ID:-}
+      MANDATE_APPROVAL_EXPIRY_WORKER_ID: ${MANDATE_APPROVAL_EXPIRY_WORKER_ID:?Set MANDATE_APPROVAL_EXPIRY_WORKER_ID}
+      MANDATE_DATABASE_SSL: ${MANDATE_DATABASE_SSL:-true}
+      MANDATE_APPROVAL_EXPIRY_HEALTH_HOST: 0.0.0.0
+      DATABASE_URL_FILE: /run/secrets/approval_expiry_database_url
+    secrets:
+      - approval_expiry_database_url
+    expose:
+      - "8790"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8790/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
+
   outbox:
     <<: *service-security
     command: ["node", "scripts/run-outbox-worker.js"]
@@ -155,6 +180,8 @@ secrets:
     file: ${MANDATE_API_DATABASE_URL_FILE:?Set MANDATE_API_DATABASE_URL_FILE}
   expiry_database_url:
     file: ${MANDATE_EXPIRY_DATABASE_URL_FILE:?Set MANDATE_EXPIRY_DATABASE_URL_FILE}
+  approval_expiry_database_url:
+    file: ${MANDATE_APPROVAL_EXPIRY_DATABASE_URL_FILE:?Set MANDATE_APPROVAL_EXPIRY_DATABASE_URL_FILE}
   outbox_database_url:
     file: ${MANDATE_OUTBOX_DATABASE_URL_FILE:?Set MANDATE_OUTBOX_DATABASE_URL_FILE}
   api_key:

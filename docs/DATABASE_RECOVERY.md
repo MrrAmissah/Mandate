@@ -20,7 +20,7 @@ The host or container running this command must provide a compatible `pg_dump` e
 ```bash
 DATABASE_URL_FILE=/run/secrets/mandate_backup_database_url \
 MANDATE_BACKUP_OUTPUT_DIR=/var/backups/mandate \
-MANDATE_BACKUP_LABEL=nightly-2026-08-01 \
+MANDATE_BACKUP_LABEL=nightly-2026-09-06 \
 MANDATE_DATABASE_SSL=true \
 npm run database:backup
 ```
@@ -29,7 +29,7 @@ When the process environment is prepared directly rather than by the production 
 
 The command:
 
-1. verifies migration `012_approval_decision_credential_evidence`;
+1. verifies migration `014_approval_expiry`;
 2. opens one read-only repeatable-read transaction and exports its PostgreSQL snapshot;
 3. captures the ordered migration registry and critical durable-state row counts inside that snapshot;
 4. gives the same exported snapshot to `pg_dump`, so the manifest and dump describe the same recovery point even while normal writes continue;
@@ -38,7 +38,9 @@ The command:
 7. calculates SHA-256;
 8. atomically publishes the dump and then its mode-`0600` JSON manifest.
 
-Critical durable state includes tenants, API credentials, mandates, approvals, durable approver identities, credential bindings, approver groups and memberships, approval assignments and immutable eligibility snapshots, authorization decisions, action attempts, receipts, idempotency records, audit state, outbox/dead-letter state, and signing keys.
+Critical durable state includes tenants, API credentials, mandates, approvals (including immutable deadline-expiry evidence), durable approver identities, credential bindings, approver groups and memberships, approval assignments and immutable eligibility snapshots, authorization decisions, action attempts, receipts, idempotency records, audit state, outbox/dead-letter state, and signing keys.
+
+Migration 013 contains reconstructable inbox indexes, but migration 014 changes durable approval state and transition semantics. A pre-014 backup is therefore not accepted as current recovery proof for a post-4C runtime.
 
 The dump and manifest names are reserved exclusively before database work begins and remain reserved through publication. A concurrent process using the same label fails closed instead of sharing a `.partial` path or overwriting another backup. A failed invocation removes only artifacts it reserved or created.
 
@@ -48,7 +50,7 @@ Create a disposable empty database using infrastructure-controlled credentials. 
 
 ```bash
 MANDATE_RECOVERY_TARGET_URL_FILE=/run/secrets/mandate_restore_database_url \
-MANDATE_RECOVERY_BACKUP_PATH=/var/backups/mandate/mandate-nightly-2026-08-01.dump \
+MANDATE_RECOVERY_BACKUP_PATH=/var/backups/mandate/mandate-nightly-2026-09-06.dump \
 MANDATE_DATABASE_SSL=true \
 npm run database:restore-drill
 ```
@@ -60,15 +62,16 @@ The drill:
 1. verifies the manifest belongs to the selected artifact;
 2. recalculates and compares SHA-256 before restore;
 3. runs `pg_restore` in direct-database mode against only the explicitly disposable target, with `--clean --if-exists --exit-on-error --no-owner --no-privileges`;
-4. reloads the migration registry;
-5. verifies exact row counts for every inventoried critical table, including approval identity, credential binding, assignment, eligibility and audit evidence.
+4. reloads the migration registry and requires migration 014;
+5. verifies exact row counts for every inventoried critical table, including approval identity, credential binding, assignment, eligibility, deadline-expiry and audit evidence.
 
-The PostgreSQL CI drill goes beyond row counts. It creates an isolated source database, performs a normal idempotent Mandate API mutation, registers a real Ed25519 signing key, stores a signed receipt, creates a real pending approver-group assignment with a credential binding, and records dead-letter evidence. During backup it performs another source write only after the exported snapshot exists. After restoring into a fresh `mandate_restore_*` database, CI proves that:
+The PostgreSQL CI drill goes beyond row counts. It creates an isolated source database, performs a normal idempotent Mandate API mutation, registers a real Ed25519 signing key, stores a signed receipt, creates real approval authority state, and records dead-letter evidence. During backup it performs another source write only after the exported snapshot exists. After restoring into a fresh `mandate_restore_*` database, CI proves that:
 
 - the post-snapshot write is absent, demonstrating that dump and manifest use one recovery point;
 - the original idempotent API request replays the same stored response;
-- the durable approver identity, credential binding, group membership, active assignment and immutable eligibility snapshot survive together;
-- immutable audit state required for authenticated approval decision evidence is part of the recovery-critical dataset;
+- durable approver identity, credential binding, group membership, assignment and immutable eligibility state survive together;
+- immutable audit state required for authenticated approval decisions and durable expiry remains in the recovery-critical dataset;
+- approval deadline columns and migration 014 survive the restore as part of canonical approval state;
 - the restored receipt verifies against the restored signing-key registry;
 - the dead-letter message and append-only delivery attempt retain their terminal evidence;
 - the migration registry and all inventoried critical counts match the manifest exactly.
@@ -87,7 +90,7 @@ Minimum operational evidence for each drill:
 - disposable restore database identity;
 - restore start/end time;
 - verification result and safe error code on failure;
-- application-level idempotency, approval-authority, receipt and outbox verification result;
+- application-level idempotency, approval-authority/expiry, receipt and outbox verification result;
 - operator identity and incident/change reference;
 - cleanup confirmation for the disposable database.
 

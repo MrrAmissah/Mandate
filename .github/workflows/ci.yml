@@ -64,11 +64,13 @@ jobs:
           MANDATE_API_SCOPES=mandates:read,mandates:write \
           MANDATE_KEY_ID=key_ci_ed25519 \
           MANDATE_EXPIRY_WORKER_ID=expiry-ci-01 \
+          MANDATE_APPROVAL_EXPIRY_WORKER_ID=approval-expiry-ci-01 \
           MANDATE_OUTBOX_WORKER_ID=outbox-ci-01 \
           MANDATE_OUTBOX_HANDLER_FILE="$fixture_dir/outbox-handlers.js" \
           MANDATE_MIGRATION_DATABASE_URL_FILE="$fixture_dir/database-url" \
           MANDATE_API_DATABASE_URL_FILE="$fixture_dir/database-url" \
           MANDATE_EXPIRY_DATABASE_URL_FILE="$fixture_dir/database-url" \
+          MANDATE_APPROVAL_EXPIRY_DATABASE_URL_FILE="$fixture_dir/database-url" \
           MANDATE_OUTBOX_DATABASE_URL_FILE="$fixture_dir/database-url" \
           MANDATE_API_KEY_SECRET_FILE="$fixture_dir/api-key" \
           MANDATE_PRIVATE_KEY_SECRET_FILE="$fixture_dir/private-key" \

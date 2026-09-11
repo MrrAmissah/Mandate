@@ -35,9 +35,16 @@ test('container entrypoint loads only the supported secret-file variables', asyn
   assert.match(entrypoint, /exec "\$@"/);
 });
 
-test('production compose separates migration, API, expiry and outbox identities', async () => {
+test('production compose separates migration, API, both expiry workers and outbox identities', async () => {
   const compose = await read('deployment/compose.production.yaml');
-  for (const service of ['migrate:', 'configure-database-roles:', 'api:', 'attempt-expiry:', 'outbox:']) {
+  for (const service of [
+    'migrate:',
+    'configure-database-roles:',
+    'api:',
+    'attempt-expiry:',
+    'approval-expiry:',
+    'outbox:'
+  ]) {
     assert.match(compose, new RegExp(`\\n  ${service.replace(':', '\\:')}`));
   }
   assert.match(compose, /read_only: true/);
@@ -47,10 +54,17 @@ test('production compose separates migration, API, expiry and outbox identities'
   assert.match(compose, /MANDATE_API_READINESS_TIMEOUT_MS/);
   assert.match(compose, /127\.0\.0\.1:8787\/health\/ready/);
   assert.match(compose, /MANDATE_OUTBOX_HANDLER_FILE:\?Set MANDATE_OUTBOX_HANDLER_FILE/);
-  const expiryBlock = compose.split('\n  attempt-expiry:')[1].split('\n  outbox:')[0];
+  assert.match(compose, /MANDATE_DATABASE_APPROVAL_EXPIRY_ROLE: \$\{MANDATE_DATABASE_APPROVAL_EXPIRY_ROLE:-mandate_approval_expiry_worker\}/);
+  assert.match(compose, /MANDATE_APPROVAL_EXPIRY_DATABASE_URL_FILE:\?Set MANDATE_APPROVAL_EXPIRY_DATABASE_URL_FILE/);
+
+  const attemptExpiryBlock = compose.split('\n  attempt-expiry:')[1].split('\n  approval-expiry:')[0];
+  const approvalExpiryBlock = compose.split('\n  approval-expiry:')[1].split('\n  outbox:')[0];
   const outboxBlock = compose.split('\n  outbox:')[1].split('\nnetworks:')[0];
-  assert.doesNotMatch(expiryBlock, /MANDATE_API_KEY/);
+  assert.doesNotMatch(attemptExpiryBlock, /MANDATE_API_KEY/);
+  assert.doesNotMatch(approvalExpiryBlock, /MANDATE_API_KEY/);
   assert.doesNotMatch(outboxBlock, /MANDATE_API_KEY/);
+  assert.match(approvalExpiryBlock, /DATABASE_URL_FILE: \/run\/secrets\/approval_expiry_database_url/);
+  assert.match(approvalExpiryBlock, /127\.0\.0\.1:8790\/health\/ready/);
 });
 
 test('database role command reports fail-closed quiescence without leaking driver errors', async () => {
@@ -63,7 +77,7 @@ test('database role command reports fail-closed quiescence without leaking drive
 
 test('database roles are distinct and identifiers fail closed', () => {
   const config = parseDatabaseRolePolicyConfig({});
-  assert.equal(new Set(Object.values(config.roles)).size, 5);
+  assert.equal(new Set(Object.values(config.roles)).size, 6);
   assert.throws(
     () => parseDatabaseRolePolicyConfig({ MANDATE_DATABASE_API_ROLE: 'unsafe-role' }),
     /Unsafe PostgreSQL role identifier/
@@ -73,7 +87,7 @@ test('database roles are distinct and identifiers fail closed', () => {
     /Reserved PostgreSQL role identifier/
   );
   assert.throws(
-    () => parseDatabaseRolePolicyConfig({ MANDATE_DATABASE_API_ROLE: 'same', MANDATE_DATABASE_EXPIRY_ROLE: 'same' }),
+    () => parseDatabaseRolePolicyConfig({ MANDATE_DATABASE_API_ROLE: 'same', MANDATE_DATABASE_APPROVAL_EXPIRY_ROLE: 'same' }),
     /distinct name/
   );
 });
@@ -117,6 +131,7 @@ test('runtime roles are quiesced before ownership is audited and exact grants ar
   assert.match(quiesce, /REVOKE CREATE ON SCHEMA "partner_data" FROM "mandate_api"/);
   assert.match(quiesce, /REVOKE ALL ON ALL TABLES IN SCHEMA "partner_data" FROM "mandate_api"/);
   assert.match(quiesce, /REVOKE ALL PRIVILEGES \("payload"\) ON TABLE "partner_data"\."external_events" FROM "mandate_api"/);
+  assert.match(quiesce, /REVOKE CONNECT ON DATABASE "mandate" FROM "mandate_approval_expiry_worker"/);
 
   const source = await read('src/deployment/database-role-policy.js');
   const applyPosition = source.indexOf('export async function applyDatabaseRolePolicy');
@@ -165,17 +180,20 @@ test('runtime role policy resets every inventoried schema and all routine kinds'
   assert.match(joined, /GRANT SELECT, DELETE ON TABLE mandate\.idempotency_records TO "mandate_maintenance"/);
   assert.match(joined, /GRANT SELECT, INSERT, UPDATE ON TABLE mandate\.approval_assignments TO "mandate_api"/);
   assert.match(joined, /GRANT SELECT, INSERT ON TABLE mandate\.approval_assignment_eligibility TO "mandate_api"/);
+  assert.match(joined, /GRANT SELECT, UPDATE ON TABLE mandate\.approvals TO "mandate_approval_expiry_worker"/);
+  assert.match(joined, /GRANT SELECT, UPDATE ON TABLE mandate\.approval_assignments TO "mandate_approval_expiry_worker"/);
   assert.doesNotMatch(joined, /ALL FUNCTIONS IN SCHEMA/);
   assert.doesNotMatch(joined, /GRANT EXECUTE/);
   assert.doesNotMatch(joined, /GRANT [^;]*DELETE[^;]*TO "mandate_api"/);
   assert.doesNotMatch(joined, /GRANT [^;]*DELETE[^;]*TO "mandate_expiry_worker"/);
+  assert.doesNotMatch(joined, /GRANT [^;]*DELETE[^;]*TO "mandate_approval_expiry_worker"/);
   assert.doesNotMatch(joined, /GRANT [^;]*DELETE[^;]*TO "mandate_outbox_worker"/);
   assert.doesNotMatch(joined, /GRANT [^;]*CREATE[^;]*TO "mandate_/);
-  assert.equal(databaseRolePolicy.requiredMigration, '011_approval_assignments');
+  assert.equal(databaseRolePolicy.requiredMigration, '014_approval_expiry');
   assert.deepEqual(databaseRolePolicy.functionRoles, []);
 });
 
-test('approval administration remains API-only and immutable eligibility is not updateable', () => {
+test('approval administration stays API-only while approval expiry gets only terminalization authority', () => {
   const grants = databaseRolePolicy.tableGrants;
   assert.deepEqual(grants.api.approver_identities, ['SELECT', 'INSERT', 'UPDATE']);
   assert.deepEqual(grants.api.approver_credential_bindings, ['SELECT', 'INSERT', 'UPDATE']);
@@ -183,11 +201,16 @@ test('approval administration remains API-only and immutable eligibility is not 
   assert.deepEqual(grants.api.approver_group_memberships, ['SELECT', 'INSERT', 'UPDATE']);
   assert.deepEqual(grants.api.approval_assignments, ['SELECT', 'INSERT', 'UPDATE']);
   assert.deepEqual(grants.api.approval_assignment_eligibility, ['SELECT', 'INSERT']);
+
   for (const role of ['expiry', 'outbox', 'maintenance', 'operator']) {
     assert.equal(grants[role].approver_identities, undefined);
     assert.equal(grants[role].approval_assignments, undefined);
     assert.equal(grants[role].approval_assignment_eligibility, undefined);
   }
+  assert.equal(grants.approvalExpiry.approver_identities, undefined);
+  assert.equal(grants.approvalExpiry.approval_assignment_eligibility, undefined);
+  assert.deepEqual(grants.approvalExpiry.approvals, ['SELECT', 'UPDATE']);
+  assert.deepEqual(grants.approvalExpiry.approval_assignments, ['SELECT', 'UPDATE']);
 });
 
 test('worker and operator table privileges remain narrowly separated', () => {
@@ -196,7 +219,12 @@ test('worker and operator table privileges remain narrowly separated', () => {
   assert.deepEqual(grants.outbox.outbox_attempts, ['SELECT', 'INSERT']);
   assert.equal(grants.outbox.receipts, undefined);
   assert.deepEqual(grants.expiry.action_attempts, ['SELECT', 'UPDATE']);
+  assert.equal(grants.expiry.approvals, undefined);
   assert.equal(grants.expiry.outbox_attempts, undefined);
+  assert.deepEqual(grants.approvalExpiry.approvals, ['SELECT', 'UPDATE']);
+  assert.deepEqual(grants.approvalExpiry.approval_assignments, ['SELECT', 'UPDATE']);
+  assert.equal(grants.approvalExpiry.action_attempts, undefined);
+  assert.equal(grants.approvalExpiry.outbox_attempts, undefined);
   assert.deepEqual(grants.operator.outbox_dead_letter_replays, ['SELECT', 'INSERT']);
   assert.equal(grants.operator.idempotency_records, undefined);
 });

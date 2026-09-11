@@ -1,6 +1,6 @@
 # Production supervision and operations contract
 
-This document defines Mandate's deployment-neutral supervision baseline for the API, action-attempt expiry worker, outbox worker, one-shot maintenance commands, and PostgreSQL recovery operations. It describes what the repository can enforce or test without choosing a cloud provider.
+This document defines Mandate's deployment-neutral supervision baseline for the API, action-attempt expiry worker, approval-expiry worker, outbox worker, one-shot maintenance commands, and PostgreSQL recovery operations. It describes what the repository can enforce or test without choosing a cloud provider.
 
 It is **not** a high-availability claim, an infrastructure sizing study, or a substitute for a provider-specific firewall, load balancer, backup service, paging system, or disaster-recovery plan.
 
@@ -11,7 +11,8 @@ The reference topology in `deployment/compose.production.yaml` separates process
 | Process | Lifetime | Restart posture | Failure meaning |
 |---|---|---|---|
 | API | long-running | `unless-stopped` | stop routing while readiness fails; restart only when the process itself exits or liveness supervision determines it is wedged |
-| action-attempt expiry | long-running | `unless-stopped` | expiry materialization is delayed; authorization expiry itself is still determined by PostgreSQL time and completion remains fail-closed |
+| action-attempt expiry | long-running | `unless-stopped` | reservation materialization is delayed; PostgreSQL time still prevents an overdue reservation from becoming valid |
+| approval expiry | long-running | `unless-stopped` | durable approval expiry is delayed; PostgreSQL transition guards still prevent post-deadline decision/cancel/reassign/consume commits |
 | outbox | long-running | `unless-stopped` | event delivery is delayed; leased work is recovered after lease expiry |
 | migration | one-shot | never auto-restart | operator must inspect and deliberately rerun |
 | database-role configuration | one-shot | never auto-restart | runtime roles may intentionally remain quiesced; operator must correct and deliberately rerun |
@@ -25,9 +26,9 @@ A readiness failure is **not** itself permission to terminate a process. Readine
 
 Long-running services receive `SIGTERM` and have a 30-second supervisor grace period in the reference Compose topology.
 
-The expiry and outbox executables:
+The action-attempt expiry, approval-expiry and outbox executables:
 
-1. record `shutdown_requested` once;
+1. record a safe shutdown request;
 2. abort the polling loop;
 3. stop advertising readiness;
 4. let the active bounded cycle finish;
@@ -36,7 +37,7 @@ The expiry and outbox executables:
 
 The API readiness path also fails closed while shutdown is in progress.
 
-If infrastructure force-kills a worker after the grace period, durable work is not reassigned by memory state. PostgreSQL leases and stale-lease recovery remain the authority. Operators must investigate repeated forced shutdowns rather than reducing the grace period until the symptom disappears.
+If infrastructure force-kills a worker after the grace period, durable work is not reassigned by memory state. PostgreSQL row/lease state remains the authority. Operators must investigate repeated forced shutdowns rather than reducing the grace period until the symptom disappears.
 
 ## 3. Resource and log bounds
 
@@ -70,7 +71,7 @@ Mandate application and worker logs are structured JSON. Infrastructure log coll
 The reference topology intentionally minimizes exposed operational HTTP surfaces:
 
 - API port `8787` is host-published to `127.0.0.1` by default.
-- Expiry port `8788` and outbox port `8789` are only `expose`d to the private Compose network; they are not host-published.
+- Action-attempt expiry port `8788`, outbox port `8789`, and approval-expiry port `8790` are only exposed to the private Compose network; they are not host-published.
 - Worker `/metrics` and health routes are unauthenticated operational endpoints and must remain behind deployment network controls.
 - A public deployment must place the API behind a TLS-terminating reverse proxy or load balancer with explicit request-size, connection, timeout, and trusted-proxy rules.
 - Worker metrics may be scraped only from a trusted monitoring network or sidecar/agent boundary.
@@ -82,14 +83,18 @@ Changing a worker health bind to a routable interface does not make the endpoint
 ### API
 
 - `/health/live`: Node.js can serve the probe. It does not claim PostgreSQL is usable.
-- `/health/ready`: PostgreSQL answered within the bounded readiness timeout and required migrations are present.
+- `/health/ready`: PostgreSQL answered within the bounded readiness timeout and migration `014_approval_expiry` is present.
 - Supervisors/load balancers route only while readiness succeeds.
 
-### Expiry worker
+### Action-attempt expiry worker
 
 - `/health/live`: process and health listener are alive.
 - `/health/ready`: at least one recent successful cycle exists, failure threshold has not been crossed, and shutdown has not started.
 - `/metrics`: cached process/backlog metrics; no database query is performed per scrape.
+
+### Approval-expiry worker
+
+The same liveness/readiness contract applies. Backlog metrics cover both deadline-bearing `PENDING` and `APPROVED` approvals because an approved-but-unconsumed request remains expirable until consumption.
 
 ### Outbox worker
 
@@ -104,7 +109,8 @@ The thresholds below are conservative **initial operational defaults**. They are
 | Signal | Initial condition | Severity | Required response |
 |---|---|---|---|
 | API `/health/ready` | non-200 continuously for 2 minutes | page | stop new routing if not already removed; inspect PostgreSQL, migration readiness, resource pressure and recent deploy |
-| expiry `mandate_action_attempt_expiry_ready` | `0` continuously for 2 minutes after startup | page | inspect consecutive failures, last success and database connectivity |
+| action-attempt expiry `mandate_action_attempt_expiry_ready` | `0` continuously for 2 minutes after startup | page | inspect consecutive failures, last success and database connectivity |
+| approval expiry `mandate_approval_expiry_ready` | `0` continuously for 2 minutes after startup | page | inspect deadline backlog, consecutive failures, last success and database connectivity |
 | outbox `mandate_outbox_ready` | `0` continuously for 2 minutes after startup | page | inspect cycle failures, last success, handler health and database connectivity |
 | any long-running process | repeated supervisor restarts within 10 minutes | page | halt rollout and inspect exit reason/resource exhaustion; do not create a restart loop |
 
@@ -126,13 +132,42 @@ mandate_action_attempt_expiry_ready
 
 Reference conditions:
 
-- page when `mandate_action_attempt_expiry_consecutive_failures` reaches the worker's configured readiness-failure threshold;
-- warn when `mandate_action_attempt_expiry_oldest_overdue_seconds > 60` for 2 consecutive minutes;
-- page when `mandate_action_attempt_expiry_oldest_overdue_seconds > 300` for 2 consecutive minutes;
-- warn when `mandate_action_attempt_expiry_limit_reached_total` continues increasing for 5 minutes while `mandate_action_attempt_expiry_backlog_due > 0`;
+- page when consecutive failures reach the configured readiness-failure threshold;
+- warn when oldest overdue exceeds 60 seconds for 2 consecutive minutes;
+- page when oldest overdue exceeds 300 seconds for 2 consecutive minutes;
+- warn when the batch-limit counter continues increasing for 5 minutes while due work remains;
 - page when the last successful cycle age exceeds the configured readiness stale window and does not recover within 2 minutes.
 
 The 60/300-second overdue thresholds are starting operational objectives, not changes to authorization semantics. Even before the materializer writes `EXPIRED`, an already-expired reservation cannot become valid merely because the worker is behind.
+
+### Approval expiry
+
+Use the exact exported metrics:
+
+```text
+mandate_approval_expiry_cycles_total
+mandate_approval_expiry_expired_total
+mandate_approval_expiry_failures_total
+mandate_approval_expiry_limit_reached_total
+mandate_approval_expiry_consecutive_failures
+mandate_approval_expiry_backlog_expiring
+mandate_approval_expiry_backlog_due
+mandate_approval_expiry_oldest_overdue_seconds
+mandate_approval_expiry_backlog_observed_unixtime_seconds
+mandate_approval_expiry_last_success_unixtime_seconds
+mandate_approval_expiry_ready
+```
+
+Reference conditions:
+
+- page when `mandate_approval_expiry_consecutive_failures` reaches the configured readiness-failure threshold;
+- warn when `mandate_approval_expiry_oldest_overdue_seconds > 60` for 2 consecutive minutes;
+- page when it exceeds 300 seconds for 2 consecutive minutes;
+- warn when `mandate_approval_expiry_limit_reached_total` continues increasing for 5 minutes while `mandate_approval_expiry_backlog_due > 0`;
+- page when last-success freshness remains stale for 2 additional minutes;
+- investigate sustained growth in `mandate_approval_expiry_backlog_expiring` even when no items are yet due, because it may indicate deadline volume beyond current capacity planning.
+
+An overdue approval is not made valid by worker delay. Database-time transition guards reject decision, cancellation, reassignment/new assignment, and approved-approval consumption after the deadline. The worker's purpose is durable convergence, audit/outbox evidence, and cleanup of active assignment state.
 
 ### Outbox
 
@@ -161,7 +196,7 @@ Reference conditions:
 - warn when `mandate_outbox_limit_reached_total` continues increasing for 5 minutes while due work remains;
 - page when consecutive failures reach the configured readiness threshold or last-success freshness remains stale for 2 additional minutes.
 
-`mandate_outbox_due_sample`, `mandate_outbox_stale_sample`, and `mandate_outbox_dead_letter_sample` are **capped samples, not exact global queue counts**. Alert logic must use them only as bounded evidence that work exists, never as billing, capacity, or loss accounting.
+The bounded outbox samples are evidence that work exists, not exact global queue counts.
 
 ## 7. Initial operational objectives
 
@@ -170,6 +205,7 @@ Until production load data exists, use these as engineering objectives rather th
 - healthy outbox due work should normally clear within 5 minutes;
 - a new dead letter must be acknowledged by an operator during the active operational window and must never be auto-replayed;
 - overdue action-attempt materialization should normally remain below 60 seconds and should be treated as urgent beyond 5 minutes;
+- overdue approval materialization should normally remain below 60 seconds and should be treated as urgent beyond 5 minutes;
 - a recovery drill must prove artifact integrity and application-level continuity on a production-equivalent PostgreSQL major version before consequential use;
 - a production deployment must define its own RPO/RTO, backup cadence, retention and point-in-time-recovery policy before launch.
 
@@ -202,22 +238,23 @@ If PostgreSQL is unavailable:
 - preserve logs and the last successful backup metadata;
 - restore only into an explicitly disposable `mandate_restore_*` target during a drill.
 
-`docs/DATABASE_RECOVERY.md` is the executable recovery procedure. The repository proves snapshot-consistent dump/restore, migration continuity, idempotent API replay, historical receipt verification, and outbox/dead-letter continuity. A production provider must still supply durable storage, backup scheduling, point-in-time recovery where required, geographic policy, and measured RPO/RTO.
+`docs/DATABASE_RECOVERY.md` is the executable recovery procedure. Current repository recovery proof requires migration 014 and covers snapshot-consistent dump/restore, migration continuity, idempotent API replay, approval authority/deadline state, historical receipt verification, and outbox/dead-letter continuity. A production provider must still supply durable storage, backup scheduling, point-in-time recovery where required, geographic policy, and measured RPO/RTO.
 
 ## 10. Rollout and rollback
 
 Promote one immutable image digest between environments. Before routing traffic:
 
 1. run migrations with the migration identity;
-2. run database-role configuration and require success;
-3. start API/workers under their restricted identities;
-4. require readiness;
-5. verify metrics collection and paging paths;
-6. inspect initial outbox/expiry backlog.
+2. require migration `014_approval_expiry`;
+3. run database-role configuration and require success;
+4. start API, action-attempt expiry, approval-expiry and outbox workers under their restricted identities;
+5. require readiness on every long-running process;
+6. verify metrics collection and paging paths;
+7. inspect initial action-attempt, approval-expiry and outbox backlogs.
 
-Application rollback is permitted only when the previous image is compatible with the already-applied schema. Database migrations are not automatically reversed by a container/image rollback. Never use an older image as an implicit schema downgrade.
+Application rollback is permitted only when the previous image is compatible with the already-applied schema. Database migrations are not automatically reversed by a container/image rollback. Never use an older image as an implicit schema downgrade. In particular, once migration 014 is applied and deadline state may be written, do not roll the API/workers back to code that does not understand approval expiry evidence or the approval-expiry database role.
 
-If a migration or role-policy operation fails, stop the rollout. In particular, database-role configuration may deliberately leave runtime identities quiesced after a partial policy failure; correct the cause and rerun the role policy rather than bypassing it.
+If a migration or role-policy operation fails, stop the rollout. Database-role configuration may deliberately leave runtime identities quiesced after a partial policy failure; correct the cause and rerun the role policy rather than bypassing it.
 
 ## 11. Incident evidence
 
@@ -228,7 +265,8 @@ For production incidents retain, outside the repository:
 - first/last observed timestamps;
 - readiness reason and relevant low-cardinality metrics;
 - safe structured log event IDs/error codes;
-- dead-letter IDs and replay-record IDs where applicable, never payload dumps in ordinary incident chat;
+- approval-expiry request/audit IDs when deadline convergence is implicated, never arbitrary payload dumps;
+- dead-letter IDs and replay-record IDs where applicable;
 - backup artifact digest and restore-drill result for recovery incidents;
 - operator identity and approval/change reference for any replay or maintenance action;
 - rollback/forward-fix decision and final verification.

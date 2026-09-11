@@ -11,17 +11,18 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-3f3f46)](./LICENSE)
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
-![OpenAPI](https://img.shields.io/badge/OpenAPI-v0.9.0-6BA539?logo=openapiinitiative&logoColor=white)
+![OpenAPI](https://img.shields.io/badge/OpenAPI-v0.10.0-6BA539?logo=openapiinitiative&logoColor=white)
 
-Mandate-API is a provider-independent trust layer for AI agents: delegated authorization, durable approval authority, authority-scoped approver inboxes, single-use execution attempts, and cryptographically signed action receipts.
+Mandate-API is a provider-independent trust layer for AI agents: delegated authorization, durable approval authority, database-time approval expiry, authority-scoped approver inboxes, single-use execution attempts, and cryptographically signed action receipts.
 
-It answers five questions ordinary application authorization does not answer well:
+It answers six questions ordinary application authorization does not answer well:
 
 1. What may this specific agent do for this task, resource, and time window?
 2. Which durable human approver identities are actually eligible to decide a sensitive request?
 3. Which pending approvals are genuinely actionable by the human identity behind this authenticated credential right now?
-4. Which caller acquired and completed the one execution opportunity represented by an authorization decision?
-5. What verifiable evidence records the authority, execution, outcome, and any later append-only correction?
+4. When does approval authority actually stop, including after an approval was granted but not yet consumed?
+5. Which caller acquired and completed the one execution opportunity represented by an authorization decision?
+6. What verifiable evidence records the authority, execution, outcome, and any later append-only correction?
 
 ## Target architecture concept
 
@@ -31,11 +32,13 @@ It answers five questions ordinary application authorization does not answer wel
   <img src="./assets/mandate-architecture.png" alt="Conceptual Mandate target architecture showing clients, policy evaluation, approval and deny outcomes, execution evidence, and signed receipts" width="100%" />
 </p>
 
-Mandate-API sits between agents and tools. It allows permitted actions, pauses sensitive actions for assigned human approval, blocks prohibited actions, and records completed execution as independently verifiable evidence. The exact implemented lifecycle is documented in **Core flow** below.
+Mandate-API sits between agents and tools. It allows permitted actions, pauses sensitive actions for assigned human approval, blocks prohibited actions, enforces approval deadlines with PostgreSQL time, and records completed execution as independently verifiable evidence. The exact implemented lifecycle is documented in **Core flow** below.
 
-## Current milestone: durable execution, approval authority, approver inbox, evidence and operational foundation
+## Current milestone: durable execution, approval authority, deadline enforcement, evidence and operational foundation
 
-The current platform binds authorization decisions to one execution attempt, terminal evidence, one immutable root receipt, and an optional linear chain of signed correction receipts. Sensitive approval requests are bound to durable approver identities or assignment-time group snapshots instead of caller-supplied human text. The approver-facing inbox derives visibility from the authenticated credential's live approver binding, current assignment, and immutable eligibility snapshot rather than from broad administrative approval-read authority. PostgreSQL time expires unused execution reservations through a separately composed worker process. The repository also contains a provider-neutral production foundation for least-privilege database identities, outbox supervision, controlled dead-letter operations, and executable backup/restore proof.
+The current platform binds authorization decisions to one execution attempt, terminal evidence, one immutable root receipt, and an optional linear chain of signed correction receipts. Sensitive approval requests are bound to durable approver identities or assignment-time group snapshots instead of caller-supplied human text. The approver-facing inbox derives visibility from the authenticated credential's live approver binding, current assignment, and immutable eligibility snapshot rather than from broad administrative approval-read authority.
+
+PostgreSQL time is now the approval deadline authority. An overdue `PENDING` approval cannot be decided, reassigned, or cancelled after the database deadline. An approval that was validly `APPROVED` before its deadline still cannot be consumed after that deadline. A separately supervised approval-expiry worker converges overdue `PENDING` and `APPROVED` records to durable `EXPIRED` state, terminates active assignments, and writes immutable audit/outbox evidence. Action-attempt reservations retain their own separate expiry process and database identity.
 
 Implemented now:
 
@@ -56,14 +59,16 @@ Implemented now:
 - server-derived approval decision attribution; caller-supplied `decidedBy` is not authoritative;
 - fail-closed rejection of ambiguous credential-binding selectors;
 - PostgreSQL final-arbiter checks requiring an active eligible approver plus immutable `approval.decided` audit evidence tied to the exact active credential binding before a pending approval can commit as approved/rejected;
-- exact, single-use approval consumption by authorization;
+- PostgreSQL `clock_timestamp()` enforcement for approval decision, reassignment/new assignment, cancellation, consumption, and expiry precedence;
+- durable `PENDING → EXPIRED` and `APPROVED → EXPIRED` materialization with immutable `expiredAt`, `expirationReason`, and `expirationRequestId` evidence;
+- active approval assignments terminated as `EXPIRED` in the same transaction as approval expiry;
+- immutable `approval.expired` audit/outbox evidence including the prior approval state;
+- a dedicated supervised approval-expiry worker with bounded `FOR UPDATE SKIP LOCKED` claims, cached backlog metrics, liveness/readiness and signal-aware shutdown;
+- exact, single-use approval consumption by authorization, including fail-closed rejection after the approval deadline;
 - one action-attempt reservation per allowed decision;
 - bounded reservation windows and dedicated attempt scopes;
 - controlled attempt completion and cancellation by the reserving credential;
-- database-time materialization of overdue reservations as `EXPIRED`;
-- a dedicated, signal-aware expiry-worker process with migration-readiness checks;
-- cached database-time backlog counts and oldest-overdue age;
-- loopback-default liveness, readiness, and Prometheus metrics for the expiry process;
+- database-time materialization of overdue action-attempt reservations as `EXPIRED` through a separate worker;
 - immutable input/output hashes and tool metadata for completed attempts;
 - receipt v1.1 root issuance only from completed attempts;
 - one immutable root receipt per attempt and decision;
@@ -83,15 +88,16 @@ Implemented now:
 - serializable transactions and one-winner concurrency tests;
 - a standalone supervised outbox worker with trusted exact local handlers, bounded retries, stale-lease recovery, readiness and metrics;
 - controlled dead-letter inspection and replay that preserves failed history and immutable operator evidence;
-- separate migration, API, expiry, outbox, maintenance and operator PostgreSQL authorities with fail-closed role policy;
+- separate migration, API, action-attempt-expiry, approval-expiry, outbox, maintenance and operator PostgreSQL authorities with fail-closed role policy;
+- cross-worker database-role tests proving the two expiry workers cannot mutate each other's domain tables;
 - a non-root/read-only production image and deployment-neutral Compose topology with health checks, restart/shutdown rules, CPU/memory/PID/log bounds and private worker operations surfaces;
 - snapshot-consistent PostgreSQL backup/restore tooling with SHA-256 manifests and disposable restore targets;
-- recovery-critical verification for approver identities, bindings, groups, memberships, assignments, eligibility snapshots, immutable audit evidence and credential lifecycle state;
+- recovery-critical verification requiring migration `014_approval_expiry` and preserving approval authority/deadline evidence alongside receipts, keys and outbox state;
 - a real PostgreSQL recovery drill proving migration continuity, idempotent API replay, approval-authority continuity, historical receipt/key verification and outbox/dead-letter continuity;
 - a deployment-neutral production-operations contract with initial health/metric alert baselines and rollback/escalation rules;
-- real PostgreSQL restart, isolation, approval-assignment, approval-inbox, decision-concurrency, attempt, expiry, backlog, receipt, supersession, outbox, key-rotation, replay, retention and recovery tests.
+- real PostgreSQL restart, isolation, approval-assignment, approval-inbox, approval-expiry/consumption-race, decision-concurrency, attempt, receipt, supersession, outbox, key-rotation, replay, retention, database-role and recovery tests.
 
-Memory mode remains available for local API experiments. Live API environments require PostgreSQL, explicit scopes, a non-default API key, an explicit persistent key ID, and persistent receipt-signing keys.
+Memory mode remains available for local API experiments. Live API environments require PostgreSQL, explicit scopes, a non-default API key, an explicit persistent key ID, persistent receipt-signing keys, and separately supervised workers where their durable convergence functions are required.
 
 ## Run locally
 
@@ -104,23 +110,30 @@ npm start
 
 The API starts on `http://localhost:8787`.
 
-After applying migrations, run the expiry process separately:
+After applying migrations, run the two expiry processes separately:
 
 ```bash
 npm run migrate
+
 MANDATE_STORE=postgres \
 MANDATE_ENVIRONMENT=test \
 MANDATE_EXPIRY_WORKER_ID=expiry-worker-local-01 \
 npm run worker:attempt-expiry
 ```
 
-The expiry process does not use the API key and never applies migrations itself. Its operational listener defaults to `http://127.0.0.1:8788`:
+```bash
+MANDATE_STORE=postgres \
+MANDATE_ENVIRONMENT=test \
+MANDATE_APPROVAL_EXPIRY_WORKER_ID=approval-expiry-worker-local-01 \
+npm run worker:approval-expiry
+```
 
-| Route | Purpose |
-|---|---|
-| `/health/live` | Dedicated process liveness |
-| `/health/ready` | Recent successful-cycle readiness |
-| `/metrics` | Cached Prometheus counters and backlog gauges |
+Neither expiry process uses the API key or applies migrations. Their operational listeners default to loopback:
+
+| Process | Port | Routes |
+|---|---:|---|
+| Action-attempt expiry | `8788` | `/health/live`, `/health/ready`, `/metrics` |
+| Approval expiry | `8790` | `/health/live`, `/health/ready`, `/metrics` |
 
 These are operational endpoints, not part of the public Mandate API contract. Binding them beyond loopback requires deployment network controls.
 
@@ -172,7 +185,13 @@ ALLOW / DENY / REQUIRE_APPROVAL
                   ↓
         authenticated eligible approver decides
                   ↓
-             ALLOW can continue
+        before expiresAt? ─────── no ─────→ EXPIRED
+                  ↓ yes
+             APPROVED
+                  ↓
+       consumed before expiresAt?
+          ↓ yes             ↓ no
+        ALLOW             EXPIRED
           ↓
 Caller reserves the ALLOW decision once
           ↓
@@ -187,9 +206,11 @@ Mandate-API verifies the predecessor and appends a v1.2 successor
 
 A valid API key is not, by itself, approval authority. A decision requires the dedicated scope, an active credential binding to a durable approver identity, an active assignment, membership in that assignment's immutable eligibility snapshot, and an immutable decision audit event carrying the same credential/approver/assignment proof. Group membership added after assignment does not authorize that old request.
 
-Likewise, broad `approvals:read` access is not approver inbox authority. The inbox requires `approval_inbox:read` plus a live approver binding and current immutable assignment eligibility. A reassignment removes the item from the old assignee's current inbox. A terminal approval disappears. An overdue request that remains durably `PENDING` can be inspected through `state=PENDING`, but it is always returned with `actionable=false` until the expiry lifecycle is materialized.
+Likewise, broad `approvals:read` access is not approver inbox authority. The inbox requires `approval_inbox:read` plus a live approver binding and current immutable assignment eligibility. A reassignment removes the item from the old assignee's current inbox. A terminal approval disappears. An overdue request that remains durably `PENDING` can be inspected through `state=PENDING`, but it is always returned with `actionable=false` until the approval-expiry worker materializes `EXPIRED`.
 
-Unused reservations are materialized as `EXPIRED` by the PostgreSQL-backed expiry process. A `RESERVED` attempt is not proof that execution started or succeeded; only a `COMPLETED` attempt can issue a root receipt. Supersession never changes the attempt or root receipt.
+Approval deadlines are not extended by approval itself. A request validly moved to `APPROVED` before `expiresAt` must also be consumed before `expiresAt`. PostgreSQL rejects a late consumption even if the application clock is stale, and the worker converges the record to `EXPIRED` with immutable system evidence.
+
+Unused action-attempt reservations are independently materialized as `EXPIRED` by their own PostgreSQL-backed worker. A `RESERVED` attempt is not proof that execution started or succeeded; only a `COMPLETED` attempt can issue a root receipt. Supersession never changes the attempt or root receipt.
 
 ## Example mandate
 
@@ -232,14 +253,14 @@ Unused reservations are materialized as `EXPIRED` by the PostgreSQL-backed expir
 | `POST` | `/v1/approver-groups/:id/members` | Add a member for future assignment snapshots |
 | `POST` | `/v1/approver-groups/:id/members/:approverId/remove` | Remove a member for future assignment snapshots |
 | `POST`, `GET` | `/v1/approvals` | Request or list assigned approvals |
-| `GET` | `/v1/approvals/:id` | Retrieve an approval |
+| `GET` | `/v1/approvals/:id` | Retrieve an approval, including durable expiry evidence when applicable |
 | `GET` | `/v1/approvals/:id/assignment` | Retrieve the active assignment and immutable eligibility snapshot |
-| `POST` | `/v1/approvals/:id/reassign` | Replace the active assignment with a new snapshot |
-| `POST` | `/v1/approvals/:id/cancel` | Cancel a pending approval with durable operator evidence |
-| `POST` | `/v1/approvals/:id/decide` | Approve or reject as the authenticated eligible approver |
+| `POST` | `/v1/approvals/:id/reassign` | Replace the active assignment with a new snapshot before the deadline |
+| `POST` | `/v1/approvals/:id/cancel` | Cancel a pending approval with durable operator evidence before the deadline |
+| `POST` | `/v1/approvals/:id/decide` | Approve or reject as the authenticated eligible approver before the database deadline |
 | `GET` | `/v1/approval-inbox` | List current authority-scoped approval work (`ACTIONABLE` by default or all `PENDING`) |
 | `GET` | `/v1/approval-inbox/:id` | Inspect one currently visible pending approval inbox item |
-| `POST` | `/v1/authorize` | Evaluate an agent action |
+| `POST` | `/v1/authorize` | Evaluate an agent action; approved approval consumption is deadline-guarded |
 | `GET` | `/v1/decisions`, `/v1/decisions/:id` | List or retrieve immutable decisions |
 | `POST`, `GET` | `/v1/action-attempts` | Reserve or list execution attempts |
 | `GET` | `/v1/action-attempts/:id` | Retrieve an action attempt |
@@ -250,7 +271,9 @@ Unused reservations are materialized as `EXPIRED` by the PostgreSQL-backed expir
 | `POST` | `/v1/receipts/:id/supersede` | Append one signed correction successor |
 | `POST` | `/v1/receipts/verify` | Verify using active or retired registered keys |
 
-See [`openapi.yaml`](./openapi.yaml) for the stable v0.9.0 contract.
+Approval expiry itself has no public mutation endpoint. It is an internal, database-authoritative convergence process.
+
+See [`openapi.yaml`](./openapi.yaml) for the stable v0.10.0 contract.
 
 ## Documentation
 
@@ -287,11 +310,14 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.9.0 contract.
 - Group eligibility is snapshotted at assignment time; later membership additions cannot expand authority over an existing request.
 - Reassignment/cancellation preserve prior assignment history rather than rewriting it.
 - PostgreSQL independently rejects terminal approval decisions unless immutable audit evidence proves the same active credential binding, approver identity and active assignment eligibility at decision time.
+- PostgreSQL time, not an application-host clock, determines approval decision/reassignment/cancellation/consumption deadlines and durable approval expiry.
+- Overdue `PENDING` and `APPROVED` approvals converge only to `EXPIRED`; an expired approval cannot retain an active assignment.
+- A validly approved approval cannot be consumed after its deadline.
 - An allowed decision, mandate-use increment, approval consumption, audit event, and outbox row belong to one transaction.
 - The final mandate use and an approved approval can each be consumed only once under concurrency.
 - One allowed decision can be reserved by at most one action attempt.
 - Only the reserving credential may complete or cancel an attempt.
-- PostgreSQL time, not an application-host clock, determines live reservation expiry and backlog age.
+- PostgreSQL time determines live action-attempt reservation expiry and backlog age.
 - Health probes read cached metrics and never create per-probe database traffic.
 - Terminal attempt evidence cannot be overwritten.
 - Cancelled, reserved, and expired attempts cannot issue receipts.
@@ -299,20 +325,21 @@ See [`openapi.yaml`](./openapi.yaml) for the stable v0.9.0 contract.
 - One completed attempt and decision produce at most one immutable root receipt.
 - Each receipt may have at most one direct successor; a successor retains the same decision and action-attempt identity.
 - The predecessor must verify through an active or retired key before a successor is signed.
-- PostgreSQL supersession takes an exclusive row lock on the predecessor receipt and a shared row lock on its verification key until the successor commits.
 - Receipt signatures cover every receipt field except the signature itself.
 - Server and offline verification share one canonical JSON implementation.
 - Active and retired keys verify historical receipts; revoked keys do not.
 - Raw generated API credentials are displayed once and are not stored durably.
 - Authorization decisions, receipts, audit events, outbox attempts, dead-letter replay records and approval eligibility snapshots are immutable in PostgreSQL.
+- Approval decision, cancellation and expiry evidence is immutable after it becomes terminal evidence.
 - Workers may mutate only the exact rows claimed within their transactions.
+- The action-attempt and approval-expiry workers use distinct PostgreSQL roles and cannot mutate each other's domain tables.
 - Unknown idempotency operation scopes are rejected instead of receiving guessed HTTP metadata.
 - Idempotency cleanup cannot shorten the seven-day replay floor or cross tenant/environment scope.
 - Runtime and worker database identities cannot migrate, own schema objects, inherit broad roles, or silently gain default grants.
 - Dead letters are never automatically replayed or reset in place.
-- Recovery verification requires migration `012_approval_decision_credential_evidence` and exact migration/trust-state continuity before a backup is accepted as a proven restore artifact.
-- API readiness requires migration `013_approval_inbox_indexes` so the authority-scoped inbox is not served without its intended bounded read indexes.
+- Recovery verification requires migration `014_approval_expiry` and exact migration/trust-state continuity before a backup is accepted as a proven restore artifact.
+- API readiness requires migration `014_approval_expiry`, which also implies the migration-013 inbox indexes are present.
 
 ## Not production-ready yet
 
-The repository now has durable PostgreSQL state, durable single-approver/group assignment authority, an authority-scoped approver inbox, least-privilege database-role separation, supervised workers, controlled dead-letter operations, snapshot-consistent recovery proof and a deployment-neutral supervision baseline. It is still **not ready for consequential autonomous production use** until the chosen deployment supplies and proves the remaining external controls: TLS termination and firewall/trusted-proxy policy, paging and centralized logs/SIEM, production backup scheduling/PITR with measured RPO/RTO, HA/failover where required, an approved live dead-letter replay process, an externally reviewed real delivery handler, container vulnerability/SBOM/provenance controls, and the later approval-expiry/evidence, integration, SDK and enterprise work described in the roadmap.
+The repository now has durable PostgreSQL state, durable single-approver/group assignment authority, an authority-scoped approver inbox, database-time approval expiry, separate least-privilege expiry workers, controlled dead-letter operations, snapshot-consistent recovery proof and a deployment-neutral supervision baseline. It is still **not ready for consequential autonomous production use** until the chosen deployment supplies and proves the remaining external controls: TLS termination and firewall/trusted-proxy policy, paging and centralized logs/SIEM, production backup scheduling/PITR with measured RPO/RTO, HA/failover where required, an approved live dead-letter replay process, an externally reviewed real delivery handler, container vulnerability/SBOM/provenance controls, and the later approval-evidence, multi-party approval, integration, SDK and enterprise work described in the roadmap.

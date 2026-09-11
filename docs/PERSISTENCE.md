@@ -32,7 +32,7 @@ The authorization transaction:
 8. inserts the corresponding outbox message; and
 9. commits all changes together.
 
-Transactions run at `SERIALIZABLE` isolation and retry bounded serialization, deadlock, and first-writer uniqueness races. A failure at any point rolls back every step. Real PostgreSQL tests prove that concurrent requests for the final mandate use produce exactly one `ALLOW`.
+Transactions run at `SERIALIZABLE` isolation and retry bounded serialization, deadlock, and first-writer uniqueness races. A failure at any point rolls back every step. Approval consumption is additionally protected by migration 014: if an `APPROVED` approval reaches `expires_at` before commit, PostgreSQL rejects `APPROVED → CONSUMED` even when an application host supplies an earlier local timestamp.
 
 ## Approval authority persistence
 
@@ -63,6 +63,41 @@ Migration `012_approval_decision_credential_evidence` makes PostgreSQL independe
 
 This makes the database the final arbiter even if application code attempts either the legacy free-text path or a superficially eligible decision that omits exact authenticated credential evidence.
 
+## Approval deadline persistence
+
+Migration `014_approval_expiry` makes approval deadlines durable and database-authoritative rather than a UI/inbox observation.
+
+It adds immutable approval evidence:
+
+- `expired_at`;
+- `expiration_reason`, currently exactly `DEADLINE_ELAPSED` for worker materialization;
+- `expiration_request_id`, tying the state transition to the immutable system audit/outbox record.
+
+`approval_assignments.status` also gains `EXPIRED`. When the worker expires an approval, any current active assignment is terminated in the same transaction with `ended_at` and `end_reason = 'APPROVAL_EXPIRED'`.
+
+The expirable set is deliberately **both** `PENDING` and `APPROVED` approvals with `expires_at`. This matters because an approval can be validly approved before its deadline yet remain unconsumed when the deadline passes. The partial index
+
+```text
+approvals_expiring_scope_idx
+(environment, tenant_id, expires_at, id)
+WHERE status IN ('PENDING', 'APPROVED') AND expires_at IS NOT NULL
+```
+
+supports bounded deadline-order claims.
+
+The approval-expiry worker selects the earliest due row in scope using PostgreSQL `clock_timestamp()` plus `FOR UPDATE SKIP LOCKED`, changes it to `EXPIRED`, terminates an active assignment, and appends `approval.expired` audit/outbox evidence in one serializable transaction. The audit record includes the approval's `previousStatus`, deadline, materialization time, reason, and assignment ID when one existed.
+
+A deferred database transition guard independently enforces precedence:
+
+- `PENDING → APPROVED|REJECTED` cannot commit after the deadline;
+- `PENDING → CANCELLED` cannot commit after the deadline;
+- a new active assignment cannot be created for an overdue approval;
+- `APPROVED → CONSUMED` cannot commit after the deadline;
+- only overdue `PENDING` or `APPROVED` approvals with complete immutable system evidence may become `EXPIRED`;
+- an expired approval cannot retain an `ACTIVE` assignment.
+
+Application timestamps therefore cannot override database time. Concurrent expiry workers and mutation requests serialize on the approval row; one legal state transition wins and every losing path observes or receives the resulting conflict.
+
 ## Approval inbox read model
 
 The approval inbox does **not** introduce another durable inbox table or copy assignment ACLs into a second authority store. It is a derived read projection over the existing authority graph.
@@ -84,11 +119,9 @@ The list is ordered by `(approvals.requested_at, approvals.id)` and uses keyset 
 - `approval_assignment_eligibility_inbox_idx (tenant_id, environment, approver_id, assignment_id)` for current-authority lookup; and
 - `approvals_pending_inbox_order_idx (tenant_id, environment, requested_at, id) WHERE status = 'PENDING'` for bounded pending work ordering.
 
-Migration 013 changes no authority state; it is an operational read-path migration. API readiness nevertheless requires it because the v0.9 inbox should not be served in production on a schema without the intended bounded access path. Backup/recovery trust-state verification continues to require migration 012 because the 013 objects are reconstructable indexes rather than additional durable authority records.
+Migration 013 changes no authority state; it is an operational read-path migration. API readiness now requires migration 014, which implies the inbox indexes are present and also ensures deadline enforcement exists before the API advertises current approval behavior.
 
-PostgreSQL `clock_timestamp()` determines whether a pending inbox item is actionable or overdue. The `ACTIONABLE` projection excludes overdue requests. `state=PENDING` can still expose an overdue request before the separate approval-expiry lifecycle materializes a terminal state, but the item is returned with `actionable=false`.
-
-An inbox response is never write authority. Reassignment, cancellation, decision, credential revocation, or identity disablement can invalidate a previously returned row before the client acts. The mutation path re-resolves the authority graph and PostgreSQL remains the final arbiter.
+PostgreSQL time determines whether a pending inbox item is actionable or overdue. The `ACTIONABLE` projection excludes overdue requests. `state=PENDING` can still expose an overdue request before the approval-expiry worker materializes `EXPIRED`, but the item is returned with `actionable=false`. The response is never write authority.
 
 ## JSONB encoding
 
@@ -104,15 +137,15 @@ A restart test proves that replay after closing and recreating the connection po
 
 Migration `003_idempotency_http_metadata` derives status and stable header metadata from the exact supported mutation scope and rejects unknown scopes instead of guessing. Migration 011 extends that exact mapping for approver creation/binding, group membership, assignment/reassignment, decision, cancellation, and approver lifecycle operations.
 
-The approval inbox is read-only and does not create idempotency records.
+The approval inbox and expiry worker do not create caller idempotency records. Expiry uses a generated `sys_approval_expiry_*` request ID as immutable system evidence and relies on the row/state transition for one-winner behavior.
 
 See [Idempotency and HTTP replay](./IDEMPOTENCY.md) for the complete contract.
 
 ## Immutable records
 
-Authorization decisions, signed receipts, audit events, outbox attempts, dead-letter replay records, and approval-assignment eligibility snapshots are insert-only. Terminal approver binding/membership/assignment history and approval decision/cancellation evidence cannot be rewritten after termination.
+Authorization decisions, signed receipts, audit events, outbox attempts, dead-letter replay records, and approval-assignment eligibility snapshots are insert-only. Terminal approver binding/membership/assignment history and approval decision/cancellation/expiry evidence cannot be rewritten after termination.
 
-The immutable `approval.decided` audit event is part of the credential-backed approval proof checked by migration 012. It is not merely an observability record.
+The immutable `approval.decided` audit event is part of the credential-backed approval proof checked by migration 012. The immutable `approval.expired` audit event is part of the deadline proof checked by migration 014. Neither is merely an observability record.
 
 A decision preserves the requested `mandateId` even when policy returns `MANDATE_NOT_FOUND`; that field is therefore not a mandate foreign key, while receipt issuance still requires a real allowed decision and active mandate. PostgreSQL triggers reject protected update/delete attempts.
 
@@ -140,10 +173,23 @@ Memory-mode runtime bootstrap also stores a real credential record so approval b
 
 ## Recovery-critical trust state
 
-Database backup manifests and restore verification require migration `012_approval_decision_credential_evidence` and include approver identities, credential bindings, groups, memberships, assignments, assignment eligibility, immutable audit evidence, and API-credential lifecycle state alongside mandates, approvals, decisions, receipts, idempotency, signing keys, and outbox state. The real PostgreSQL recovery drill creates and restores an actual pending group assignment to prove authority continuity rather than only verifying empty-table counts.
+Database backup manifests and restore verification require migration `014_approval_expiry`. The critical-state manifest includes approver identities, credential bindings, groups, memberships, assignments, assignment eligibility, approval deadline evidence, immutable audit evidence, and API-credential lifecycle state alongside mandates, approvals, decisions, receipts, idempotency, signing keys, and outbox state.
 
-Migration 013 adds only reconstructable indexes and therefore does not change the recovery-critical data manifest. After restore, the normal migration path recreates those index objects before API readiness can succeed.
+Migration 013 remains reconstructable index state, but migration 014 changes durable approval rows and transition semantics, so a pre-014 backup is not accepted as current recovery proof for a post-4C runtime.
+
+## Database-role separation
+
+Production role policy separates migration authority from six runtime/operations identities:
+
+- API;
+- action-attempt expiry;
+- approval expiry;
+- outbox;
+- maintenance;
+- operator.
+
+The approval-expiry role has only the tables necessary to inspect/update approvals and assignments and append audit/outbox evidence. It cannot mutate action attempts. Conversely, the action-attempt expiry role cannot mutate approvals or approval assignments. Runtime roles cannot migrate, own protected schema objects, inherit broad roles, or obtain default grants.
 
 ## Outbox
 
-The outbox row is inserted with the domain transaction. External delivery is not performed inside the authorization request. The execution layer supports environment-scoped claims, leases, stale recovery, bounded retries, dead-letter transitions, and immutable attempt evidence. No external handler or continuously running worker is registered by default.
+The outbox row is inserted with the domain transaction. External delivery is not performed inside the authorization request. The execution layer supports environment-scoped claims, leases, stale recovery, bounded retries, dead-letter transitions, and immutable attempt evidence. Approval expiry also emits its notification/resumption signal through this same transactional outbox rather than calling external integrations inside the expiry transaction.
