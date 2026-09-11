@@ -23,7 +23,7 @@ import { createPostgresPool, PostgresStore } from '../src/store/postgres-store.j
 
 const connectionString = process.env.DATABASE_URL;
 const integration = connectionString ? test : test.skip;
-const fixedNow = new Date('2026-07-29T06:00:00.000Z');
+const fixedNow = new Date();
 const signer = createReceiptSigner({ keyId: 'postgres-lifecycle-ed25519' });
 
 function unique(prefix) {
@@ -103,7 +103,7 @@ integration('consumed approvals and signed receipts survive PostgreSQL restart',
         action: 'commit.create',
         resource: 'github:owner/repository',
         summary: 'Approve one reviewed commit',
-        expiresAt: '2026-07-29T07:00:00.000Z'
+        expiresAt: new Date(fixedNow.getTime() + 60 * 60 * 1000).toISOString()
       });
       assert.equal(requested.response.status, 201);
       approvalId = requested.body.id;
