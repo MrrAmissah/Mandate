@@ -198,13 +198,36 @@ integration('PostgreSQL approval expiry uses database time, one-winner claims an
     assert.equal((await store.get('approvals', ownership, approvedThenOverdue.approval.id)).status, 'APPROVED');
     await sleep(1100);
 
+    const staleDecisionId = opaque('dec_stale_consume');
+    await pool.query(
+      `INSERT INTO mandate.authorization_decisions
+        (tenant_id, environment, id, mandate_id, agent_id, action, resource, context, outcome,
+         reason_code, reason, approval_id, evaluated_at, request_id)
+       VALUES ($1,'test',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [
+        tenantId,
+        staleDecisionId,
+        mandate.id,
+        mandate.agentId,
+        'payment.release',
+        approvedThenOverdue.approval.resource,
+        JSON.stringify({}),
+        'ALLOW',
+        'APPROVAL_GRANTED',
+        'Stale approval-consumption test decision.',
+        approvedThenOverdue.approval.id,
+        new Date().toISOString(),
+        opaque('req_stale_consume')
+      ]
+    );
+
     await assert.rejects(
       store.transaction(async (view) => {
         const approval = await view.get('approvals', ownership, approvedThenOverdue.approval.id);
         await view.save(
           'approvals',
           ownership,
-          consumeApproval(approval, opaque('dec_stale_consume'), approvedThenOverdue.requestedAt)
+          consumeApproval(approval, staleDecisionId, approvedThenOverdue.requestedAt)
         );
       }),
       (error) => error?.code === 'APPROVAL_EXPIRED' && error?.status === 409
